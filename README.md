@@ -10,13 +10,14 @@
 ## 下载
 
 到 [Releases](https://github.com/MengTL4/RMToolbox/releases) 下载最新的
-`RMToolbox-vX.Y.Z-win-x64.zip`，解压后双击 `RMToolbox.exe` 就能用。
+`RMToolbox-vX.Y.Z-win-x64.zip`，解压后双击文件夹里的 `RMToolbox.cmd` 就能用
+（也可以进 `app/gui` 目录双击 `RMToolbox.exe`）。
 不需要安装 Node.js 或任何运行环境。
 
 ## 怎么用
 
-1. 打开后先在「游戏库」点**扫描**，会自动找出 Steam 库里的 RPG Maker 游戏；
-   不在库里的可以手动添加游戏目录。
+1. 首次打开「游戏库」是空的——点**扫描**，会自动找出你电脑 Steam 库里的
+   RPG Maker 游戏；不在 Steam 库里的可以手动添加游戏目录。
 2. 选中游戏点**启动**，工具会把游戏跑起来并连上修改功能。
 3. 连上之后用左侧页签操作：
 

@@ -6,7 +6,7 @@
 // zips it to output/RMToolbox-v<version>-win-x64.zip. The zip is what the
 // GitHub Release ships: unzip → double-click RMToolbox.exe, no Node required.
 
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,6 +52,15 @@ function main() {
   for (const file of SHIP_FILES) {
     cpSync(path.join(projectRoot, file), path.join(staging, file));
   }
+
+  // The exe sits three levels down (app/gui/RMToolbox.exe) — give users a
+  // double-clickable launcher at the zip root instead. CRLF is required for
+  // cmd files; %* passes through args such as --remote-debugging-port.
+  writeFileSync(
+    path.join(staging, "RMToolbox.cmd"),
+    '@echo off\r\nstart "" "%~dp0app\\gui\\RMToolbox.exe" %*\r\n',
+    "ascii"
+  );
 
   mkdirSync(path.dirname(destZip), { recursive: true });
   execFileSync("powershell", [
