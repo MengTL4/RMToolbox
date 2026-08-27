@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>RM 工具箱</title>
+  <link rel="stylesheet" href="styles.css">
+  <!-- jsoneditor ships a real stylesheet (Naive UI is CSS-in-JS, this is not);
+       jsoneditor-theme.css re-skins it for our dark/light themes. -->
+  <link rel="stylesheet" href="vendor/jsoneditor/jsoneditor.min.css">
+  <link rel="stylesheet" href="jsoneditor-theme.css">
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- Boot failure fallback: an empty NW window is impossible to diagnose, so
+       any uncaught error before/while mounting paints itself here. -->
+  <div id="boot-error" hidden></div>
+  <script src="ui/boot-guard.js"></script>
+
+  <!--
+    NW.js injects the CommonJS globals (module/exports/require) into the page.
+    The Naive UI and jsoneditor bundles are UMD: with `module` visible they take
+    the CJS branch and never touch `window`, so Naive dies on require("vue") and
+    JSONEditor simply never appears. Documented NW workaround — hide the CJS
+    globals while the vendor bundles evaluate, then put them back (host.cjs
+    needs them).
+  -->
+  <script>
+    window.__rmchCjs = {
+      module: typeof module !== "undefined" ? module : undefined,
+      exports: typeof exports !== "undefined" ? exports : undefined,
+      define: typeof define !== "undefined" ? define : undefined
+    };
+    try { module = undefined; } catch (_) {}
+    try { exports = undefined; } catch (_) {}
+    try { define = undefined; } catch (_) {}
+  </script>
+  <script src="vendor/vue.global.prod.js"></script>
+  <script src="vendor/naive-ui.prod.js"></script>
+  <script src="vendor/jsoneditor/jsoneditor.min.js"></script>
+  <script>
+    try { module = window.__rmchCjs.module; } catch (_) {}
+    try { exports = window.__rmchCjs.exports; } catch (_) {}
+    try { define = window.__rmchCjs.define; } catch (_) {}
+    if (!window.Vue) throw new Error("vendor/vue.global.prod.js 未加载");
+    if (!window.naive) throw new Error("vendor/naive-ui.prod.js 未加载（UMD 检测未被屏蔽？）");
+    if (!window.JSONEditor) throw new Error("vendor/jsoneditor/jsoneditor.min.js 未加载（UMD 检测未被屏蔽？）");
+  </script>
+
+  <script src="ui/compat.js"></script>
+  <script src="ui/theme.js"></script>
+  <script src="ui/icons.js"></script>
+
+  <!-- store: core first, then the slices that attach onto it -->
+  <script src="ui/store/core.js"></script>
+  <script src="ui/store/trainer.js"></script>
+  <script src="ui/store/data.js"></script>
+  <script src="ui/store/locks.js"></script>
+  <script src="ui/store/library.js"></script>
+  <script src="ui/store/saves.js"></script>
+
+  <!-- reusable widgets: virtual-list before its consumers -->
+  <script src="ui/parts/virtual-list.js"></script>
+  <script src="ui/parts/iconset.js"></script>
+  <script src="ui/parts/entry-list.js"></script>
+  <script src="ui/parts/picker.js"></script>
+  <script src="ui/parts/delta.js"></script>
+  <script src="ui/parts/json-editor.js"></script>
+
+  <!-- 修改器 cards -->
+  <script src="ui/panels/trainer-cheats.js"></script>
+  <script src="ui/panels/trainer-gold.js"></script>
+  <script src="ui/panels/trainer-scene.js"></script>
+
+  <!-- one view per tab; data.js composes the data sub-views, so it comes last -->
+  <script src="ui/views/library.js"></script>
+  <script src="ui/views/trainer.js"></script>
+  <script src="ui/views/data-items.js"></script>
+  <script src="ui/views/data-flags.js"></script>
+  <script src="ui/views/data-actors.js"></script>
+  <script src="ui/views/data-map.js"></script>
+  <script src="ui/views/data-events.js"></script>
+  <script src="ui/views/data-tree.js"></script>
+  <script src="ui/views/data.js"></script>
+  <script src="ui/views/console.js"></script>
+  <script src="ui/views/saves.js"></script>
+  <script src="ui/views/log.js"></script>
+
+  <script src="ui/app.js"></script>
+  <script src="ui/main.js"></script>
+</body>
+</html>

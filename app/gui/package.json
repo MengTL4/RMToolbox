@@ -1,0 +1,16 @@
+{
+  "name": "rmch-gui",
+  "version": "0.4.0",
+  "main": "index.html",
+  "nodejs": true,
+  "chromium-args": "--force-color-profile=srgb",
+  "window": {
+    "title": "RM 工具箱",
+    "width": 1180,
+    "height": 800,
+    "min_width": 900,
+    "min_height": 640,
+    "position": "center",
+    "icon": "icon.png"
+  }
+}
