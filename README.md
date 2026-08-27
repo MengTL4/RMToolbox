@@ -214,3 +214,7 @@ per-game profiles（`runtime/bridge/profiles/`）：zs2（宝宝/天赋/称号/�
 - 仅限本地单机游戏；不碰任何在线/排行榜/账号功能。
 - 策略 A/B 均不修改游戏目录文件；hook 可回滚（originals 表）。
 - 需要 Node ≥ 18 运行 CLI/构建；GUI 的 NW 运行时由用户提供（见「安装与首次运行」）。
+
+## 许可证
+
+[MIT](LICENSE)
