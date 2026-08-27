@@ -46,12 +46,18 @@ def main():
     if not hwnd:
         print("window not found:", title)
         sys.exit(1)
-    rect = w.RECT()
-    windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-    wd, ht = rect.right - rect.left, rect.bottom - rect.top
+    # GetWindowRect includes the invisible DWM resize/shadow border (≈7px) —
+    # capture that, then crop to the visible frame or the PNG gets black edges.
+    win_rect = w.RECT()
+    windll.user32.GetWindowRect(hwnd, ctypes.byref(win_rect))
+    frame = w.RECT()
+    if windll.dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(frame), ctypes.sizeof(frame)):
+        frame = win_rect  # DWMWA_EXTENDED_FRAME_BOUNDS failed — keep full rect
+    full_w = win_rect.right - win_rect.left
+    full_h = win_rect.bottom - win_rect.top
     hdc_win = windll.user32.GetWindowDC(hwnd)
     hdc_mem = windll.gdi32.CreateCompatibleDC(hdc_win)
-    hbm = windll.gdi32.CreateCompatibleBitmap(hdc_win, wd, ht)
+    hbm = windll.gdi32.CreateCompatibleBitmap(hdc_win, full_w, full_h)
     windll.gdi32.SelectObject(hdc_mem, hbm)
     if not windll.user32.PrintWindow(hwnd, hdc_mem, PW_RENDERFULLCONTENT):
         print("PrintWindow failed")
@@ -65,19 +71,24 @@ def main():
 
     bih = BIH()
     bih.biSize = 40
-    bih.biWidth = wd
-    bih.biHeight = -ht
+    bih.biWidth = full_w
+    bih.biHeight = -full_h
     bih.biPlanes = 1
     bih.biBitCount = 32
-    buf = (ctypes.c_char * (wd * ht * 4))()
-    windll.gdi32.GetDIBits(hdc_mem, hbm, 0, ht, buf, ctypes.byref(bih), 0)
+    buf = (ctypes.c_char * (full_w * full_h * 4))()
+    windll.gdi32.GetDIBits(hdc_mem, hbm, 0, full_h, buf, ctypes.byref(bih), 0)
     windll.gdi32.DeleteObject(hbm)
     windll.gdi32.DeleteDC(hdc_mem)
     windll.user32.ReleaseDC(hwnd, hdc_win)
     raw = buf.raw
+    # Crop to the visible frame (drop the transparent/black DWM border).
+    x0 = frame.left - win_rect.left
+    y0 = frame.top - win_rect.top
+    wd = frame.right - frame.left
+    ht = frame.bottom - frame.top
     rows = []
-    for y in range(ht):
-        row = raw[y * wd * 4:(y + 1) * wd * 4]
+    for y in range(y0, y0 + ht):
+        row = raw[y * full_w * 4 + x0 * 4: y * full_w * 4 + (x0 + wd) * 4]
         rows.append(bytes(c for i in range(0, len(row), 4) for c in (row[i + 2], row[i + 1], row[i])))
     with open(out, "wb") as fh:
         fh.write(png(wd, ht, rows))
