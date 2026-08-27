@@ -1,0 +1,357 @@
+/* jsoneditor (vendor/jsoneditor/jsoneditor.min.css) re-skinned for RM 工具箱.
+ *
+ * Naive UI is CSS-in-JS, so ui/theme.js cannot reach a third-party widget's DOM
+ * — this file is the one exception to "views never hand-write colours". The
+ * values below mirror darkCommon / lightCommon in ui/theme.js; if a token
+ * changes there, change it here too.
+ *
+ * Scoping notes:
+ *  - the editor itself lives inside .rm-je,
+ *  - but the row action menu (.jsoneditor-contextmenu) and the sort/transform
+ *    modals (.jsoneditor-modal) are appended to <body>, so they have to be
+ *    keyed off body.rm-dark / body.rm-light instead (ui/app.js sets that class).
+ *  - jsoneditor's tree icons come from one sprite in its dark variant, so dark
+ *    mode inverts them; the menu-bar icons are already the white variant.
+ */
+
+body.rm-dark {
+  --rm-je-bg: #161a23;
+  --rm-je-bg-alt: #1b1f2a;
+  --rm-je-menu: #1b1f2a;
+  --rm-je-border: #272c39;
+  --rm-je-text: #eaecf3;
+  --rm-je-text-dim: #7c8496;
+  --rm-je-field: #c9cedb;
+  --rm-je-input: #11141b;
+  --rm-je-panel: #1b1f2a;
+  --rm-je-row: rgba(91, 140, 255, 0.16);
+  --rm-je-hover: rgba(91, 140, 255, 0.11);
+  --rm-je-hit-bg: rgba(245, 158, 11, 0.26);
+  --rm-je-hit-border: #f59e0b;
+  --rm-je-string: #6ee7a0;
+  --rm-je-number: #ff8f6b;
+  --rm-je-boolean: #fbbf24;
+  --rm-je-null: #7aa2f7;
+  --rm-je-icon-filter: invert(0.82);
+  --rm-je-btn-bg: #5b8cff;
+  --rm-je-btn-fg: #ffffff;
+}
+
+body.rm-light {
+  --rm-je-bg: #ffffff;
+  --rm-je-bg-alt: #f4f6fb;
+  --rm-je-menu: #5b8cff;
+  --rm-je-border: #e0e4ee;
+  --rm-je-text: #1b2030;
+  --rm-je-text-dim: #8b93a7;
+  --rm-je-field: #1b2030;
+  --rm-je-input: #ffffff;
+  --rm-je-panel: #ffffff;
+  --rm-je-row: rgba(91, 140, 255, 0.14);
+  --rm-je-hover: rgba(91, 140, 255, 0.08);
+  --rm-je-hit-bg: #ffffab;
+  --rm-je-hit-border: #ffee00;
+  --rm-je-string: #087f3a;
+  --rm-je-number: #d3462f;
+  --rm-je-boolean: #b45309;
+  --rm-je-null: #1d4ed8;
+  --rm-je-icon-filter: none;
+  /* The light menu bar *is* the brand blue, so the primary button inverts. */
+  --rm-je-btn-bg: #ffffff;
+  --rm-je-btn-fg: #3560d0;
+}
+
+/* --- frame ---------------------------------------------------------------- */
+
+.rm-je,
+.rm-je .rm-je-host {
+  width: 100%;
+  height: 100%;
+}
+
+.rm-je .jsoneditor {
+  border: 1px solid var(--rm-je-border);
+  border-radius: 8px;
+  overflow: hidden;              /* the menu bar has square corners of its own */
+  color: var(--rm-je-text);
+}
+
+/* --- menu bar ------------------------------------------------------------- */
+
+.rm-je .jsoneditor-menu {
+  background-color: var(--rm-je-menu);
+  border-bottom: 1px solid var(--rm-je-border);
+}
+
+.rm-je .jsoneditor-menu > button,
+.rm-je .jsoneditor-menu > .jsoneditor-modes > button {
+  color: #fff;
+}
+
+.rm-je .jsoneditor-menu > button:hover,
+.rm-je .jsoneditor-menu > .jsoneditor-modes > button:hover {
+  background-color: rgba(255, 255, 255, 0.16);
+  border-color: transparent;
+}
+
+.rm-je .jsoneditor-menu a.jsoneditor-poweredBy { display: none; }
+
+/* Search box: jsoneditor pins it top-right of the menu bar, so our action
+   buttons (which float in after the mode switcher) never collide with it. */
+.rm-je .jsoneditor-frame {
+  background-color: var(--rm-je-input);
+  border-radius: 6px;
+}
+
+/* The vendor gives the search input no background of its own: the browser
+   default (white) plus our themed text colour was unreadable in dark mode. */
+.rm-je .jsoneditor-search input {
+  background: var(--rm-je-input);
+  color: var(--rm-je-text);
+  border: 1px solid var(--rm-je-border);
+  border-radius: 4px;
+  padding: 0 6px;
+}
+
+.rm-je .jsoneditor-results { color: #fff; }
+
+/* Prev/next/refresh use the sprite's dark variant — invisible on the dark
+   menu bar, so invert them like the tree buttons. */
+body.rm-dark .rm-je .jsoneditor-search button {
+  filter: var(--rm-je-icon-filter);
+}
+
+/* Preview / raw-text modes: vendor hardcodes a light surface (#f5f5f5 /
+   browser-default white) — follow the theme instead. */
+.rm-je .jsoneditor-preview {
+  background: var(--rm-je-bg);
+  color: var(--rm-je-text);
+}
+.rm-je textarea.jsoneditor-text {
+  background: var(--rm-je-input);
+}
+
+/* Code mode: the vendored ace build ships only the light textmate theme, so
+   re-skin its classes in dark mode (scoped here — specificity beats the
+   single-class theme rules ace injects at runtime). */
+body.rm-dark .rm-je .ace_editor,
+body.rm-dark .rm-je .ace_editor .ace_scroller {
+  background: var(--rm-je-bg);
+  color: var(--rm-je-text);
+}
+/* ace's autocomplete popup has its own light surface (the ace_dark variant of
+   these rules exists but nothing ever puts that class on the editor). */
+body.rm-dark .rm-je .ace_editor.ace_autocomplete {
+  background: var(--rm-je-panel);
+  border-color: var(--rm-je-border);
+  color: var(--rm-je-text);
+}
+body.rm-dark .rm-je .ace_editor.ace_autocomplete .ace_marker-layer .ace_active-line,
+body.rm-dark .rm-je .ace_editor.ace_autocomplete .ace_line-hover {
+  background: var(--rm-je-hover);
+  border-color: var(--rm-je-border);
+}
+body.rm-dark .rm-je .ace_editor.ace_autocomplete .ace_rightAlignedText { color: var(--rm-je-text-dim); }
+body.rm-dark .rm-je .ace_gutter {
+  background: var(--rm-je-bg-alt);
+  color: var(--rm-je-text-dim);
+}
+body.rm-dark .rm-je .ace_gutter-active-line,
+body.rm-dark .rm-je .ace_marker-layer .ace_active-line {
+  background: var(--rm-je-hover);
+}
+body.rm-dark .rm-je .ace_cursor { color: var(--rm-je-text); }
+body.rm-dark .rm-je .ace_marker-layer .ace_selection { background: var(--rm-je-row); }
+body.rm-dark .rm-je .ace_print-margin { background: var(--rm-je-border); }
+body.rm-dark .rm-je .ace_indent-guide { background: none; box-shadow: inset -1px 0 0 rgba(124, 132, 150, 0.25); }
+body.rm-dark .rm-je .ace_string { color: var(--rm-je-string); }
+/* JSON mode tags keys as .ace_variable — textmate renders it near-black. */
+body.rm-dark .rm-je .ace_variable { color: var(--rm-je-field); }
+body.rm-dark .rm-je .ace_constant.ace_numeric { color: var(--rm-je-number); }
+body.rm-dark .rm-je .ace_constant.ace_language,
+body.rm-dark .rm-je .ace_keyword { color: var(--rm-je-boolean); }
+body.rm-dark .rm-je .ace_paren,
+body.rm-dark .rm-je .ace_punctuation,
+body.rm-dark .rm-je .ace_operator { color: var(--rm-je-text-dim); }
+body.rm-dark .rm-je .ace_invalid { color: var(--rm-je-text); background: rgba(239, 68, 68, 0.3); }
+body.rm-dark .rm-je .ace_search {
+  background: var(--rm-je-panel);
+  border-color: var(--rm-je-border);
+  color: var(--rm-je-text);
+}
+body.rm-dark .rm-je .ace_search_field,
+body.rm-dark .rm-je .ace_searchbtn {
+  background: var(--rm-je-input);
+  border-color: var(--rm-je-border);
+  color: var(--rm-je-text);
+}
+body.rm-dark .rm-je .ace_fold-widget { filter: var(--rm-je-icon-filter); box-shadow: none; background: none; }
+
+/* Value autocomplete (tree mode): vendor pins it white with dark text —
+   readable, but blinding in dark mode. */
+body.rm-dark .rm-je .jsoneditor .autocomplete.dropdown {
+  background: var(--rm-je-panel);
+  border-color: var(--rm-je-border);
+}
+body.rm-dark .rm-je .jsoneditor .autocomplete.dropdown .item { color: var(--rm-je-text); }
+body.rm-dark .rm-je .jsoneditor .autocomplete.dropdown .item.hover { background-color: var(--rm-je-hover); }
+body.rm-dark .rm-je .jsoneditor .autocomplete.hint { color: var(--rm-je-text-dim); }
+
+/* --- 更新数据 / 应用至游戏 (teleported into the menu bar, MTool style) ------ */
+
+.rm-je .rm-je-actions {
+  float: left;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  margin: 2px 0 2px 10px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.rm-je .rm-je-btn {
+  height: 22px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.rm-je .rm-je-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.26); }
+.rm-je .rm-je-btn:disabled { opacity: 0.45; cursor: default; }
+.rm-je .rm-je-btn-primary {
+  background: var(--rm-je-btn-bg);
+  border-color: var(--rm-je-btn-bg);
+  color: var(--rm-je-btn-fg);
+  font-weight: 500;
+}
+.rm-je .rm-je-btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+/* --- tree ----------------------------------------------------------------- */
+
+.rm-je div.jsoneditor-tree { background: var(--rm-je-bg); }
+
+.rm-je div.jsoneditor td,
+.rm-je div.jsoneditor th,
+.rm-je div.jsoneditor-field,
+.rm-je div.jsoneditor-value,
+.rm-je pre.jsoneditor-preview,
+.rm-je textarea.jsoneditor-text {
+  font-family: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  color: var(--rm-je-text);
+}
+
+.rm-je div.jsoneditor-field { color: var(--rm-je-field); }
+.rm-je div.jsoneditor-readonly { color: var(--rm-je-text-dim); }
+.rm-je div.jsoneditor-empty { border-color: var(--rm-je-border); }
+.rm-je div.jsoneditor-separator { color: var(--rm-je-text-dim); }
+
+.rm-je div.jsoneditor-value.jsoneditor-string { color: var(--rm-je-string); }
+.rm-je div.jsoneditor-value.jsoneditor-number { color: var(--rm-je-number); }
+.rm-je div.jsoneditor-value.jsoneditor-boolean { color: var(--rm-je-boolean); }
+.rm-je div.jsoneditor-value.jsoneditor-null { color: var(--rm-je-null); }
+.rm-je div.jsoneditor-value.jsoneditor-invalid { color: var(--rm-je-text); }
+
+.rm-je tr.jsoneditor-highlight,
+.rm-je tr.jsoneditor-selected { background-color: var(--rm-je-row); }
+.rm-je div.jsoneditor-tree tr:hover { background-color: var(--rm-je-hover); }
+
+/* Search hits keep jsoneditor's yellow role, toned for a dark surface. */
+.rm-je div.jsoneditor-field.jsoneditor-highlight,
+.rm-je div.jsoneditor-value.jsoneditor-highlight,
+.rm-je div.jsoneditor-field[contenteditable=true]:focus,
+.rm-je div.jsoneditor-field[contenteditable=true]:hover,
+.rm-je div.jsoneditor-value[contenteditable=true]:focus,
+.rm-je div.jsoneditor-value[contenteditable=true]:hover {
+  background-color: var(--rm-je-hit-bg);
+  border-color: var(--rm-je-hit-border);
+}
+
+.rm-je div.jsoneditor-tree div.jsoneditor-show-more {
+  background-color: var(--rm-je-bg-alt);
+  color: var(--rm-je-text-dim);
+  font-family: inherit;
+  font-size: 12px;
+}
+.rm-je div.jsoneditor-tree div.jsoneditor-show-more a { color: #5b8cff; }
+
+/* Row buttons (expand caret / ▾ action menu / drag handle) use the sprite's
+   dark variant — legible on white, invisible on #161a23. */
+body.rm-dark .rm-je div.jsoneditor-tree button.jsoneditor-button {
+  filter: var(--rm-je-icon-filter);
+}
+
+/* --- navigation bar / status bar ------------------------------------------ */
+
+.rm-je .jsoneditor-navigation-bar,
+.rm-je .jsoneditor-statusbar {
+  background-color: var(--rm-je-bg-alt);
+  border-color: var(--rm-je-border);
+  color: var(--rm-je-text-dim);
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.rm-je .jsoneditor-treepath .jsoneditor-treepath-element,
+.rm-je .jsoneditor-treepath .jsoneditor-treepath-seperator { color: var(--rm-je-text-dim); }
+.rm-je .jsoneditor-treepath span.jsoneditor-treepath-element:hover { color: #5b8cff; }
+
+/* --- row action menu + modals (rendered on <body>, not inside .rm-je) ----- */
+
+body.rm-dark .jsoneditor-contextmenu .jsoneditor-menu {
+  background: var(--rm-je-panel);
+  border-color: var(--rm-je-border);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.58);
+}
+
+body.rm-dark .jsoneditor-contextmenu .jsoneditor-menu button,
+body.rm-dark .jsoneditor-contextmenu .jsoneditor-text { color: var(--rm-je-text); }
+
+body.rm-dark .jsoneditor-contextmenu .jsoneditor-menu button:hover,
+body.rm-dark .jsoneditor-contextmenu .jsoneditor-menu button:focus,
+body.rm-dark .jsoneditor-contextmenu .jsoneditor-menu li button.jsoneditor-selected,
+body.rm-dark .jsoneditor-contextmenu .jsoneditor-menu li ul li button:hover {
+  background-color: var(--rm-je-hover);
+  color: var(--rm-je-text);
+}
+
+body.rm-dark .jsoneditor-contextmenu .jsoneditor-icon { filter: var(--rm-je-icon-filter); }
+body.rm-dark .jsoneditor-contextmenu .jsoneditor-separator { border-color: var(--rm-je-border); }
+
+body.rm-dark .jsoneditor-modal {
+  background: var(--rm-je-panel) !important;
+  color: var(--rm-je-text);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.58);
+}
+
+body.rm-dark .jsoneditor-modal input,
+body.rm-dark .jsoneditor-modal input[type=text],
+body.rm-dark .jsoneditor-modal select,
+body.rm-dark .jsoneditor-modal option,
+body.rm-dark .jsoneditor-modal textarea,
+body.rm-dark .jsoneditor-modal #query,
+body.rm-dark .jsoneditor-modal .selectr-selected,
+body.rm-dark .jsoneditor-modal .selectr-options-container,
+body.rm-dark .jsoneditor-modal .jsoneditor-transform-preview {
+  background: var(--rm-je-input);
+  border-color: var(--rm-je-border);
+  color: var(--rm-je-text);
+}
+
+body.rm-dark .jsoneditor-modal .selectr-option.selected,
+body.rm-dark .jsoneditor-modal .selectr-option.active { background: var(--rm-je-hover); }
+body.rm-dark .jsoneditor-modal table th,
+body.rm-dark .jsoneditor-modal .jsoneditor-jmespath-label { color: var(--rm-je-text); }
+body.rm-dark .jsoneditor-modal input[type=button],
+body.rm-dark .jsoneditor-modal input[type=submit] {
+  background: var(--rm-je-hover);
+  color: var(--rm-je-text);
+}
+

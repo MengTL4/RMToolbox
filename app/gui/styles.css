@@ -1,0 +1,249 @@
+/* ============================================================
+   RMCH GUI — layout shim only.
+
+   All component styling comes from Naive UI (CSS-in-JS, themed in
+   ui/theme.js). Everything below is document-level plumbing that a
+   component library cannot own: the html/body box, the native scrollbar,
+   the font stack, and the few flow containers the views compose with.
+   Resist adding component styles here — theme them in ui/theme.js instead.
+   ============================================================ */
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  overflow: hidden;
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+               "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* Native scrollbars still show up inside <pre>/n-log/table bodies. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(140, 152, 180, 0.38);
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(140, 152, 180, 0.6); background-clip: padding-box; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* Theme switch cross-fade. app.js hangs this class on <html> for ~220ms
+   around the flip; only painted colours transition (never layout), and the
+   reduced-motion rule above still wins. */
+.rm-theme-anim, .rm-theme-anim *, .rm-theme-anim *::before, .rm-theme-anim *::after {
+  transition: background-color 150ms ease, border-color 150ms ease,
+              color 150ms ease, box-shadow 150ms ease !important;
+}
+
+/* ---- flow containers used by the views ---------------------------------- */
+
+/* Game library: auto-fitting card grid. Plain CSS rather than n-grid's
+   breakpoint props so the column count always follows the real container
+   width, whatever the NW window is sized to. */
+.rm-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(392px, 1fr));
+  gap: 14px;
+}
+
+/* Trainer board: N independent card columns, N chosen from the measured width
+   by TrainerView (flex-wrap would leave the wrapped column stretched to full
+   width, which looks broken at in-between sizes). Cards stack inside a column,
+   so columns stay independently tall instead of being padded to a grid row. */
+.rm-board {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.rm-board-col {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  gap: 14px;
+}
+
+/* Two-up label/control rows inside cards (cheat switches, rate inputs). */
+.rm-pairs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 7px 14px;
+}
+/* Rate rows carry a number field, so they need more room per cell. */
+.rm-pairs-wide {
+  grid-template-columns: repeat(auto-fill, minmax(186px, 1fr));
+}
+.rm-pair {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.rm-pair > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Master-detail (数据 tab): searchable list left, editor right. Wraps to a
+   stack on narrow windows rather than squeezing both panes. */
+.rm-md {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.rm-md-list { flex: 1 1 350px; min-width: 0; }
+.rm-md-detail { flex: 1 1 400px; min-width: 0; }
+
+/* Selected row in a master list. Naive has no "selected row" state of its own,
+   so this is the one place a data-table row gets painted by hand. */
+.n-data-table-tr.rm-row-selected > .n-data-table-td {
+  background-color: rgba(91, 140, 255, 0.16) !important;
+}
+
+/* Entry-list name cell with an optional in-game icon in front. */
+.rm-entry-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rm-entry-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Sliced IconSet tiles (ui/parts/iconset.js). */
+.rm-gicon {
+  flex: none;
+  border-radius: 4px;
+  image-rendering: -webkit-optimize-contrast;   /* nearest-neighbour for pixel art */
+}
+.rm-gicon-ph {
+  display: inline-block;
+  background: rgba(140, 152, 180, 0.18);
+}
+
+/* Label that carries an explanatory tooltip (作弊开关的锁语义). */
+.rm-tip-label {
+  border-bottom: 1px dashed rgba(140, 152, 180, 0.55);
+  cursor: help;
+}
+
+/* Picker overlay (技能 / 状态): one windowed row per entry. */
+.rm-picker-row {
+  display: flex;
+  align-items: center;
+  height: 38px;
+  padding-right: 8px;
+  min-width: 0;
+}
+.rm-picker-item { display: inline-flex; flex-direction: column; min-width: 0; max-width: 560px; }
+.rm-picker-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rm-picker-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Skill/state notes are plugin action-sequence dumps in some games — one line. */
+.rm-picker-note {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+/* Actor param rows: name · current · delta field · ±buttons · apply. */
+.rm-params { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.rm-param-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rm-param-name { flex: 0 0 62px; font-size: 12.5px; }
+.rm-param-cur {
+  flex: 0 0 56px;
+  text-align: right;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+/* JSON tree (数据修改) lives in the vendored jsoneditor; its skin is in
+   app/gui/jsoneditor-theme.css, not here. */
+
+/* Brand lockup in the sider. */
+.rm-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 16px;
+  overflow: hidden;
+}
+.rm-brand-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: #fff;
+  background: linear-gradient(135deg, #5b8cff, #8b5cf6);
+  box-shadow: 0 2px 10px rgba(91, 140, 255, 0.35);
+}
+.rm-brand-text { display: flex; flex-direction: column; line-height: 1.15; white-space: nowrap; }
+
+/* Header service pill: coloured dot inside the n-tag. */
+.rm-status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 50%;
+  vertical-align: 1px;
+}
+
+/* About dialog header row: bigger brand mark + name/version line. */
+.rm-about {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+.rm-about-mark {
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
+}
+
+/* Monospace output surfaces (console result / bridge log). */
+.rm-mono {
+  margin: 0;
+  font-family: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* The console editor: Naive UI has no monospace variant of n-input. */
+.rm-code-input textarea {
+  font-family: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace !important;
+  font-size: 12.5px !important;
+  line-height: 1.6 !important;
+}
+
+/* Boot failure surface (see ui/boot-guard.js) — must not depend on Naive UI,
+   because it exists precisely for the case where the vendor bundles failed. */
+#boot-error {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  overflow: auto;
+  padding: 24px;
+  color: #ffb4b4;
+  background: #16171b;
+  font-family: Consolas, monospace;
+  font-size: 13px;
+}
+#boot-error .boot-error-item { margin-bottom: 18px; }
+#boot-error pre { margin: 6px 0 0; white-space: pre-wrap; color: #e6e8ef; }

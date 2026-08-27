@@ -1,0 +1,44 @@
+# Dependencies (RMCH has none at runtime; this is only for tooling experiments)
+node_modules/
+
+# ---- generated ----------------------------------------------------------------
+# CJS copy of the ESM core, rebuilt by tools/launch-gui.ps1 on every launch.
+app/gui/gui-bundle.cjs
+output/
+
+# ---- volatile runtime state ---------------------------------------------------
+# state.json / bridge.log / commands+events.jsonl
+runtime/bridge-state/
+# 数据锁定 sets, one file per game
+runtime/locks/
+# local WS auth token, regenerated on demand — never commit this
+runtime/rmch.token
+# the GUI's scanned-game list
+runtime/gui-library.json
+runtime/gui.log
+# 策略B shadow directories (hardlinks; ~180MB)
+runtime/shadow-apps/
+# Chromium profiles for shadow-launched games
+runtime/shadow-profiles/
+# cdp.mjs / winshot.py debug captures
+runtime/screenshots/
+# save-directory backups
+backups/
+*.log
+config.local.json
+# local agent/tooling session state
+.zcode/
+
+# ---- NW.js runtime, linked/copied from a donor modkit -------------------------
+# local NW.js extract used as the setup donor
+nwjs/
+app/gui/*.dll
+app/gui/*.exe
+app/gui/*.pak
+app/gui/*.dat
+app/gui/*.bin
+app/gui/locales/
+app/gui/swiftshader/
+app/gui/Dictionaries/
+app/gui/cache/
+app/gui/debug.log
