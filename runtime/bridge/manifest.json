@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "RMCH Trainer Bridge",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "RMCH local trainer bridge for RPG Maker MV/MZ (NW.js) games",
   "content_scripts": [
     {

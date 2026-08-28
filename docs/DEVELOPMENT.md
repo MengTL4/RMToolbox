@@ -34,6 +34,7 @@ runtime/bridge/  注入游戏的通用 bridge（同时就是 --load-extension �
 runtime/bridge-state/<gameKey>/   state.json / bridge.log / commands.jsonl / events.jsonl
 runtime/locks/<gameKey>.json      数据锁定集合（「保存锁定状态」写这里）
 runtime/shadow-apps/<gameKey>/    策略B 影子目录
+runtime/profiles/<gameKey>/       策略A 游戏的私有 Chromium profile（按游戏隔离单实例锁）
 runtime/screenshots/              cdp.mjs 调试截图
 tools/           CLI（rmch.mjs / send.mjs / serve.mjs）、setup/launch 脚本、测试、验收驱动、
                  gui-check.mjs（GUI 预检）、cdp.mjs（零依赖 CDP 客户端）、
@@ -125,10 +126,23 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
 
 ## 注入策略（均不改游戏原文件）
 
-- **策略 A（extension）**：原版 Game.exe + `--load-extension=<bridge扩展>`（MV/MZ 默认）
+- **策略 A（extension）**：原版 Game.exe + `--load-extension=<bridge扩展>`（MV/MZ 默认）。
+  附带私有 `--user-data-dir=runtime/profiles/<gameKey>`（持久、按游戏隔离）——大量游戏
+  manifest 都叫 `rmmz-game`，共享 profile 会让「单实例检测」杀掉后启动的游戏、以及
+  新版 NW 写过的 profile 弄坏旧版游戏
 - **策略 B（shadow）**：bg-script 启动链游戏专用 —— 影子目录（硬链接+Junction）+ 补丁版 bg-script +
   `process.cwd/execPath/nw.App.manifest` 环境伪装，对付检测/杀扩展的游戏。影子 `save/` 始终 junction
-  回真实游戏根（root 布局重建时先把影子残留存档按 mtime 较新者胜合并回去），存档读写直达真实目录
+  回真实游戏根（root 布局重建时先把影子残留存档按 mtime 较新者胜合并回去），存档读写直达真实目录。
+  bg-script 在子目录（如 `bg_script/boot.js`）时该路径会从链接树里抠出来、在影子内重建真实目录——
+  隔着 junction 写补丁会改掉游戏原文件
+
+## 窗口显示看门狗（90-startup.js）
+
+带启动保护的游戏普遍 `package.json` 里 `window.show=false`，靠启动链跑完后自己
+`nw.Window.get().show()`。启动链一旦中途卡死，进程活着、bridge 连着（物品能列出来）、
+BGM 在放，但窗口永远不出现。bridge 在窗口从未可见期间每 1.5s 补一次 `show()`（以
+`document.visibilityState` 判定，见过一次 `visible` 就永久撤防，30s 后定时器也停），
+不会和用户最小化/游戏主动隐藏打架。
 
 ## 通信
 

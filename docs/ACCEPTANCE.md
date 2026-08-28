@@ -1,5 +1,49 @@
 # RMCH 验收记录
 
+## 用户反馈三连：绿头（MZ）无窗口 / L3 打不开 / 有声音无画面（2026-08-28）
+
+用户反馈：黑色图标的引擎能开，绿色图标的打不开——「进程在任务管理器里、工具能列出
+游戏物品，但游戏界面不出现」；另有「部分 L3 启动保护游戏打不开」「部分游戏只有声音
+没有画面」。三个症状指向同一个机制：
+
+### 诊断
+
+1. **保护类游戏普遍隐藏窗口启动。** 本机 L3 游戏（梦魇：无归、再刷一把）的
+   `package.json` 都是 `"window": {"show": false}`，靠启动链跑完后自己调
+   `nw.Window.get().show()`。启动链中途卡死时：页面照样跑（bridge 活着、物品能列）、
+   音频照样放（BGM），但窗口永不显示——三个症状全部吻合。
+2. **共享 Chromium profile 的单实例杀。** 大量 MV/MZ 游戏 manifest 都叫 `rmmz-game`
+   （本机 刷啊刷[MV]、大千世界2、再刷一把2 全是）。策略 A 原来不传 `--user-data-dir`，
+   所有游戏挤同一个 profile：一个游戏活着（或有僵尸进程），下一个同 profile 游戏被
+   单实例检测直接杀掉（M2 已知限制实测过：4 秒退出）；profile 被新版 NW 写过之后
+   旧版游戏启动还报 "database is too new"。这解释「A 能开 B 打不开」类反馈。
+3. **shadow 对子目录 bg-script 会写穿 junction。** `setupShadowApp` 原来按顶层条目
+   链接，再 `writeFileSync(appDir/<bgScript>)`：bg-script 若在子目录（如
+   `bg_script/boot.js`），写入隔着 junction **直接改掉游戏原文件**（且随后启动必挂）。
+   这是「部分 L3 打不开」+ 原文件完整性两个 bug。
+
+### 修复（v0.2.1 / bridge 0.3.1）
+
+- **`90-startup.js` 窗口显示看门狗**：窗口从未可见期间（`document.visibilityState`
+  为 `hidden`）每 1.5s 补一次 `nw.Window.get().show()`；见过一次 `visible` 永久撤防，
+  30s 后定时器自停——不与用户最小化、游戏主动隐藏打架。正常游戏零影响
+  （本机四次启动无一误触发）。
+- **策略 A 加私有 `--user-data-dir=runtime/profiles/<gameKey>`**（持久不擦除，
+  保住落在 `nw.App.dataPath` 的插件数据），与策略 B 同款隔离。
+- **shadow 子目录 bg-script 抠除**：`linkShadowEntry` 递归处理 bg-script 路径——
+  无关目录照常 junction，bg-script 所在目录在影子内重建为真实目录再写入补丁；
+  原游戏文件逐字节不动。
+
+### 验证
+
+- `npm test` 全绿：harness **32 组**（新增第 32 组看门狗：hidden 时必须补 show、
+  变 visible 后必须撤防不再补）；新增 `tools/test-shadow-launcher.mjs`（假游戏目录
+  验证 junction/抠除/补丁/原文件不变 + 根级 bg-script 回归），已进 `npm test`。
+- **实机**：再刷一把2（MZ，extension）+ 刷啊刷（MV，extension，同 `rmmz-game`
+  profile）**同时运行、各自有窗口、bridge 均连上**——此前第二个必被单实例杀掉。
+- 梦魇：无归（L3，shadow）照常启动出窗、bridge 0.3.1 连上；大千世界2（L3
+  node-main，extension）此前已验证。
+
 ## 存档数据编辑器换成 MTool 同款 jsoneditor 原生树（2026-08-27 晚）
 
 「数据 › 存档数据」的手写树（`ui/parts/json-tree.js` 509 行 + 可逆操作层 `json-ops.js`）

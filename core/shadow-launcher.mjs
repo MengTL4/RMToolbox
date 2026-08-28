@@ -12,7 +12,10 @@
 // The original game files are never modified. A private --user-data-dir keeps
 // the game's own profile untouched. The save/ directory is always junctioned
 // back to the real game root, so the shadow reads the player's real saves and
-// writes back to them (no divergent shadow-side saves).
+// writes back to them (no divergent shadow-side saves). When the bg-script
+// lives in a subdirectory (e.g. "bg_script/boot.js"), that path is carved out
+// of the linked tree and recreated inside the shadow — writing the patched
+// script through a junction would overwrite the game's real startup file.
 
 import { spawn } from "node:child_process";
 import {
@@ -132,6 +135,45 @@ function buildSuffix({ bridgePath, logPath, gameKey }) {
 `;
 }
 
+// Links one entry of the game root into the shadow app. Directories are
+// junctioned wholesale and files hard-linked — except on the path to the
+// bg-script (relSkip, "/" separated, null when off that path): those
+// directories are recreated and their children linked one by one, so the
+// patched bg-script can be written into the shadow WITHOUT writing through
+// a junction into the real game directory (which would silently overwrite
+// the game's original startup file).
+function linkShadowEntry(source, dest, relSkip) {
+  const stat = lstatSync(source);
+  if (stat.isDirectory()) {
+    if (!relSkip) {
+      junctionDir(source, dest);
+      return;
+    }
+    const slash = relSkip.indexOf("/");
+    const head = slash === -1 ? relSkip : relSkip.slice(0, slash);
+    const rest = slash === -1 ? null : relSkip.slice(slash + 1);
+    // A junction left by an older build would make the patched-bg write land in
+    // the real game tree — a real directory is required here, never a link.
+    const existing = lstatSync(dest, { throwIfNoEntry: false });
+    if (existing && existing.isSymbolicLink()) rmSync(dest, { force: true });
+    mkdirSync(dest, { recursive: true });
+    for (const child of readdirSync(source)) {
+      const childSource = path.join(source, child);
+      const childDest = path.join(dest, child);
+      if (child === head) {
+        if (rest !== null) linkShadowEntry(childSource, childDest, rest);
+        // rest === null → child IS the bg-script file; the patched copy is
+        // written after the linking pass, so leave it out here.
+      } else {
+        linkShadowEntry(childSource, childDest, null);
+      }
+    }
+    return;
+  }
+  if (relSkip) return; // carved-out file (shouldn't happen: relSkip only names dirs above)
+  linkOrCopyFile(source, dest);
+}
+
 export function setupShadowApp({ projectRoot, scan, gameKey }) {
   const appDir = path.join(projectRoot, SHADOW_ROOT, gameKey);
   mkdirSync(appDir, { recursive: true });
@@ -160,17 +202,15 @@ export function setupShadowApp({ projectRoot, scan, gameKey }) {
     mkdirSync(realSaveDir, { recursive: true });
   }
 
+  const bgPathNorm = bgScriptName.split(/[\\/]+/).filter(Boolean).join("/");
   for (const entry of readdirSync(scan.root)) {
-    if (entry === bgScriptName || entry === "package.json") continue;
+    if (entry === "package.json") continue;
     if (SKIP_FILES.has(entry.toLowerCase())) continue;
+    if (entry === bgPathNorm) continue; // root-level bg-script: patched copy written below
     const source = path.join(scan.root, entry);
     const dest = path.join(appDir, entry);
-    const stat = lstatSync(source);
-    if (stat.isDirectory()) {
-      junctionDir(source, dest);
-    } else if (stat.isFile()) {
-      linkOrCopyFile(source, dest);
-    }
+    const relSkip = bgPathNorm.startsWith(entry + "/") ? bgPathNorm.slice(entry.length + 1) : null;
+    linkShadowEntry(source, dest, relSkip);
   }
   cpSync(path.join(scan.root, "package.json"), path.join(appDir, "package.json"));
 
@@ -184,7 +224,11 @@ export function setupShadowApp({ projectRoot, scan, gameKey }) {
     logPath: path.join(bridgeStateDir, "bg-bridge.log"),
     gameKey
   });
-  writeFileSync(path.join(appDir, bgScriptName), patched, "utf8");
+  const patchedPath = path.join(appDir, bgScriptName);
+  // bg-script may live in a subdirectory (e.g. "bg_script/boot.js"); the
+  // linking pass carved its path out of the shadow, so create it fresh here.
+  mkdirSync(path.dirname(patchedPath), { recursive: true });
+  writeFileSync(patchedPath, patched, "utf8");
 
   const gameExe = path.join(appDir, "Game.exe");
   if (!existsSync(gameExe)) throw new Error(`shadow Game.exe missing: ${gameExe}`);

@@ -2,10 +2,12 @@
 // (zero game-file modification). Also ensures the bridge WebSocket server is
 // running: if the port is free, a detached `tools/serve.mjs` process is
 // spawned so the CLI/GUI can talk to the bridge after this process exits.
+// Extension launches get a private per-game --user-data-dir (see the spawn
+// site) so same-profile games cannot single-instance-kill each other.
 
 import { spawn } from "node:child_process";
 import net from "node:net";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanGame, injectionStrategy } from "./scanner.mjs";
@@ -80,7 +82,20 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
   if (chosen === "shadow") {
     processInfo = launchShadowGame({ projectRoot, scan, gameKey: scan.gameKey, port, token });
   } else {
-    const child = spawn(scan.paths.exe, [`--load-extension=${extensionDir}`], {
+    // Per-game private profile. Most RM games keep the manifest default name
+    // ("rmmz-game" — even MV titles), so without this they all share one
+    // Chromium profile: a running (or zombie) instance makes the next launch
+    // die on the single-instance check, and a profile written by a newer
+    // NW.js breaks older games ("database is too new"). The shadow strategy
+    // already does this; extension launches get the same isolation. The dir
+    // is persistent (NOT wiped per launch) so plugin data that lands in
+    // nw.App.dataPath survives across runs.
+    const profileDir = path.join(projectRoot, "runtime", "profiles", scan.gameKey);
+    mkdirSync(profileDir, { recursive: true });
+    const child = spawn(scan.paths.exe, [
+      `--user-data-dir=${profileDir}`,
+      `--load-extension=${extensionDir}`
+    ], {
       cwd: scan.root,
       detached: true,
       stdio: "ignore",
@@ -95,7 +110,7 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
       windowsHide: true
     });
     child.unref();
-    processInfo = { pid: child.pid };
+    processInfo = { pid: child.pid, profileDir };
   }
 
   return {
@@ -108,6 +123,7 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
     strategyReason: chosen === "shadow" ? "bg-script startup chain: shadow dir + patched bg-script" : plan.reason,
     pid: processInfo.pid,
     shadowApp: processInfo.appDir || null,
+    profileDir: processInfo.profileDir || null,
     server,
     port,
     extensionDir
