@@ -153,29 +153,20 @@ function saveLibrary() {
   } catch (_) {}
 }
 
-// options.includeSteam: scan Steam libraries too. Boot passes false so a fresh
-// install opens to an empty library instead of a pre-filled one — the full
-// Steam scan only runs when the user clicks 扫描游戏库.
-function listLibrary(options) {
-  const includeSteam = !options || options.includeSteam !== false;
-  const { scanGame, findSteamLibraries, scanLibrary } = state.modules.scanner;
-  const seen = new Map();
-  if (includeSteam) {
-    for (const library of findSteamLibraries()) {
-      for (const info of scanLibrary(library)) {
-        seen.set(info.root, info);
-      }
-    }
-  }
+// The library is fully user-managed: only roots added via 添加游戏目录 show up
+// (persisted in runtime/gui-library.json). No Steam auto-scan anywhere — a fresh
+// install opens to an empty library, and removing an entry actually removes it.
+function listLibrary() {
+  const { scanGame } = state.modules.scanner;
+  const games = [];
   for (const root of state.library.manualRoots) {
     try {
-      const info = scanGame(root);
-      if (!seen.has(info.root)) seen.set(info.root, info);
+      games.push(scanGame(root));
     } catch (error) {
       guiLog("manual library entry failed to scan", { root, error: String(error.message || error) });
     }
   }
-  return Array.from(seen.values());
+  return games;
 }
 
 function addManualRoot(root) {

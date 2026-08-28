@@ -15,12 +15,10 @@
     }
   }
 
-  // includeSteam=false skips the Steam scan — boot uses that so a fresh install
-  // opens to an empty library; the 扫描游戏库 button passes nothing (full scan).
-  function refreshLibrary(includeSteam) {
+  function refreshLibrary() {
     state.scanning = true;
     try {
-      state.games = server.listLibrary({ includeSteam: includeSteam !== false });
+      state.games = server.listLibrary();
     } catch (error) {
       store.fail("库扫描失败：" + error.message);
       state.games = [];
@@ -121,7 +119,7 @@
       store.fail("桥接服务器启动失败：" + error.message);
     }
 
-    refreshLibrary(false);
+    refreshLibrary();
   }
 
   Object.assign(store, {
