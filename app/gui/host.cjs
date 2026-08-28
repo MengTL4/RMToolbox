@@ -153,12 +153,18 @@ function saveLibrary() {
   } catch (_) {}
 }
 
-function listLibrary() {
+// options.includeSteam: scan Steam libraries too. Boot passes false so a fresh
+// install opens to an empty library instead of a pre-filled one — the full
+// Steam scan only runs when the user clicks 扫描游戏库.
+function listLibrary(options) {
+  const includeSteam = !options || options.includeSteam !== false;
   const { scanGame, findSteamLibraries, scanLibrary } = state.modules.scanner;
   const seen = new Map();
-  for (const library of findSteamLibraries()) {
-    for (const info of scanLibrary(library)) {
-      seen.set(info.root, info);
+  if (includeSteam) {
+    for (const library of findSteamLibraries()) {
+      for (const info of scanLibrary(library)) {
+        seen.set(info.root, info);
+      }
     }
   }
   for (const root of state.library.manualRoots) {
