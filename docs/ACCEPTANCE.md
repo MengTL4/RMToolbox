@@ -465,7 +465,10 @@ runtime/screenshots/trainer.png（修改器）。
   UI）；M1 已在四游戏上验收，且与本轮验证的命令走完全相同的请求-响应路径。
 - 部分 YEP 插件重的游戏（刷啊刷）`DataManager.setupNewGame()` 直接开新游戏会因插件读取
   未初始化数据报错 —— 验收驱动自动回退到读存档（`save.load`），GUI 用户建议用「读档」按钮。
-- NWR 影子目录下 `save.list` 指向影子应用的 save 目录（策略 B 的隔离设计，存档在影子目录内）。
+- ~~NWR 影子目录下 `save.list` 指向影子应用的 save 目录（策略 B 的隔离设计，存档在影子目录内）。~~
+  **2026-08-28 已修复**：影子的 `save/` 固定 junction 回真实游戏根（www 布局经 www junction 天然直通），
+  游戏读写存档直达真实目录；旧版本残留在影子里的分歧存档会在重建影子时按「mtime 较新者胜」合并回真实
+  目录后再建链接（`core/shadow-launcher.mjs` `mergeSaveFiles`）。
 
 ## M0/M1 验收（zcode 会话，2026-08-26 早些时候）
 
