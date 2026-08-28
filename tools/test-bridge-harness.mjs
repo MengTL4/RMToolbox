@@ -243,6 +243,12 @@ async function main() {
   };
   sandbox.XMLHttpRequest = undefined;
   sandbox.document = { createElement: () => ({ set textContent(v) {}, get textContent() { return ""; } }), documentElement: null };
+  // Group-32 setup: pretend the page sits in an NW window that has never been
+  // shown (protected games boot with "show": false and can stall there). The
+  // startup watchdog must re-assert show() until the window reports visible.
+  sandbox.document.visibilityState = "hidden";
+  const mockWindow = { showCount: 0, show() { this.showCount += 1; } };
+  sandbox.nw = { Window: { get: () => mockWindow } };
   sandbox.eval = eval;
 
   const mock = makeMockGame(sandbox);
@@ -250,7 +256,7 @@ async function main() {
   vm.runInContext(bridgeSource, context, { filename: "page-bridge.js" });
 
   assert.ok(sandbox.__rmchBridge, "bridge must attach to window");
-  assert.equal(sandbox.__rmchBridge.version, "0.3.0");
+  assert.equal(sandbox.__rmchBridge.version, "0.3.1");
 
   let commandCounter = 0;
   const sendCommand = async (type, args = {}) => {
@@ -547,9 +553,20 @@ async function main() {
   assert.equal(actor.skillMpCost(), 0, "cost is waived again once the scope exits");
   await sendCommand("trainer.options.set", { options: { noSkillCost: false } });
 
+  // 32. window-show watchdog: while the window has never been visible it
+  // re-asserts show(); once the window reports visible it disarms for good,
+  // so it never fights the user's own minimize later.
+  await sleep(1700); // watchdog ticks every 1500ms
+  assert.ok(mockWindow.showCount > 0, "watchdog must show a never-visible window");
+  sandbox.document.visibilityState = "visible";
+  await sleep(1700); // one tick to observe "visible" and disarm
+  const shownBeforeDisarm = mockWindow.showCount;
+  await sleep(1700);
+  assert.equal(mockWindow.showCount, shownBeforeDisarm, "watchdog must disarm once the window is visible");
+
   rmSync(tempGameRoot, { recursive: true, force: true });
   rmSync(tempProjectRoot, { recursive: true, force: true });
-  console.log("bridge harness test: PASS (31 groups)");
+  console.log("bridge harness test: PASS (32 groups)");
   process.exit(0);
 }
 

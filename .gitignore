@@ -20,6 +20,8 @@ runtime/gui.log
 runtime/shadow-apps/
 # Chromium profiles for shadow-launched games
 runtime/shadow-profiles/
+# per-game private Chromium profiles for extension-launched games
+runtime/profiles/
 # cdp.mjs / winshot.py debug captures
 runtime/screenshots/
 # save-directory backups

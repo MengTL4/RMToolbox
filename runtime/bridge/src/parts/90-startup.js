@@ -36,7 +36,43 @@
   window.addEventListener("load", function () {
     patchTrainerHooks();
     applyWorldOptions();
+    ensureWindowShown("load");
   });
+
+  // Window-show watchdog. A whole class of protected games boots with
+  // "window": {"show": false} in package.json and relies on its startup chain
+  // calling nw.Window.get().show() once ready. If that chain stalls (protection
+  // hiccup, plugin error, timing), the page — and this bridge — keeps running
+  // with no visible window: "process alive, items listed, BGM audible, but no
+  // game UI". While the window has never been visible, re-assert show() every
+  // few seconds. Once the window has been seen visible even once the watchdog
+  // disarms, so it never fights the user (minimize) or the game (intentional
+  // hide) later on. show() on an already-visible window is a no-op.
+  let windowWatchdogArmed = true;
+  function ensureWindowShown(reason) {
+    if (!windowWatchdogArmed) return;
+    try {
+      if (typeof nw === "undefined" || !nw.Window || typeof nw.Window.get !== "function") {
+        windowWatchdogArmed = false; // not an NW page (e.g. test harness)
+        return;
+      }
+      if (!document || document.visibilityState !== "hidden") {
+        windowWatchdogArmed = false; // window shown (or state unknown) — game is fine
+        return;
+      }
+      const win = nw.Window.get();
+      if (!win || typeof win.show !== "function") return;
+      win.show();
+      log("window show asserted", { reason });
+    } catch (error) {
+      noteError(error);
+    }
+  }
+  const windowWatchdogTimer = setInterval(function () { ensureWindowShown("watchdog"); }, 1500);
+  setTimeout(function () {
+    clearInterval(windowWatchdogTimer);
+    windowWatchdogArmed = false;
+  }, 30000);
 
   connectWs();
   writeState();
