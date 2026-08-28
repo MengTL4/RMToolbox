@@ -127,7 +127,8 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
 
 - **策略 A（extension）**：原版 Game.exe + `--load-extension=<bridge扩展>`（MV/MZ 默认）
 - **策略 B（shadow）**：bg-script 启动链游戏专用 —— 影子目录（硬链接+Junction）+ 补丁版 bg-script +
-  `process.cwd/execPath/nw.App.manifest` 环境伪装，对付检测/杀扩展的游戏
+  `process.cwd/execPath/nw.App.manifest` 环境伪装，对付检测/杀扩展的游戏。影子 `save/` 始终 junction
+  回真实游戏根（root 布局重建时先把影子残留存档按 mtime 较新者胜合并回去），存档读写直达真实目录
 
 ## 通信
 

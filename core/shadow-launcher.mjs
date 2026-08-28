@@ -10,7 +10,9 @@
 //       Suffix (on /index.html pages, eval page-bridge.js in page context)
 //
 // The original game files are never modified. A private --user-data-dir keeps
-// the game's own profile untouched.
+// the game's own profile untouched. The save/ directory is always junctioned
+// back to the real game root, so the shadow reads the player's real saves and
+// writes back to them (no divergent shadow-side saves).
 
 import { spawn } from "node:child_process";
 import {
@@ -54,6 +56,21 @@ function junctionDir(source, dest) {
     else rmSync(dest, { recursive: true, force: true });
   }
   symlinkSync(source, dest, "junction");
+}
+
+// Flat-copy save files from srcDir into dstDir; newer mtime wins, missing
+// files are copied. Used to pull stranded shadow-side saves back into the
+// real game root before the save dir becomes a junction.
+function mergeSaveFiles(srcDir, dstDir) {
+  mkdirSync(dstDir, { recursive: true });
+  for (const entry of readdirSync(srcDir)) {
+    const src = path.join(srcDir, entry);
+    const stat = lstatSync(src);
+    if (!stat.isFile()) continue;
+    const dst = path.join(dstDir, entry);
+    const dstStat = lstatSync(dst, { throwIfNoEntry: false });
+    if (!dstStat || stat.mtimeMs > dstStat.mtimeMs) cpSync(src, dst);
+  }
 }
 
 function buildPrelude(gameRoot) {
@@ -124,6 +141,24 @@ export function setupShadowApp({ projectRoot, scan, gameKey }) {
 
   const originalBgScriptPath = path.join(scan.root, bgScriptName);
   if (!existsSync(originalBgScriptPath)) throw new Error(`bg-script not found: ${originalBgScriptPath}`);
+
+  // Keep saves anchored at the real game root. For "www" layout the www
+  // junction in the pass below already routes www/save to the real tree;
+  // for root layout the top-level save/ entry must exist on the real side
+  // before the pass so it gets junctioned instead of created fresh inside
+  // the shadow (which would fork the player's saves).
+  const isWwwLayout = scan.layout ? scan.layout === "www" : existsSync(path.join(scan.root, "www"));
+  if (!isWwwLayout) {
+    const realSaveDir = path.join(scan.root, "save");
+    const shadowSaveDir = path.join(appDir, "save");
+    const shadowStat = lstatSync(shadowSaveDir, { throwIfNoEntry: false });
+    if (shadowStat && !shadowStat.isSymbolicLink() && shadowStat.isDirectory()) {
+      // Real dir left by earlier shadow runs: merge newer files back first.
+      mergeSaveFiles(shadowSaveDir, realSaveDir);
+      rmSync(shadowSaveDir, { recursive: true, force: true });
+    }
+    mkdirSync(realSaveDir, { recursive: true });
+  }
 
   for (const entry of readdirSync(scan.root)) {
     if (entry === bgScriptName || entry === "package.json") continue;
