@@ -1,4 +1,4 @@
-// 游戏库 — scan/添加 game roots and launch them with the bridge injected.
+// 游戏库 — manually add/remove game roots and launch them with the bridge injected.
 
 (function () {
   "use strict";
@@ -15,6 +15,7 @@
     components: { RmIcon: RMCH.Icon },
     setup: function () {
       var query = ref("");
+      var dialog = naive.useDialog();
 
       var filtered = computed(function () {
         var needle = query.value.trim().toLowerCase();
@@ -41,6 +42,18 @@
         input.click();
       }
 
+      // Removing only unpins the directory from the library — never touches the
+      // game's files. Worth a confirm because it also loses the save-backup entry point.
+      function removeGame(game) {
+        dialog.warning({
+          title: "移除游戏",
+          content: "把「" + game.title + "」从游戏库移除？不会删除游戏文件，随时可以重新添加。",
+          positiveText: "移除",
+          negativeText: "取消",
+          onPositiveClick: function () { store.removeManualRoot(game.root); }
+        });
+      }
+
       return {
         store: store,
         state: store.state,
@@ -48,6 +61,7 @@
         filtered: filtered,
         connectedCount: connectedCount,
         pickFolder: pickFolder,
+        removeGame: removeGame,
         icon: RMCH.icon,
         sessionFor: store.sessionFor,
         protectionTag: store.protectionTag
@@ -58,10 +72,7 @@
 
       '  <n-card size="small">',
       '    <n-flex align="center" :size="10" :wrap="true">',
-      '      <n-button type="primary" :loading="state.scanning" @click="store.refreshLibrary()">',
-      '        <template #icon><rm-icon name="search"/></template>扫描游戏库',
-      '      </n-button>',
-      '      <n-button secondary @click="pickFolder">',
+      '      <n-button type="primary" :loading="state.scanning" @click="pickFolder">',
       '        <template #icon><rm-icon name="folder"/></template>添加游戏目录…',
       '      </n-button>',
       '      <n-button quaternary @click="store.refreshSessions()">',
@@ -79,7 +90,7 @@
 
       '  <n-alert v-if="!state.games.length" type="default" :bordered="false">',
       '    <template #icon><rm-icon name="info"/></template>',
-      '    没有识别到 RPG Maker 游戏。点「扫描游戏库」搜索 Steam 库，或用「添加游戏目录」手动指定。',
+      '    游戏库是空的。点「添加游戏目录」选择游戏的安装目录（里面有 Game.exe 的那一层），可以添加多个。',
       '  </n-alert>',
       '  <n-empty v-else-if="!filtered.length" description="没有匹配的游戏" style="padding: 40px 0"/>',
 
@@ -138,6 +149,14 @@
       '                    @click="$emit(\'open-trainer\', game.gameKey)">',
       '            <template #icon><rm-icon name="sliders" :size="15"/></template>修改器',
       '          </n-button>',
+      '          <n-tooltip trigger="hover">',
+      '            <template #trigger>',
+      '              <n-button size="small" quaternary @click="removeGame(game)">',
+      '                <template #icon><rm-icon name="trash" :size="15"/></template>',
+      '              </n-button>',
+      '            </template>',
+      '            从游戏库移除（不删游戏文件）',
+      '          </n-tooltip>',
       '        </n-flex>',
       '      </n-flex>',
       '    </n-card>',
