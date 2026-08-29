@@ -1,5 +1,48 @@
 # RMCH 验收记录
 
+## v0.4.0：附加到运行中（MTool 式 DLL 注入，2026-08-29）
+
+用户要求：游戏已经自己开起来了，RMCH 也能连上去（对标 MTool 的附加方式），
+只覆盖 RPG Maker 系列。新增 `core/attach.mjs` + `runtime/inject/` 原生层
+（injector + mvhook/rgsshook 两个 DLL + vendored MinHook），GUI 游戏库卡片新增
+「附加到运行中」按钮，CLI 新增 `rmch.mjs attach <gameRoot>`。
+
+### 机制（均不改游戏文件，游戏退出即还原）
+
+- **MV/MZ**：CreateRemoteThread 把 `rmch-mvhook.dll` 送进渲染进程 → 解析 nw.dll
+  导出表里的 v8 C++ 符号（mangled 前缀匹配）→ MinHook detour `v8::Function::Call`
+  → 在自然的 V8 调用点 `Script::Compile+Run` bootstrap（设 RMCH_* env + eval
+  page-bridge.js）→ bridge 走既有 WS 通道连上。结果经命名管道
+  `\\.\pipe\rmch-attach-<pid>`（u32le 分帧 JSON）回报给 Node 侧。
+- **RGSS**：SetWindowsHookEx 把 `rmch-rgsshook.dll` 挂进游戏主线程 →
+  `rb_eval_string_protect` 执行渲染后的 bridge.rb → 文件通道落在
+  `runtime/rgss-attach/<gameKey>/`（不污染游戏目录）。
+
+### 过程中攻克的真机问题
+
+1. **x86/x64 的 v8 ABI 都走隐藏 out 指针**：`Local<T>`/`MaybeLocal<T>` 带用户构造
+   函数，不满足寄存器返回条件——x86 下 out 指针是静态函数第一个栈参（成员函数在
+   this(ECX) 之后），x64 下是 RCX 之后的 RDX；而**按值传参**的 Local 是原始句柄值
+   直接压栈。两条结论都来自对 nw.dll 的反汇编验证（`Function::Call` 序言/尾声、
+   `Run` 的 `and (%ecx)` 单次解引用）。
+2. **RequestInterrupt 回调里 Compile 必崩**（NW 0.29 x86 整树消失、无 WER 记录）→
+   eval 改在 detour 内做（与 MTool 的 mzHook32.dll 同思路）。
+3. **NewFromUtf8 在静态标题画面约 17 秒才调一次** → 主触发器换成 Blink 每帧 rAF
+   必经的 `v8::Function::Call`（约 30ms 内触发）。
+4. **NW 渲染进程有多个 V8 context**（先捕到的常是扩展背景页）→ bootstrap 判定
+   非游戏页即 throw，DLL 见空结果释放 claim、400ms 限频重试下一个 context。
+
+### 验证
+
+- `npm test` 全绿，新增：`tools/test-attach.mjs`（PE 解析 / bootstrap 组装与语法
+  校验 / 管道分帧回环含拆分写入，17 项）与 `tools/test-inject-selftest.mjs`
+  （注入器 CRT+WH 两种模式对自测目标进程的真机回路，win32+x64 各 7 项）。
+- **真机（MV/MZ）**：真龙传（MV 1.6.1 / NW 0.29 / **x86**）与 刷啊刷（MV 1.6.1 /
+  **x64**）各自双击启动后 attach → WS 桥接连上、`trainer.options.get` 返回 36 个
+  hooks、游戏全程存活。重复 attach 幂等（DLL 引用计数 + bootstrap 自检）。
+- **RGSS attach 代码就绪但未经真机**：rb_eval_string_protect 链路只做了静态审阅，
+  本机没有 XP/VX/VX Ace 游戏可验。首个 RGSS 真机 attach 通过前，此能力视为实验性。
+
 ## 用户反馈三连：绿头（MZ）无窗口 / L3 打不开 / 有声音无画面（2026-08-28）
 
 用户反馈：黑色图标的引擎能开，绿色图标的打不开——「进程在任务管理器里、工具能列出

@@ -21,10 +21,15 @@ const destZip = path.join(projectRoot, "output", `RMToolbox-v${version}-win-x64.
 
 // Directory contents to ship, relative to projectRoot. app/gui ships complete —
 // the linked NW runtime binaries are the whole point of the release zip.
-const SHIP_DIRS = ["app/gui", "core", "runtime/bridge", "runtime/rgss-bridge", "tools", "docs/screenshots"];
+// runtime/inject/bin ships the prebuilt injector + hook DLLs for the attach
+// feature (obj/ intermediates and the self-test binaries are dev-only).
+const SHIP_DIRS = ["app/gui", "core", "runtime/bridge", "runtime/rgss-bridge", "runtime/inject/bin", "tools", "docs/screenshots"];
 const SHIP_FILES = ["README.md", "LICENSE", "package.json"];
 // Volatile / machine-local entries inside the shipped dirs.
-const EXCLUDE = new Set(["app/gui/cache", "app/gui/debug.log"]);
+const EXCLUDE = new Set([
+  "app/gui/cache", "app/gui/debug.log",
+  "runtime/inject/bin/obj", "runtime/inject/bin/win32/test", "runtime/inject/bin/x64/test"
+]);
 
 function main() {
   const exe = path.join(projectRoot, "app", "gui", "RMToolbox.exe");

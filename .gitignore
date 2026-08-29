@@ -5,6 +5,9 @@ node_modules/
 # CJS copy of the ESM core, rebuilt by tools/launch-gui.ps1 on every launch.
 app/gui/gui-bundle.cjs
 output/
+# Object-file intermediates from tools/build-inject.mjs (the linked exe/DLLs in
+# runtime/inject/bin/<arch>/ ARE committed so releases work without MinGW).
+runtime/inject/bin/obj/
 
 # ---- volatile runtime state ---------------------------------------------------
 # state.json / bridge.log / commands+events.jsonl

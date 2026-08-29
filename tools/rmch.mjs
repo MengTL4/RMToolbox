@@ -4,6 +4,7 @@
 //   node tools/rmch.mjs scan [gameRoot|steam] [--json]
 //   node tools/rmch.mjs serve [--port 47412]
 //   node tools/rmch.mjs launch <gameRoot> [--port 47412] [--strategy auto|extension]
+//   node tools/rmch.mjs attach <gameRoot> [--port 47412]
 //   node tools/rmch.mjs send <gameRoot|gameKey> <command.type> [jsonArgs]
 //   node tools/rmch.mjs bridge-build
 //   node tools/rmch.mjs token
@@ -21,6 +22,7 @@ function usage(exitCode = 0) {
     "  scan [gameRoot|steam] [--json]   Scan a game directory (default: all Steam libraries)",
     "  serve [--port 47412]             Start standalone bridge WebSocket server (for testing)",
     "  launch <gameRoot> [--port N]     Launch game with injected trainer bridge",
+    "  attach <gameRoot> [--port N]     Attach to an ALREADY-RUNNING game via DLL injection",
     "  send <gameRoot|gameKey> <type> [jsonArgs]   Send one command to a running bridge",
     "  bridge-build                     Build runtime/bridge/page-bridge.js from src parts",
     "  token                            Print the local auth token",
@@ -94,6 +96,21 @@ async function main() {
         strategy: options.strategy || "auto"
       });
       console.log(JSON.stringify(summary, null, 2));
+      break;
+    }
+    case "attach": {
+      const { attachGame } = await import("../core/attach.mjs");
+      const { positional, options } = parseArgs(rest);
+      if (!positional[0]) usage(1);
+      const summary = await attachGame({
+        gameRoot: path.resolve(positional[0]),
+        projectRoot,
+        port: Number(options.port) || 47412
+      });
+      // The RGSS summary carries a live EventEmitter session — not printable.
+      const printable = { ...summary };
+      delete printable.session;
+      console.log(JSON.stringify(printable, null, 2));
       break;
     }
     case "send": {

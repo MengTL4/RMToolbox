@@ -66,11 +66,15 @@ module RMCH
     attr_reader :started
 
     # --- configuration (patched in by the injector) -------------------------
-    def configure(port, token, game_key, real_dir = "")
+    # channel_dir: where the rmch-cmd/rmch-res.jsonl channel files live.
+    # Empty means Dir.pwd (the shadow root on launch; used by core/attach.mjs
+    # with a real directory so attaching never writes into the game folder).
+    def configure(port, token, game_key, real_dir = "", channel_dir = "")
       @port = port
       @token = token
       @game_key = game_key
       @real_dir = real_dir
+      @channel_dir = channel_dir
     end
 
     def rgss3?
@@ -149,8 +153,9 @@ module RMCH
     def connect
       return false if @started || @stopped
       begin
-        @cmd_path = File.join(Dir.pwd, "rmch-cmd.jsonl")
-        @res_path = File.join(Dir.pwd, "rmch-res.jsonl")
+        channel_root = (@channel_dir.nil? || @channel_dir.empty?) ? Dir.pwd : @channel_dir
+        @cmd_path = File.join(channel_root, "rmch-cmd.jsonl")
+        @res_path = File.join(channel_root, "rmch-res.jsonl")
         @cmd_offset = 0
         @frames = 0
         # Starting fresh: truncate both channels so stale ids cannot confuse us.
@@ -2467,7 +2472,7 @@ module RMCH
 end
 
 # Placeholders are substituted by core/rgss.mjs at injection time.
-RMCH.configure(__RMCH_PORT__, __RMCH_TOKEN__, __RMCH_GAMEKEY__, __RMCH_REALDIR__)
+RMCH.configure(__RMCH_PORT__, __RMCH_TOKEN__, __RMCH_GAMEKEY__, __RMCH_REALDIR__, __RMCH_CHANNELDIR__)
 
 # --- main-loop hook ---------------------------------------------------------
 # Connect on the first frame, then pump the command file once per frame.
