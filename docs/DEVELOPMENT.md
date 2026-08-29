@@ -17,7 +17,7 @@ core/            ESM 核心模块
   rgss-archive.mjs   RGSSAD v1/v3 加密归档索引解析/提取/免重建打补丁
   rgss-savecode.mjs  save.contents.apply 的 tagged JSON 树 → Ruby 源码 codegen
   attach.mjs         附加到已在运行的游戏（MTool 式 DLL 注入：MV/MZ 走 v8 符号 hook eval，
-                     RGSS 走 SetWindowsHookEx + rb_eval_string_protect）
+                     RGSS 走 SetWindowsHookEx + RGSSEval，旧 DLL 回退 rb_eval_string_protect）
   ws-server.mjs      零依赖 RFC6455 WebSocket 服务器（127.0.0.1:47412，token 鉴权）
   bridge-bundler.mjs runtime/bridge/src/parts → page-bridge.js 组装（含构建期语法校验）
   gui-bundler.mjs    ESM core → app/gui/gui-bundle.cjs（NW 窗口 require 不支持 ESM）
@@ -46,7 +46,7 @@ runtime/rgss-shadow/<gameKey>/    RGSS shadow 副本（junction+hardlink，每�
 runtime/inject/  attach 用的原生注入层（MTool 式 DLL 注入）
   src/              injector.cpp（CreateRemoteThread / SetWindowsHookEx 两种投递）+
                     mvhook.cpp（v8 符号解析 + Script::Compile/Run detour）+
-                    rgsshook.cpp（rb_eval_string_protect）+ 自测用 test-target/test-echo
+                    rgsshook.cpp（RGSSEval，回退 rb_eval_string_protect）+ 自测用 test-target/test-echo
   bin/<arch>/       预构建产物（rmch-inject.exe / rmch-mvhook.dll / rmch-rgsshook.dll，
                     win32+x64 双架构，**已提交入库**——没装 MinGW 也能打包 Release；
                     obj/ 中间产物不入库）
@@ -199,8 +199,13 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   同一理由，attach 逐个渲染器尝试、**成功即停**（普通渲染器优先，`--extension-process`
   的排后——再刷一把这类把游戏本体打包成 chrome-extension 页面的游戏只有后者）。
   RGSS：`rmch-rgsshook.dll`
-  经 SetWindowsHookEx 挂进游戏主线程，`rb_eval_string_protect` 执行渲染过的 `bridge.rb`，
-  文件通道放 `runtime/rgss-attach/<gameKey>/`。
+  经 SetWindowsHookEx 挂进游戏主线程，优先用引擎导出 `RGSSEval`（RGSS3 只导出引擎 API，
+  没有 Ruby C API；RGSS1/2 时代 DLL 回退 `rb_eval_string_protect`）执行渲染过的
+  `bridge.rb`，文件通道放 `runtime/rgss-attach/<gameKey>/`。注意 RGSSEval 的 cref 不是
+  Object——bridge.rb 顶层方法必须 `Object.send(:define_method)` 显式挂载；场景泵钩子
+  要覆盖所有自带 `update` 的 Scene_Base 后代（自定义引擎的子类可能不 super），且包装器
+  必须调用 hook 时捕获的 **UnboundMethod** 而非按名调别名——父子类同 hook + 子类 super
+  会让按名调用在两层包装器间无限递归（SystemStackError）。
   **x86/x64 的 v8 ABI 都已实测**：`Local<T>`/`MaybeLocal<T>` 因带用户构造函数，两架构都走
   隐藏 out 指针返回（x86 在 this/首参之前，x64 在 RCX 之后的 RDX），按值传参的 Local 则
   直接压栈原始句柄值。v8 符号名从 nw.dll 导出表按 mangled 前缀解析，覆盖 NW.js ≥ 0.13 的

@@ -1,5 +1,60 @@
 # RMCH 验收记录
 
+## v0.4.3：RGSS 附加真机落地（BLACK SOULS Ⅰ/Ⅱ 实测）（2026-08-30 凌晨）
+
+RGSS 附加此前从未真机验证过——用户拿 BLACK SOULS Ⅰ/Ⅱ（VX Ace / RGSS3）一测就挂。
+连修三层：
+
+### ① ruby-symbols-missing：RGSS3 压根不导出 Ruby C API
+
+rgsshook 原来按名字找 `rb_eval_string_protect`——但 RGSS3 的 DLL（RGSS300.dll 等）
+只导出 27 个**引擎 API**（RGSSEval / RGSSGameMain / RGSSInitialize3 / …），Ruby C API
+一个都不导出。修复：resolveRuby 先试引擎官方导出 **RGSSEval**（RGSS1/2/3 三代同名），
+`rb_eval_string_protect` / `rb_eval_string+rb_protect` 留作 RGSS1/2 时代 DLL 的回退。
+
+### ② RGSSEval 的 eval 上下文 cref 不是 Object：顶层 def 悬空
+
+eval 跑通了但 bridge 起不来：bridge.rb 顶层 `def rmch_pump` / `def rmch_hook_update`
+在 RGSSEval 的 cref 下**不落在 Object 上**（探针实测：self 是 main、Object 方法表里
+却没有），随后 `rmch_hook_update(Scene_Base)` 直接 NoMethodError（靠 bootstrap 的
+rescue 写 attach-error.log 才看见）。修复：这两个方法改用
+`Object.send(:define_method)` 显式挂到 Object（块内 `return` 换 `next`）。
+
+### ③ Scene_Base 捷径被子类绕过
+
+钩子装上了但泵不转：VX/Ace 分支只 alias `Scene_Base#update`，而自定义引擎
+（BLACK SOULS 的场景框架）**子类重写 update 且从不 super**。修复：Scene_Base 之外，
+把所有定义了自己 `update` 的 Scene_Base 后代也逐个 hook（调 super 的子类至多一帧
+多泵一次，connect/pump 幂等、offset 自卫，无害）。
+
+### ④ alias 链遇 super 无限递归（RGSS2 真机暴露，VxAce 同样隐患）
+
+RGSS1/2 真机首测（见下）又炸出一层：Scene hook 用 `alias_method` + 按名调用
+`rmch_update_orig`，当**父类和子类都被 hook、且子类 update 里调 `super`** 时，
+父类包装器里的按名调用会以 self 的真实类重新解析——又落回子类别名，两个包装器
+互踢直到 `SystemStackError: stack level too deep`（Star Stealing Prince 的
+Paradog 自定义 Scene_Title#update 第一帧就 super，100% 复现；VX 默认库里
+Scene_Map/Menu/Battle 等十几处 update 都带 super，BLACK SOULS 没踩中纯粹因为
+它的场景从不 super）。修复：hook 时把当前 update 捕获成 **UnboundMethod**，
+包装器 `orig.bind(self).call(*args)` 直接调捕获体，不再按名查找，从根上断环；
+`rmch_update_orig` 别名仅留作「已 hook」标记。
+
+### 实机验证
+
+- BLACK SOULS：附加 → `party.info` / `save.list` 正常应答（GUI 路由 RGSS 会话）。
+- BLACK SOULS II（干净进程）：一次 attach 直接上线。
+- 两款内嵌的都是魔改 RGSS300.dll（内嵌 Ruby 1.9.2）。
+- 注意：BLACK SOULS **失焦会暂停主循环**（Graphics.frame_count 冻结），此时命令无
+  响应、激活窗口即恢复——游戏自身行为，不是工具箱故障。
+- **RGSS2（VX）**：Star Stealing Prince 3.4（RGSS202E.dll，Ruby 1.8.1）——修复④后
+  附加全程稳定（修复前 5~9 秒必崩）；hello/state 推流正常，`party.info` /
+  `save.list` / `item.list` / `gold.set` 全部应答正确（gold 经独立探针复核落点），
+  标题→Scene_Map 场景切换正常、游戏画面可玩。
+- **RGSS1（XP）**：Last Scenario v1.22（RGSS104E.dll，Ruby 1.8.1）——附加稳定，
+  标题态 `party.info` 正确报「no save loaded yet」守卫错误，开新档进自定义
+  Scene_Intro 后 `party.info` 读到 gold=20、`gold.set` 77777 写入经探针复核生效。
+- RGSSEval 三代同名已逐代证实（RGSS104E/202E/300 均只有此引擎导出，无 Ruby C API）。
+
 ## v0.4.2：附加注入存活率 + 物品数量整数化（2026-08-30 凌晨）
 
 用户报告两件事：①物品/武器/防具数量出现小数；②「附加到运行中」对三个带保护的

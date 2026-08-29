@@ -2476,19 +2476,35 @@ RMCH.configure(__RMCH_PORT__, __RMCH_TOKEN__, __RMCH_GAMEKEY__, __RMCH_REALDIR__
 
 # --- main-loop hook ---------------------------------------------------------
 # Connect on the first frame, then pump the command file once per frame.
-def rmch_pump
+# NB: define via Object.define_method, NOT a plain top-level `def` — the
+# RGSS attach path evals this source through RGSSEval, whose cref is NOT
+# Object (a plain `def` would land on an invisible context and the calls
+# below would raise NoMethodError on main). Blocks also cannot `return`,
+# hence `next`.
+Object.send(:define_method, :rmch_pump) do
   unless RMCH.started
     RMCH.connect
-    return
+    next
   end
   RMCH.pump
 end
 
-def rmch_hook_update(site)
+Object.send(:define_method, :rmch_hook_update) do |site|
   site.class_eval do
     unless instance_methods(false).map { |m| m.to_s }.include?("rmch_update_orig")
+      # Capture the current `update` as an UnboundMethod and have the wrapper
+      # call THAT — never the `rmch_update_orig` alias by name. When a hooked
+      # subclass's update calls `super`, the parent wrapper runs with self
+      # still being the subclass instance; a by-name alias call would then
+      # re-resolve to the SUBCLASS alias and bounce between the two wrappers
+      # until SystemStackError ("stack level too deep"). Star Stealing
+      # Prince's Paradog Scene_Title#update -> super hits exactly this. A
+      # captured UnboundMethod always runs the method body seen at hook time,
+      # which breaks the cycle. `rmch_update_orig` stays as a hooked-marker
+      # (and for debugging) but is never invoked.
+      rmch_orig = instance_method(:update)
       alias_method :rmch_update_orig, :update
-      def update(*args)
+      define_method(:update) do |*args|
         begin
           rmch_pump
         rescue Exception
@@ -2497,7 +2513,7 @@ def rmch_hook_update(site)
         # it (and the bridge with that). Report before re-raising so the host
         # can see what actually broke.
         begin
-          rmch_update_orig(*args)
+          rmch_orig.bind(self).call(*args)
         rescue Exception => e
           RMCH.report_game_error(e)
           raise
@@ -2507,12 +2523,24 @@ def rmch_hook_update(site)
   end
 end
 
-# Prefer Scene_Base (VX/Ace): one alias covers every scene, custom ones
-# included. XP has no Scene_Base, so hook every Scene_* class that defines its
-# own update (inherited updates resolve to an already-hooked parent).
+# Hook the per-frame pump into scene updates. Scene_Base alone is NOT enough:
+# custom engines (BLACK SOULS included) override `update` in subclasses and
+# never call super, which would bypass a base-class hook entirely — so hook
+# every Scene_Base descendant that defines its own update as well. A subclass
+# that does call super pumps twice per frame; connect/pump are idempotent and
+# offset-guarded, so that is harmless. Hooking both parent and child is safe
+# only because the wrapper calls a captured UnboundMethod (see above) — with
+# a plain alias-chain, child `super` + parent wrapper recurses forever.
 if defined?(Scene_Base)
   rmch_hook_update(Scene_Base)
+  ObjectSpace.each_object(Class) do |klass|
+    next unless klass < Scene_Base
+    next unless klass.instance_methods(false).map { |m| m.to_s }.include?("update")
+    rmch_hook_update(klass)
+  end
 else
+  # XP has no Scene_Base: hook every Scene_* class that defines its own
+  # update (inherited updates resolve to an already-hooked parent).
   ObjectSpace.each_object(Class) do |klass|
     next unless klass.to_s =~ /^Scene_/
     next unless klass.instance_methods(false).map { |m| m.to_s }.include?("update")
