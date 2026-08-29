@@ -19,7 +19,7 @@
 
 import { spawn } from "node:child_process";
 import {
-  cpSync,
+  copyFileSync, // 别换成 fs 的递归拷贝 API：GUI 内嵌 Node 是 16.1，那个要 16.7 才有
   existsSync,
   lstatSync,
   mkdirSync,
@@ -44,20 +44,22 @@ function jsString(value) {
 }
 
 function linkOrCopyFile(source, dest) {
-  if (existsSync(dest)) rmSync(dest, { force: true });
+  // recursive rm: dest can be a stale junction from an older shadow layout,
+  // and plain rmSync on a junction throws EISDIR on the GUI's Node 16.1.
+  if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
   try {
     linkSync(source, dest);
   } catch (_) {
-    cpSync(source, dest);
+    copyFileSync(source, dest);
   }
 }
 
 function junctionDir(source, dest) {
-  if (existsSync(dest) || lstatSync(dest, { throwIfNoEntry: false })) {
-    const stat = lstatSync(dest, { throwIfNoEntry: false });
-    if (stat && stat.isSymbolicLink()) rmSync(dest, { force: true });
-    else rmSync(dest, { recursive: true, force: true });
-  }
+  // Node 16.1 (the GUI's embedded runtime) cannot plain-rm a junction —
+  // rmSync(link, {force:true}) throws ERR_FS_EISDIR. recursive rm unlinks the
+  // junction itself without following it (verified: target contents survive),
+  // and equally handles real dirs left by the bg-script carve-out below.
+  if (lstatSync(dest, { throwIfNoEntry: false })) rmSync(dest, { recursive: true, force: true });
   symlinkSync(source, dest, "junction");
 }
 
@@ -72,7 +74,7 @@ function mergeSaveFiles(srcDir, dstDir) {
     if (!stat.isFile()) continue;
     const dst = path.join(dstDir, entry);
     const dstStat = lstatSync(dst, { throwIfNoEntry: false });
-    if (!dstStat || stat.mtimeMs > dstStat.mtimeMs) cpSync(src, dst);
+    if (!dstStat || stat.mtimeMs > dstStat.mtimeMs) copyFileSync(src, dst);
   }
 }
 
@@ -154,8 +156,9 @@ function linkShadowEntry(source, dest, relSkip) {
     const rest = slash === -1 ? null : relSkip.slice(slash + 1);
     // A junction left by an older build would make the patched-bg write land in
     // the real game tree — a real directory is required here, never a link.
+    // (recursive rm: plain rmSync on a junction throws EISDIR on Node 16.1.)
     const existing = lstatSync(dest, { throwIfNoEntry: false });
-    if (existing && existing.isSymbolicLink()) rmSync(dest, { force: true });
+    if (existing && existing.isSymbolicLink()) rmSync(dest, { recursive: true, force: true });
     mkdirSync(dest, { recursive: true });
     for (const child of readdirSync(source)) {
       const childSource = path.join(source, child);
@@ -212,7 +215,7 @@ export function setupShadowApp({ projectRoot, scan, gameKey }) {
     const relSkip = bgPathNorm.startsWith(entry + "/") ? bgPathNorm.slice(entry.length + 1) : null;
     linkShadowEntry(source, dest, relSkip);
   }
-  cpSync(path.join(scan.root, "package.json"), path.join(appDir, "package.json"));
+  copyFileSync(path.join(scan.root, "package.json"), path.join(appDir, "package.json"));
 
   // Regenerate the patched bg-script on every launch so bridge updates apply.
   const bridgePath = path.join(projectRoot, "runtime", "bridge", "page-bridge.js");
