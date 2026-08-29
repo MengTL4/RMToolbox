@@ -74,6 +74,24 @@
     }
   }
 
+  // Attach to a game the user started themselves. The summary carries the main
+  // process pid (NW) or the game pid (RGSS) so the stop button keeps working.
+  async function attach(game) {
+    state.busy[game.gameKey] = "attaching";
+    try {
+      var summary = await server.attach(game.root);
+      if (summary.pid) state.pids[summary.gameKey] = summary.pid;
+      store.ok(summary.game + " 已附加（策略 " + summary.strategy + "）");
+      return summary;
+    } catch (error) {
+      store.fail("附加失败 " + game.title + "：" + error.message);
+      return null;
+    } finally {
+      delete state.busy[game.gameKey];
+      refreshSessions();
+    }
+  }
+
   async function stop(game) {
     var pid = state.pids[game.gameKey];
     if (!pid) {
@@ -129,6 +147,7 @@
     addManualRoot: addManualRoot,
     removeManualRoot: removeManualRoot,
     launch: launch,
+    attach: attach,
     stop: stop
   });
 })();

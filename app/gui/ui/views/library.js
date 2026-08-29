@@ -145,6 +145,13 @@
       '                    @click="store.stop(game)">',
       '            <template #icon><rm-icon name="stop" :size="15"/></template>停止',
       '          </n-button>',
+      // Attach to an already-running game (separate v-if so it stays out of
+      // the launch/stop if-else chain above).
+      '          <n-button v-if="!sessionFor(game.gameKey) && game.paths.exe" size="small" secondary',
+      '                    :loading="state.busy[game.gameKey] === \'attaching\'"',
+      '                    @click="store.attach(game)">',
+      '            <template #icon><rm-icon name="zap" :size="15"/></template>附加到运行中',
+      '          </n-button>',
       '          <n-button size="small" tertiary :disabled="!sessionFor(game.gameKey)"',
       '                    @click="$emit(\'open-trainer\', game.gameKey)">',
       '            <template #icon><rm-icon name="sliders" :size="15"/></template>修改器',

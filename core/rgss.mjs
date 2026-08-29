@@ -155,6 +155,21 @@ export function buildShadow({ gameRoot, shadowRoot, replaceRel, copyFiles = [] }
 }
 
 /**
+ * Substitute the __RMCH_* placeholders in bridge.rb. Shared by the shadow
+ * launch flow (injectBridge) and the attach flow (core/attach.mjs) so both
+ * render the exact same bridge source.
+ */
+export function renderBridgeSource(bridgeSource, { port, token, gameKey = "", realDir = "", engine, channelDir = "" }) {
+  return bridgeSource
+    .replace(/__RMCH_PORT__/g, String(port))
+    .replace(/__RMCH_TOKEN__/g, JSON.stringify(token))
+    .replace(/__RMCH_GAMEKEY__/g, JSON.stringify(gameKey))
+    .replace(/__RMCH_REALDIR__/g, JSON.stringify(realDir))
+    .replace(/__RMCH_GENERATION__/g, engine)
+    .replace(/__RMCH_CHANNELDIR__/g, JSON.stringify(channelDir));
+}
+
+/**
  * Splice the bridge into a script archive and write it into the shadow.
  */
 export function injectBridge({ detect, shadowRoot, bridgeSource, port, token, gameKey = "", realDir = "" }) {
@@ -162,12 +177,9 @@ export function injectBridge({ detect, shadowRoot, bridgeSource, port, token, ga
   const parsed = parseScripts(raw);
   const insertAt = findMainEntryIndex(parsed, (buf) => zlib.inflateSync(buf));
 
-  const code = bridgeSource
-    .replace(/__RMCH_PORT__/g, String(port))
-    .replace(/__RMCH_TOKEN__/g, JSON.stringify(token))
-    .replace(/__RMCH_GAMEKEY__/g, JSON.stringify(gameKey))
-    .replace(/__RMCH_REALDIR__/g, JSON.stringify(realDir))
-    .replace(/__RMCH_GENERATION__/g, detect.engine);
+  const code = renderBridgeSource(bridgeSource, {
+    port, token, gameKey, realDir, engine: detect.engine
+  });
 
   const payload = zlib.deflateSync(Buffer.from(code, "utf8"));
   const spliced = insertScriptEntry(raw, insertAt, 9_000_001, "RMCH_Bridge", payload, {

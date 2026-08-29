@@ -24,7 +24,8 @@ const MODULES = [
   "core/bridge-bundler.mjs",
   "core/shadow-launcher.mjs",
   "core/rgss-launcher.mjs",
-  "core/launcher.mjs"
+  "core/launcher.mjs",
+  "core/attach.mjs"
 ];
 
 // Matches: import { a, b } from "...";  |  import x from "...";

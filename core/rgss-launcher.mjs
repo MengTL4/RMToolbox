@@ -91,10 +91,13 @@ function syncSavesBack(shadowRoot, gameRoot, { removeSynced = false } = {}) {
 }
 
 class RgssSession extends EventEmitter {
-  constructor({ dir, gameKey = "rgss" }) {
+  constructor({ dir, gameKey = "rgss", pid = 0 }) {
     super();
     this.dir = dir;
     this.gameKey = gameKey;
+    // pid > 0: the game was attached, not launched — there is no child process
+    // whose exit cleans the session up, so poll liveness instead.
+    this.pid = pid;
     this.cmdPath = path.join(dir, "rmch-cmd.jsonl");
     this.resPath = path.join(dir, "rmch-res.jsonl");
     this.resOffset = 0;
@@ -107,6 +110,24 @@ class RgssSession extends EventEmitter {
     this.alive = true;
     this.timer = setInterval(() => this.poll(), POLL_INTERVAL_MS);
     this.timer.unref?.();
+    this.pidTimer = null;
+    if (this.pid) {
+      this.pidTimer = setInterval(() => this.checkPid(), 3000);
+      this.pidTimer.unref?.();
+    }
+  }
+
+  checkPid() {
+    // process.kill(pid, 0) probes existence without touching the process;
+    // EPERM means it exists but is owned by someone else — still alive.
+    let alive;
+    try {
+      process.kill(this.pid, 0);
+      alive = true;
+    } catch (error) {
+      alive = error && error.code === "EPERM";
+    }
+    if (!alive) this.teardown();
   }
 
   describe() {
@@ -124,6 +145,7 @@ class RgssSession extends EventEmitter {
     if (!this.alive) return;
     this.alive = false;
     clearInterval(this.timer);
+    if (this.pidTimer) clearInterval(this.pidTimer);
     for (const entry of this.pending.values()) {
       clearTimeout(entry.timer);
       entry.reject(new Error("bridge disconnected"));
@@ -321,6 +343,35 @@ export async function launchRgssGame({ gameRoot, projectRoot, gameKey, onLaunch 
       session.close();
     }
   };
+}
+
+/**
+ * Adopt a bridge that appeared in `dir` because we ATTACHED to a running game
+ * (core/attach.mjs) instead of launching one. Same session registry and
+ * hello-wait as launchRgssGame, but there is no child process: the game pid's
+ * liveness drives teardown, and the game writes its own saves, so no save
+ * sync happens here.
+ */
+export async function adoptRgssSession({ dir, gameKey, pid }) {
+  const session = new RgssSession({ dir, gameKey, pid });
+  const unregister = () => {
+    if (rgssSessions.get(gameKey) === session) rgssSessions.delete(gameKey);
+  };
+  session.on("close", unregister);
+
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      session.close();
+      reject(new RgssLaunchError("timed out waiting for the attached bridge to start"));
+    }, CONNECT_TIMEOUT_MS);
+    session.once("hello", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+
+  rgssSessions.set(gameKey, session);
+  return session;
 }
 
 export { RgssSession, RgssError };

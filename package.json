@@ -1,6 +1,6 @@
 {
   "name": "rmch",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "RM Toolbox (internal codename RMCH): trainer for local single-player RPG Maker MV/MZ (NW.js) and XP/VX/VX Ace (RGSS) games",
@@ -15,8 +15,10 @@
     "gui:check": "node tools/gui-check.mjs",
     "icon:bake": "node tools/bake-icon.mjs",
     "rgss:probe": "node tools/rgss-probe.mjs",
+    "build:inject": "node tools/build-inject.mjs",
     "test:host-rgss": "node tools/test-host-rgss.cjs",
-    "test": "node tools/test-ws-server.mjs && node tools/test-bridge-harness.mjs && node tools/test-shadow-launcher.mjs && node tools/test-rgss-marshal.mjs && node tools/test-rgss-archive.mjs && node tools/gui-check.mjs",
+    "test:inject": "node tools/test-attach.mjs && node tools/test-inject-selftest.mjs",
+    "test": "node tools/test-ws-server.mjs && node tools/test-bridge-harness.mjs && node tools/test-shadow-launcher.mjs && node tools/test-rgss-marshal.mjs && node tools/test-rgss-archive.mjs && node tools/test-attach.mjs && node tools/test-inject-selftest.mjs && node tools/gui-check.mjs",
     "test:rgss": "node tools/test-rgss-marshal.mjs && node tools/test-rgss-archive.mjs"
   }
 }

@@ -77,9 +77,10 @@ async function boot() {
   const scanner = await loadModule("core/scanner.mjs");
   const wsServer = await loadModule("core/ws-server.mjs");
   const launcher = await loadModule("core/launcher.mjs");
+  const attach = await loadModule("core/attach.mjs");
   const tokenMod = await loadModule("core/token.mjs");
   const rgssArchive = await loadModule("core/rgss-archive.mjs");
-  state.modules = { scanner, wsServer, launcher, tokenMod, rgssArchive };
+  state.modules = { scanner, wsServer, launcher, attach, tokenMod, rgssArchive };
 
   state.libraryPath = path.join(state.projectRoot, "runtime", "gui-library.json");
   try {
@@ -207,6 +208,37 @@ async function launch(gameRoot) {
   // RGSS sessions bypass the WebSocket server; wire their events into the same
   // GUI sinks here so the page cannot tell the difference.
   const rgssSession = summary.rgssSession;
+  if (rgssSession) {
+    guiLog("bridge connected", { gameKey: summary.gameKey, channel: "file" });
+    rgssSession.on("state", (gameState) => {
+      if (state.onState) state.onState(summary.gameKey, gameState);
+    });
+    rgssSession.on("close", () => {
+      guiLog("bridge disconnected", { gameKey: summary.gameKey });
+      notifySessions();
+    });
+    notifySessions();
+  }
+  return summary;
+}
+
+// Attach to an ALREADY-RUNNING game (DLL injection). The bridge dials into the
+// GUI's own WS server (attachGame's ensureServer sees the port in use), so the
+// session shows up through the normal "session-open" event — nothing extra to
+// wire here beyond the RGSS file-channel session, mirroring launch().
+async function attach(gameRoot) {
+  const summary = await state.modules.attach.attachGame({
+    gameRoot,
+    projectRoot: state.projectRoot,
+    port: 47412
+  });
+  guiLog("game attached", {
+    gameKey: summary.gameKey,
+    strategy: summary.strategy,
+    pid: summary.pid || null,
+    injected: summary.injected || null
+  });
+  const rgssSession = summary.session;
   if (rgssSession) {
     guiLog("bridge connected", { gameKey: summary.gameKey, channel: "file" });
     rgssSession.on("state", (gameState) => {
@@ -486,6 +518,7 @@ module.exports = {
   removeManualRoot,
   listSessions,
   launch,
+  attach,
   stop,
   send,
   backupSaves,
