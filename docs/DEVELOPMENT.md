@@ -80,6 +80,10 @@ node tools/rgss-probe.mjs <gameRoot>     # RGSS 冒烟测试（注入→启动�
 node tools/pack-release.mjs              # 构建 output/RMToolbox-v<version>-win-x64.zip
 ```
 
+注意：`output/release/RMToolbox/` 是打包的 staging 目录，**每次打包都被整个删掉重建**
+——不要从那里运行工具箱（2026-08-29 实测：打包中途从 staging 启动游戏，扩展目录被
+删到一半，老 NW 静默跳过 --load-extension，表现为「游戏能起但 bridge 永远不连」）。
+
 `build:inject` 用 MSYS2 的 MinGW 工具链（x86 与 x64 两套都要，链接器必须是 lld——
 MSYS2 binutils ld 2.46 链 mvhook 时段错误）：
 

@@ -24,14 +24,25 @@ GUI 的内嵌运行时（借用的 NW 0.54）Node 版本是 **16.1.0**（CDP 实
 实机验证（GUI 内 CDP 驱动真实 `server.launch`）：再刷一把 PlayAgain shadow 启动成功、
 bridge 连上、23 hooks、MV 1.6.1 识别正常。
 
-### ② 真龙传（MV 1.6.1 / NW 0.29 x86）启动后修改器找不到游戏 —— 当前代码不复现
+### ② 真龙传（MV 1.6.1 / NW 0.29 x86）启动后修改器找不到游戏 —— 打包竞争，非代码 bug
 
-完整复现用户路径（新 GUI → 游戏库卡片「启动并注入」→ 修改器下拉框）：会话正常出现、
-`trainer.options.get` 正常返回。bridge.log 显示该游戏历史上每次「bridge injected」
-后 WS 都连上了；唯一相关故障（`flatMap is not a function`，Chromium 64 没有 ES2019）
-已在 v0.3.1 修掉（手写 `flatMapOne`）。判断为旧构建（v0.3.1 之前的包）或陈旧 GUI
-进程所致；0.4.x 包不应再有。若仍复现，备选解释是有僵尸 `serve.mjs` 占用 47412
-（bridge 连到旧进程上，GUI 自己的服务器自然看不到会话）。
+用户环境里游戏能起、bridge-state 连「bridge injected」都没有——注入压根没发生。
+逐变量隔离实验（同一游戏、同一 profile，只换 `--load-extension` 路径）发现：
+
+- 仓库的 `runtime/bridge` 注入正常；staging 的 `output/release/RMToolbox/runtime/bridge`
+  必败——尽管两边文件 md5 逐字节相同、无 ADS、非 junction。
+- 同一目录改个名（`bridge-cursed`）就正常；改回 `bridge` 也正常了——**目录内容无辜，
+  是当时的状态不对**。
+
+真相：用户是从 `output/release/RMToolbox/`（pack-release 的 staging 目录）运行的工具箱，
+而两次「找不到游戏」都发生在打包进行中——`pack-release.mjs` 先 `rmSync(staging)` 再重建，
+游戏进程恰好在 bridge 目录被删到一半时启动，扩展加载静默失败（老 NW 对坏扩展零提示）。
+游戏窗口正常是因为 app 本体在用户自己的目录里，不受影响。
+
+结论与对策：**staging 是构建中间产物，每次打包都被整个清掉重建，不能当安装目录用**。
+对用户：运行解压后的 release zip（或仓库 dev GUI），别碰 `output/release/`。launcher
+不需要改：extension/shadow 两条路径都只在游戏启动瞬间读 bridge 文件，release zip 使用
+方式下不存在这个竞争窗口。
 
 ## v0.4.0：附加到运行中（MTool 式 DLL 注入，2026-08-29）
 
