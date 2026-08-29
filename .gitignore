@@ -28,6 +28,8 @@ runtime/profiles/
 # RGSS shadow directories (junctions + hardlinks, plus a full copy of any
 # encrypted archive, so this can be >100MB per game)
 runtime/rgss-shadow/
+# RGSS attach 的文件通道目录（rmch-cmd/rmch-res.jsonl、attach-error.log）
+runtime/rgss-attach/
 # cdp.mjs / winshot.py debug captures
 runtime/screenshots/
 # save-directory backups

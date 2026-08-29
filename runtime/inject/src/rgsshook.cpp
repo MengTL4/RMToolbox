@@ -2,9 +2,11 @@
 //
 // Loaded into the game by SetWindowsHookEx(WH_GETMESSAGE) on the game's main
 // window thread, so our hook procedure executes ON the game's main thread —
-// the same OS thread that owns the Ruby interpreter. That makes
+// the same OS thread that owns the Ruby interpreter. That makes RGSSEval /
 // rb_eval_string_protect safe for every RGSS generation (Ruby 1.8 and 1.9
-// alike): the engine itself evals scripts on exactly this thread.
+// alike): the engine itself evals scripts on exactly this thread. RGSSEval
+// (the engine's own export) is tried first — RGSS3 DLLs export nothing else;
+// the Ruby C API names are a fallback for RGSS1/2 era DLLs.
 //
 // Flow:
 //   hook proc (main thread, 1st message) → spawn worker thread
@@ -29,6 +31,10 @@
 typedef uintptr_t(__cdecl* RbEvalStringProtect_t)(const char*, int*);
 typedef uintptr_t(__cdecl* RbEvalString_t)(const char*);
 typedef uintptr_t(__cdecl* RbProtect_t)(uintptr_t(__cdecl*)(uintptr_t), uintptr_t, int*);
+// The engine's own script-eval export, present on every RGSS generation
+// (RGSS1/2/3) — and the ONLY eval entry on RGSS3, whose DLLs do not export
+// the Ruby C API at all (rb_eval_string* simply do not exist there).
+typedef uintptr_t(__cdecl* RgssEval_t)(const char*);
 
 static volatile LONG g_workerStarted = 0;
 static volatile LONG g_evaled = 0;
@@ -41,6 +47,7 @@ static char g_rubyDetail[512];
 static RbEvalStringProtect_t fpEvalProtect = NULL;
 static RbEvalString_t fpEval = NULL;
 static RbProtect_t fpProtect = NULL;
+static RgssEval_t fpRgssEval = NULL;
 
 // Find the game's rgss*.dll module (the embedded Ruby interpreter) and resolve
 // the eval entry points from it.
@@ -70,12 +77,13 @@ static bool resolveRuby() {
     return false;
   }
 
+  fpRgssEval = (RgssEval_t)(void*)GetProcAddress(rgss, "RGSSEval");
   fpEvalProtect = (RbEvalStringProtect_t)(void*)GetProcAddress(rgss, "rb_eval_string_protect");
   if (!fpEvalProtect) {
     fpEval = (RbEvalString_t)(void*)GetProcAddress(rgss, "rb_eval_string");
     fpProtect = (RbProtect_t)(void*)GetProcAddress(rgss, "rb_protect");
   }
-  if (!fpEvalProtect && !(fpEval && fpProtect)) {
+  if (!fpRgssEval && !fpEvalProtect && !(fpEval && fpProtect)) {
     strcpy(g_rubyDetail, "ruby-symbols-missing");
     return false;
   }
@@ -91,6 +99,14 @@ static void doEval() {
   if (!resolveRuby()) {
     g_rubyStatus = -1;
     return; // g_rubyDetail already set
+  }
+  if (fpRgssEval) {
+    // The bootstrap rescues Exception itself and reports via the file
+    // channel, so a clean return here means the bridge source was accepted.
+    fpRgssEval(g_bootstrap.data);
+    g_rubyStatus = 0;
+    strcpy(g_rubyDetail, "rgss-eval-done");
+    return;
   }
   int status = 0;
   if (fpEvalProtect) {
