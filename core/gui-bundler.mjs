@@ -16,9 +16,14 @@ import path from "node:path";
 const MODULES = [
   "core/ws-server.mjs",
   "core/token.mjs",
+  "core/rgss-marshal.mjs",
+  "core/rgss-archive.mjs",
+  "core/rgss.mjs",
+  "core/rgss-savecode.mjs",
   "core/scanner.mjs",
   "core/bridge-bundler.mjs",
   "core/shadow-launcher.mjs",
+  "core/rgss-launcher.mjs",
   "core/launcher.mjs"
 ];
 

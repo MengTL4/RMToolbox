@@ -4,6 +4,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
 import path from "node:path";
+import { detectRgss } from "./rgss.mjs";
 
 const RGSS_DLL_RE = /^rgss\d*[a-z]*\.dll$/i;
 const RPG_MAKER_CORE_FILES = {
@@ -134,9 +135,36 @@ export function scanGame(root) {
     result.protection.level = 0;
     return result;
   }
-  const rgssDll = rootFiles.find((name) => RGSS_DLL_RE.test(name));
-  if (rgssDll) {
-    result.engine = { id: "RGSS", bytecode: false, confidence: "high" };
+  // RGSS: the engine DLL may live in the RTP instead of the game root, so
+  // trust Game.ini's Library field (via detectRgss) and use the on-disk DLL
+  // only as a fallback hint.
+  let rgss = null;
+  try {
+    rgss = detectRgss(resolvedRoot);
+  } catch (_) {}
+  const rgssDll = rgss ? null : rootFiles.find((name) => RGSS_DLL_RE.test(name));
+  if (rgss || rgssDll) {
+    result.engine = { id: rgss ? rgss.engine : "RGSS", bytecode: false, confidence: rgss ? "high" : "medium" };
+    if (rgss) {
+      if (rgss.title) result.title = rgss.title;
+      result.rgss = {
+        scriptsRel: rgss.scriptsRel,
+        hasArchive: rgss.hasArchive,
+        rtp: rgss.rtp,
+        library: rgss.library
+      };
+      // Saves sit next to Game.exe (vanilla layout) or in a SaveData/
+      // subdirectory (custom save systems). Only report a dir that exists.
+      if (rgss) {
+        const saveDataDir = path.join(resolvedRoot, "SaveData");
+        if (existsSync(saveDataDir) && statSync(saveDataDir).isDirectory()) {
+          result.paths.saveDir = saveDataDir;
+        } else if (rootFiles.some((name) => /^save\d+\.(rxdata|rvdata|rvdata2)$/i.test(name))) {
+          result.paths.saveDir = resolvedRoot;
+        }
+        result.saveDirKnown = !!result.paths.saveDir;
+      }
+    }
     result.paths.exe = firstExisting([
       path.join(resolvedRoot, "Game.exe"),
       path.join(resolvedRoot, "Game-JP.exe")
@@ -283,7 +311,9 @@ export function scanLibrary(commonDir) {
 
 export function injectionStrategy(scan) {
   if (scan.engine.id === "RM2K") return { id: "easyrpg", reason: "RM2000/2003 has no script runtime; use EasyRPG player debug menu" };
-  if (scan.engine.id === "RGSS") return { id: "rgss-dll", reason: "RGSS (Ruby) needs a native hook DLL" };
+  if (/^RGSS/i.test(scan.engine.id)) {
+    return { id: "rgss-script", reason: "RGSS (Ruby): bridge spliced into the Scripts archive inside a shadow copy" };
+  }
   if (scan.manifest && scan.manifest.nodeMain) return { id: "extension", reason: "node-main guard tolerates --load-extension; verify game does not self-close" };
   if (scan.manifest && scan.manifest.bgScript) return { id: "extension-then-shadow", reason: "bg-script startup chain may detect extensions; fall back to shadow-dir bg-script patch" };
   return { id: "extension", reason: "standard NW.js game: --load-extension into original Game.exe" };

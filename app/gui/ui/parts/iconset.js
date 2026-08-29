@@ -8,8 +8,9 @@
 // icon index and cached — a catalog can be 1400 entries, but the virtual list
 // only renders a screenful at a time.
 //
-// Sheet geometry: 32px cells, column count derived from the image width
-// (MV 384px → 12 cols, MZ 512px → 16 cols; plugin sheets just work).
+// Sheet geometry: 32px cells for MV/MZ, 24px for RGSS2/3 (VX/Ace); the column
+// count is derived from the image width (MV 384px → 12 cols, MZ 512px →
+// 16 cols; plugin sheets just work).
 
 (function () {
   "use strict";
@@ -17,22 +18,36 @@
   var RMCH = (window.RMCH = window.RMCH || {});
   RMCH.parts = RMCH.parts || {};
 
-  var CELL = 32;
+  var CELL_MVMZ = 32;
+  var CELL_RGSS = 24;
   var TILE_CACHE_CAP = 800;
 
-  // gameKey -> { state: "loading"|"ready"|"failed", image, cols, tiles, promise }
+  // gameKey -> { state: "loading"|"ready"|"failed", image, cols, cell, tiles, promise }
   var sheets = {};
   var canvas = null;
   // Bumped on every sheet state transition so lists can reactively drop the
   // icon column when a game's sheet turns out to be unavailable.
   var sheetVersion = Vue.ref(0);
 
-  function rootFor(gameKey) {
+  function gameFor(gameKey) {
     var games = RMCH.store.state.games;
     for (var i = 0; i < games.length; i += 1) {
-      if (games[i].gameKey === gameKey) return games[i].root;
+      if (games[i].gameKey === gameKey) return games[i];
     }
     return null;
+  }
+
+  function rootFor(gameKey) {
+    var game = gameFor(gameKey);
+    return game ? game.root : null;
+  }
+
+  // RGSS2/3 sheets use 24px cells (VX/Ace); everything else follows MV/MZ 32px.
+  // (RGSS1/XP has no sheet: one file per icon, and the catalog has no index.)
+  function cellFor(gameKey) {
+    var game = gameFor(gameKey);
+    var id = game && game.engine && game.engine.id;
+    return /^RGSS/i.test(id || "") ? CELL_RGSS : CELL_MVMZ;
   }
 
   function loadImage(url) {
@@ -48,11 +63,11 @@
     if (!gameKey) return Promise.resolve(false);
     var sheet = sheets[gameKey];
     if (sheet) return sheet.promise;
-    sheet = sheets[gameKey] = { state: "loading", image: null, cols: 0, tiles: {}, tileCount: 0 };
+    sheet = sheets[gameKey] = { state: "loading", image: null, cols: 0, cell: cellFor(gameKey), tiles: {}, tileCount: 0 };
     sheet.promise = new Promise(function (resolve) {
       function finish(image) {
         sheet.image = image;
-        sheet.cols = Math.max(1, Math.floor(image.width / CELL));
+        sheet.cols = Math.max(1, Math.floor(image.width / sheet.cell));
         sheet.state = "ready";
         sheetVersion.value += 1;
         resolve(true);
@@ -91,15 +106,14 @@
     if (!isFinite(id) || id < 0) return null;
     if (sheet.tiles[id]) return sheet.tiles[id];
     if (sheet.tileCount >= TILE_CACHE_CAP) return null;
-    if (!canvas) {
-      canvas = document.createElement("canvas");
-      canvas.width = CELL;
-      canvas.height = CELL;
-    }
+    var cell = sheet.cell;
+    if (!canvas) canvas = document.createElement("canvas");
+    canvas.width = cell;
+    canvas.height = cell;
     var ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, CELL, CELL);
-    ctx.drawImage(sheet.image, (id % sheet.cols) * CELL, Math.floor(id / sheet.cols) * CELL,
-      CELL, CELL, 0, 0, CELL, CELL);
+    ctx.clearRect(0, 0, cell, cell);
+    ctx.drawImage(sheet.image, (id % sheet.cols) * cell, Math.floor(id / sheet.cols) * cell,
+      cell, cell, 0, 0, cell, cell);
     var url = canvas.toDataURL("image/png");
     sheet.tiles[id] = url;
     sheet.tileCount += 1;

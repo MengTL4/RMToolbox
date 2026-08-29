@@ -22,6 +22,9 @@ runtime/shadow-apps/
 runtime/shadow-profiles/
 # per-game private Chromium profiles for extension-launched games
 runtime/profiles/
+# RGSS shadow directories (junctions + hardlinks, plus a full copy of any
+# encrypted archive, so this can be >100MB per game)
+runtime/rgss-shadow/
 # cdp.mjs / winshot.py debug captures
 runtime/screenshots/
 # save-directory backups
@@ -44,3 +47,6 @@ app/gui/swiftshader/
 app/gui/Dictionaries/
 app/gui/cache/
 app/gui/debug.log
+
+# agent working memory
+.agent/
