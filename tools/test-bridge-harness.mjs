@@ -320,6 +320,24 @@ async function main() {
   assert.equal(setRestore.payload.count, 9);
   assert.equal(mock.party._items[1], 9);
 
+  // 4c. fractional container values (amplifier plugins) display as integers,
+  //     and a sabotaged gainItem (再刷一把 ships a native no-op stub) is
+  //     overridden by the writeback.
+  mock.party._items[2] = 2.7;
+  const invFrac = await sendCommand("item.list");
+  const ether = invFrac.payload.entries.find((e) => e.id === 2);
+  assert.equal(ether && ether.count, 3, "fractional count must round for display");
+  delete mock.party._items[2];
+  const realGainItem = mock.party.gainItem;
+  mock.party.gainItem = function () {}; // native no-op stub
+  const setStub = await sendCommand("item.set", { kind: "item", id: 1, count: 15 });
+  assert.equal(setStub.payload.count, 15, "writeback must pin the count past a stub gainItem");
+  assert.equal(mock.party._items[1], 15);
+  const addStub = await sendCommand("item.add", { kind: "item", id: 1, amount: 2 });
+  assert.equal(addStub.payload.count, 17, "item.add past a stub must land exactly");
+  mock.party.gainItem = realGainItem;
+  await sendCommand("item.set", { kind: "item", id: 1, count: 9 });
+
   // 5. actor edits
   const level = await sendCommand("actor.level.set", { id: 1, level: 30 });
   assert.equal(level.payload.actor.level, 30);

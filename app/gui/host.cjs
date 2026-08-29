@@ -91,7 +91,10 @@ async function boot() {
   } catch (_) {}
 
   const token = tokenMod.getToken(state.projectRoot);
-  const server = new wsServer.BridgeServer({ port: 47412, token });
+  const server = new wsServer.BridgeServer({
+    port: 47412, token,
+    stateDir: path.join(state.projectRoot, "runtime", "bridge-state")
+  });
   server.on("session-open", (gameKey) => {
     guiLog("bridge connected", { gameKey });
     notifySessions();

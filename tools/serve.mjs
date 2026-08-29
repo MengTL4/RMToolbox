@@ -12,7 +12,10 @@ import { getToken } from "../core/token.mjs";
 
 export async function runStandaloneServer({ port = 47412, projectRoot } = {}) {
   const token = getToken(projectRoot);
-  const server = new BridgeServer({ port, token });
+  const server = new BridgeServer({
+    port, token,
+    stateDir: path.join(projectRoot, "runtime", "bridge-state")
+  });
   server.on("session-open", (gameKey) => {
     console.log(`[rmch] bridge connected: ${gameKey}`);
   });

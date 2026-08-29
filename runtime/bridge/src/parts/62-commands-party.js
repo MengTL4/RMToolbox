@@ -7,6 +7,23 @@
   // consistent; the field is the escape hatch for games that removed it.
   // ---------------------------------------------------------------------------
 
+  // Protected games sabotage the engine's own write path (再刷一把 ships
+  // gainItem as a native no-op stub) and amplifier plugins scale the delta, so
+  // after the polite gainItem call we assert the requested count directly.
+  // Equivalent to what gainItem does anyway (container write + map refresh).
+  function writeBackItemCount(party, prop, id, want) {
+    const store = party[prop];
+    if (!store) return;
+    const now = Number(store[id]) || 0;
+    if (now === want) return;
+    if (want > 0) store[id] = want;
+    else delete store[id];
+    const map = resolveMap();
+    if (map && typeof map.requestRefresh === "function") {
+      try { map.requestRefresh(); } catch (_) {}
+    }
+  }
+
   Object.assign(commandHandlers, {
 
     // --- gold -----------------------------------------------------------------
@@ -46,8 +63,11 @@
       const { id } = requireDataEntry(kind, args.id, "id");
       const amount = Math.floor(requireNumber(args.amount, "amount"));
       if (!Number.isFinite(amount) || amount === 0) throw new Error("amount must be a non-zero number");
+      const prop = inventorySlot(kind);
+      const want = Math.max(0, (Number(party[prop] && party[prop][id]) || 0) + amount);
       withRatesSuppressed(() => party.gainItem(runtimeDataTable(kind)[id], amount));
-      return { kind, id, amount };
+      writeBackItemCount(party, prop, id, want);
+      return { kind, id, amount, count: Number(party[prop] && party[prop][id]) || 0 };
     },
 
     // MTool-style inventory view: everything the party currently owns, with counts.
@@ -58,7 +78,10 @@
         const store = party[prop];
         if (!store) continue;
         for (const key of Object.keys(store)) {
-          const count = Number(store[key]) || 0;
+          // Counts are integers by engine contract; amplifier plugins in some
+          // games stash fractions (2.5 件装备) in the container. Rounding here
+          // is display-only — the in-memory value is left untouched.
+          const count = Math.round(Number(store[key]) || 0);
           if (count <= 0) continue;
           const id = Number(key);
           const entry = runtimeDataTable(kind)[id];
@@ -78,9 +101,10 @@
       const prop = inventorySlot(kind);
       const current = Number(party[prop] && party[prop][id]) || 0;
       const delta = count - current;
-      // gainItem handles both directions (and clamps at 0 when equipped gear
-      // can't be taken); report the resulting truth, not the request.
+      // gainItem first so a working engine keeps its bookkeeping; the writeback
+      // then pins the exact count when gainItem is stubbed or scaled.
       if (delta !== 0) withRatesSuppressed(() => party.gainItem(runtimeDataTable(kind)[id], delta));
+      writeBackItemCount(party, prop, id, count);
       return { kind, id, count: Number(party[prop] && party[prop][id]) || 0 };
     },
 

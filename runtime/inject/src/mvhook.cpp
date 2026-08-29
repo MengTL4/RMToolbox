@@ -17,6 +17,13 @@
 //      throw, which reads as an empty Run: the detour then re-arms and lets
 //      the next context retry.
 //
+//   4. Self-unload. The worker FreeLibraryAndExitThread's itself as soon as
+//      the eval has succeeded or definitively failed — nothing of ours stays
+//      mapped afterwards. Protected games (再刷一把, Nightmare without return,
+//      三国志潜龙在渊) run periodic module-integrity scans and force a crashpad
+//      dump + exit (code 0xE0000008) when a parked foreign DLL is found; the
+//      JS bridge they never notice, only the native residue.
+//
 // All V8 objects are passed around as opaque pointer-sized handles — Local<T>
 // and MaybeLocal<T> are single-pointer wrappers. MSVC (BOTH arches) returns
 // them through a hidden out pointer (user-provided default ctors make them
@@ -100,6 +107,7 @@ static volatile DWORD g_lastRetry = 0; // GetTickCount of the last context miss
 static HANDLE g_evEvalDone = NULL;
 static volatile LONG g_evalState = 0; // 0 pending, 1 ok, 2 fail
 static char g_evalDetail[512];
+static HINSTANCE g_hinst = NULL; // for the self-unload (see header)
 
 // Resolve one symbol from nw.dll, falling back to node.dll.
 static FARPROC resolveV8(const char* mangled) {
@@ -353,17 +361,28 @@ static DWORD WINAPI workerThreadBody(LPVOID) {
 
   disableHooks();
   MH_Uninitialize();
+  bufFree(&g_bootstrap); // the detour already copied the source into V8
   CloseHandle(pipe);
   if (g_evEvalDone) CloseHandle(g_evEvalDone);
   return 0;
 }
 
 static DWORD WINAPI workerThread(LPVOID arg) {
-  return workerThreadBody(arg);
+  workerThreadBody(arg);
+  // Job done (or failed) — get out of the process. FreeLibraryAndExitThread
+  // runs DLL_PROCESS_DETACH (our DllMain ignores it) and never returns; every
+  // exit from here on must go through this tail, never a plain return.
+  dbgLog(DBG, "self-unloading");
+  if (g_hinst) {
+    FreeLibraryAndExitThread(g_hinst, 0);
+  }
+  ExitThread(0);
+  return 0; // never reached
 }
 
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
+    g_hinst = hinst;
     DisableThreadLibraryCalls(hinst);
     char exe[MAX_PATH];
     DWORD n = GetModuleFileNameA(NULL, exe, sizeof(exe));
