@@ -258,7 +258,9 @@ export function launchShadowGame({ projectRoot, scan, gameKey, port, token }) {
       RMCH_WS_PORT: String(port),
       RMCH_WS_TOKEN: token
     },
-    windowsHide: true
+    // No windowsHide (see launcher.mjs): SW_HIDE in STARTUPINFO makes old
+    // NW.js builds create the game window invisible.
+    windowsHide: false
   });
   child.unref();
   return { appDir, gameExe, profileDir, pid: child.pid };

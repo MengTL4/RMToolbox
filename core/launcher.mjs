@@ -131,7 +131,12 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
         RMCH_WS_PORT: String(port),
         RMCH_WS_TOKEN: token
       },
-      windowsHide: true
+      // Do NOT set windowsHide here: it lands in the child's STARTUPINFO as
+      // SW_HIDE, and old NW.js builds (0.29-era MV games) create their main
+      // window with SW_SHOWDEFAULT, which honors it — the game window is born
+      // invisible while the page runs normally. Game.exe is GUI-subsystem,
+      // so there is no console window to hide anyway.
+      windowsHide: false
     });
     child.unref();
     processInfo = { pid: child.pid, profileDir };

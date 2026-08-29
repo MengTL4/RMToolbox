@@ -36,7 +36,11 @@
 
   function ensureDir() {
     try {
-      fs.mkdirSync(bridgeDir, { recursive: true });
+      // existsSync first: NW.js 0.29 ships Node 9.7.1, where mkdirSync has no
+      // recursive option and an existing dir throws EEXIST. The throw is
+      // caught here either way — but it would pollute bridge.lastError, which
+      // settleResult (55-transport.js) reports as the command's error text.
+      if (!fs.existsSync(bridgeDir)) fs.mkdirSync(bridgeDir, { recursive: true });
     } catch (error) {
       bridge.lastError = String(error && error.stack || error);
     }

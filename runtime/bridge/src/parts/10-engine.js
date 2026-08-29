@@ -161,15 +161,27 @@
     return targets;
   }
 
+  // flatMap one level without Array.prototype.flatMap: MV games on NW.js 0.29
+  // (Chromium 65) do not have it, and this runs on the hook hot path for every
+  // engine generation.
+  function flatMapOne(list, fn) {
+    const out = [];
+    list.forEach((item, index) => {
+      const mapped = fn(item, index);
+      for (let i = 0; i < mapped.length; i += 1) out.push(mapped[i]);
+    });
+    return out;
+  }
+
   function partyMemberPrototypeTargets(label) {
-    return getPartyMembers(resolveParty()).flatMap((actor, index) => {
+    return flatMapOne(getPartyMembers(resolveParty()), (actor, index) => {
       const actorId = actorIdOf(actor) || index + 1;
       return runtimePrototypeChainTargets(`${label}.actor${actorId}`, actor, 5);
     });
   }
 
   function troopEnemyPrototypeTargets(label) {
-    return troopEnemies(false).flatMap((enemy, index) => {
+    return flatMapOne(troopEnemies(false), (enemy, index) => {
       let enemyId = index + 1;
       try {
         enemyId = typeof enemy.enemyId === "function" ? enemy.enemyId() : enemy._enemyId || enemyId;

@@ -122,7 +122,11 @@
 
   function ensureDir() {
     try {
-      fs.mkdirSync(bridgeDir, { recursive: true });
+      // existsSync first: NW.js 0.29 ships Node 9.7.1, where mkdirSync has no
+      // recursive option and an existing dir throws EEXIST. The throw is
+      // caught here either way — but it would pollute bridge.lastError, which
+      // settleResult (55-transport.js) reports as the command's error text.
+      if (!fs.existsSync(bridgeDir)) fs.mkdirSync(bridgeDir, { recursive: true });
     } catch (error) {
       bridge.lastError = String(error && error.stack || error);
     }
@@ -318,15 +322,27 @@
     return targets;
   }
 
+  // flatMap one level without Array.prototype.flatMap: MV games on NW.js 0.29
+  // (Chromium 65) do not have it, and this runs on the hook hot path for every
+  // engine generation.
+  function flatMapOne(list, fn) {
+    const out = [];
+    list.forEach((item, index) => {
+      const mapped = fn(item, index);
+      for (let i = 0; i < mapped.length; i += 1) out.push(mapped[i]);
+    });
+    return out;
+  }
+
   function partyMemberPrototypeTargets(label) {
-    return getPartyMembers(resolveParty()).flatMap((actor, index) => {
+    return flatMapOne(getPartyMembers(resolveParty()), (actor, index) => {
       const actorId = actorIdOf(actor) || index + 1;
       return runtimePrototypeChainTargets(`${label}.actor${actorId}`, actor, 5);
     });
   }
 
   function troopEnemyPrototypeTargets(label) {
-    return troopEnemies(false).flatMap((enemy, index) => {
+    return flatMapOne(troopEnemies(false), (enemy, index) => {
       let enemyId = index + 1;
       try {
         enemyId = typeof enemy.enemyId === "function" ? enemy.enemyId() : enemy._enemyId || enemyId;
@@ -1532,16 +1548,20 @@
     try {
       payload = execute(type, args || {});
     } catch (error) {
-      log("command failed", { type, error: noteError(error) });
-      reply(false, bridge.lastError);
+      // Capture the text BEFORE log(): any file I/O inside log() may set
+      // bridge.lastError again (e.g. mkdir quirks on old embedded Node).
+      const text = noteError(error);
+      log("command failed", { type, error: text });
+      reply(false, text);
       return;
     }
     if (payload && typeof payload.then === "function") {
       payload.then(
         (value) => reply(true, value === undefined ? null : value),
         (error) => {
-          log("command failed (async)", { type, error: noteError(error) });
-          reply(false, bridge.lastError);
+          const text = noteError(error);
+          log("command failed (async)", { type, error: text });
+          reply(false, text);
         }
       );
       return;
