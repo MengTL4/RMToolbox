@@ -13,7 +13,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-const MODULES = [
+// Exported so tools/gui-check.mjs can scan exactly the files the GUI will run.
+export const MODULES = [
   "core/ws-server.mjs",
   "core/token.mjs",
   "core/rgss-marshal.mjs",

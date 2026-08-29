@@ -101,6 +101,11 @@ pacman -S mingw-w64-i686-gcc mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-lld
 
 三个必须知道的约束（细节见 `app/gui/vendor/README.md`）：
 
+- **GUI 内嵌 Node 是 16.1**（不是开发机的系统 Node）：`fs.cpSync`（16.7+）之类的 API
+  在 CLI 测试里全绿、在 GUI 里点了按钮才炸。被打包进 gui-bundle 的 core 模块只能
+  用 16.1 就有的 API；另外 16.1 的 `rmSync(link)` 删不掉 junction（EISDIR），要
+  `rmSync(link, {recursive:true})`（不穿透，只删链接）。`gui-check.mjs` 会扫描
+  bundle 模块里的已知超新 API。
 - **Naive UI 锁 2.35.0**：借用的 NW.js 运行时是 0.54 = Chromium 91，2.36+ 的 bundle
   带 ES2022 的 class `static {}` 块，Chromium 91 直接 SyntaxError（整个窗口白屏）。
 - **Naive UI 和 jsoneditor 都是 UMD**，而 NW.js 会把 `module`/`exports` 注入页面，会让它们走

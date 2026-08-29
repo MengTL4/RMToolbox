@@ -1,5 +1,38 @@
 # RMCH 验收记录
 
+## v0.4.1：GUI 内嵌 Node 16.1 兼容热修（2026-08-29 深夜）
+
+用户报告两个「启动并注入」问题，排查结论一真一假：
+
+### ① 再刷一把 PlayAgain（L3 shadow）GUI 启动报 "cpSync is not a function" —— 真 bug，已修
+
+GUI 的内嵌运行时（借用的 NW 0.54）Node 版本是 **16.1.0**（CDP 实测 `process.version`），
+而 `fs.cpSync` 要 **16.7** 才有；CLI 走系统 Node 所以同样的启动在命令行完全正常。
+连环挖出两个同类坑，都在 shadow 重建路径上：
+
+- `shadow-launcher.mjs` 三处 `cpSync`（全是单文件拷贝）→ 换 `copyFileSync`。
+- **Node 16.1 删不掉 junction**：`rmSync(junction, {force:true})` 抛 `ERR_FS_EISDIR`
+  （junction 是 mount point，fs.rm 的 unlink 路径不吃；新版 Node 才自动改走 rmdir）。
+  实测 16.1 上 `rmSync(junction, {recursive:true, force:true})` 正常且**不穿透**——
+  只删链接本身，目标目录内容完好。`junctionDir` / bg-script 抠除 / `linkOrCopyFile`
+  三处统一成 recursive rm。这是「第二次启动 shadow 游戏必挂」的根因：首次建影子
+  （全量 junction）成功，重建时逐个删不掉旧 junction。
+- 防回归：`gui-check.mjs` 新增对 gui-bundle 全部模块 + host.cjs 的「Node 16.1 没有的
+  API」扫描（`MODULES` 从 gui-bundler 导出）；已知超新 API（`.at()`、`structuredClone`
+  等）grep 确认全仓库零使用。
+
+实机验证（GUI 内 CDP 驱动真实 `server.launch`）：再刷一把 PlayAgain shadow 启动成功、
+bridge 连上、23 hooks、MV 1.6.1 识别正常。
+
+### ② 真龙传（MV 1.6.1 / NW 0.29 x86）启动后修改器找不到游戏 —— 当前代码不复现
+
+完整复现用户路径（新 GUI → 游戏库卡片「启动并注入」→ 修改器下拉框）：会话正常出现、
+`trainer.options.get` 正常返回。bridge.log 显示该游戏历史上每次「bridge injected」
+后 WS 都连上了；唯一相关故障（`flatMap is not a function`，Chromium 64 没有 ES2019）
+已在 v0.3.1 修掉（手写 `flatMapOne`）。判断为旧构建（v0.3.1 之前的包）或陈旧 GUI
+进程所致；0.4.x 包不应再有。若仍复现，备选解释是有僵尸 `serve.mjs` 占用 47412
+（bridge 连到旧进程上，GUI 自己的服务器自然看不到会话）。
+
 ## v0.4.0：附加到运行中（MTool 式 DLL 注入，2026-08-29）
 
 用户要求：游戏已经自己开起来了，RMCH 也能连上去（对标 MTool 的附加方式），

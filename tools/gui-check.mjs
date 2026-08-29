@@ -12,9 +12,23 @@ import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
+import { MODULES as GUI_BUNDLED_MODULES } from "../core/gui-bundler.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const guiDir = path.join(projectRoot, "app", "gui");
+
+// The GUI's embedded Node is 16.1 (NW 0.54), older than the dev machine's.
+// Node APIs younger than that in a bundled core module only blow up when a
+// user clicks the button (cpSync broke shadow launches), so check up front.
+const TOO_NEW_NODE_APIS = [
+  [/\bcpSync\b/, "fs.cpSync (Node 16.7+, GUI 是 16.1)"],
+];
+for (const mod of [...GUI_BUNDLED_MODULES, "app/gui/host.cjs"]) {
+  const source = readFileSync(path.join(projectRoot, mod), "utf8");
+  for (const [pattern, label] of TOO_NEW_NODE_APIS) {
+    if (pattern.test(source)) fail(`${mod} 使用了 ${label}`);
+  }
+}
 
 // Load order comes from app/gui/index.html itself, so the two cannot drift.
 const indexHtml = readFileSync(path.join(guiDir, "index.html"), "utf8");
