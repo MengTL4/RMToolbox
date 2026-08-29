@@ -3,9 +3,9 @@
 免费开源的 RPG Maker 单机游戏修改器，Windows 平台。自带图形界面，
 不改游戏目录里的任何文件：启动游戏时把修改功能一起带进去，关掉就没了。
 
-支持 **MV / MZ**（功能最全）和 **XP / VX / VX Ace**（RGSS 系列，金钱/物品/
-开关/变量/角色/地图传送等数据读写；无敌倍率、存档编辑等 hook 类功能暂为
-MV/MZ 独有）。
+支持 **MV / MZ** 和 **XP / VX / VX Ace**（RGSS 系列）：修改器、数据读写、
+存档编辑等核心功能两边基本一致；个别能力因引擎本身差异略有出入
+（RGSS 没有自开关、XP 没有物品图标表、部分角色操作仅 VX Ace 可用）。
 
 ![游戏库](docs/screenshots/library.png)
 ![修改器](docs/screenshots/trainer.png)
