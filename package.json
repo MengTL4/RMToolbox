@@ -1,6 +1,6 @@
 {
   "name": "rmch",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "RM Toolbox (internal codename RMCH): trainer for local single-player RPG Maker MV/MZ (NW.js) and XP/VX/VX Ace (RGSS) games",

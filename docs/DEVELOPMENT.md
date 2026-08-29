@@ -141,7 +141,9 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
 - **策略 A（extension）**：原版 Game.exe + `--load-extension=<bridge扩展>`（MV/MZ 默认）。
   附带私有 `--user-data-dir=runtime/profiles/<gameKey>`（持久、按游戏隔离）——大量游戏
   manifest 都叫 `rmmz-game`，共享 profile 会让「单实例检测」杀掉后启动的游戏、以及
-  新版 NW 写过的 profile 弄坏旧版游戏
+  新版 NW 写过的 profile 弄坏旧版游戏。**spawn 不能开 `windowsHide`**：它会往子进程的
+  STARTUPINFO 写 SW_HIDE，NW.js 0.29 时代的老 MV 游戏用 `SW_SHOWDEFAULT` 建窗口、直接
+  继承成隐藏窗口（页面照跑、bridge 照连，但用户永远看不到游戏）。
 - **策略 B（shadow）**：bg-script 启动链游戏专用 —— 影子目录（硬链接+Junction）+ 补丁版 bg-script +
   `process.cwd/execPath/nw.App.manifest` 环境伪装，对付检测/杀扩展的游戏。影子 `save/` 始终 junction
   回真实游戏根（root 布局重建时先把影子残留存档按 mtime 较新者胜合并回去），存档读写直达真实目录。

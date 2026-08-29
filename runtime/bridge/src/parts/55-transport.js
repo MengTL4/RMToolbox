@@ -51,16 +51,20 @@
     try {
       payload = execute(type, args || {});
     } catch (error) {
-      log("command failed", { type, error: noteError(error) });
-      reply(false, bridge.lastError);
+      // Capture the text BEFORE log(): any file I/O inside log() may set
+      // bridge.lastError again (e.g. mkdir quirks on old embedded Node).
+      const text = noteError(error);
+      log("command failed", { type, error: text });
+      reply(false, text);
       return;
     }
     if (payload && typeof payload.then === "function") {
       payload.then(
         (value) => reply(true, value === undefined ? null : value),
         (error) => {
-          log("command failed (async)", { type, error: noteError(error) });
-          reply(false, bridge.lastError);
+          const text = noteError(error);
+          log("command failed (async)", { type, error: text });
+          reply(false, text);
         }
       );
       return;
