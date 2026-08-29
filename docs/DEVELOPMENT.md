@@ -9,8 +9,13 @@
 ```
 core/            ESM 核心模块
   scanner.mjs        引擎(MV/MZ/XP/VX/Ace/RM2k) + 保护等级(L0-L3) + 布局识别
-  launcher.mjs       注入启动（策略自动选择）
+  launcher.mjs       注入启动（策略自动选择，RGSS 分发到 rgss-launcher）
   shadow-launcher.mjs 策略B：影子目录 + 补丁 bg-script + 环境伪装
+  rgss.mjs           RGSS(XP/VX/Ace) 识别(Game.ini Library 字段) + shadow 构建 + 脚本注入
+  rgss-launcher.mjs  RGSS 启动 + 文件轮询传输层 + 会话注册表 + 存档回同步
+  rgss-marshal.mjs   最小 Ruby Marshal 读写（Scripts 归档条目字节级拼接）
+  rgss-archive.mjs   RGSSAD v1/v3 加密归档索引解析/提取/免重建打补丁
+  rgss-savecode.mjs  save.contents.apply 的 tagged JSON 树 → Ruby 源码 codegen
   ws-server.mjs      零依赖 RFC6455 WebSocket 服务器（127.0.0.1:47412，token 鉴权）
   bridge-bundler.mjs runtime/bridge/src/parts → page-bridge.js 组装（含构建期语法校验）
   gui-bundler.mjs    ESM core → app/gui/gui-bundle.cjs（NW 窗口 require 不支持 ESM）
@@ -34,25 +39,32 @@ runtime/bridge/  注入游戏的通用 bridge（同时就是 --load-extension �
 runtime/bridge-state/<gameKey>/   state.json / bridge.log / commands.jsonl / events.jsonl
 runtime/locks/<gameKey>.json      数据锁定集合（「保存锁定状态」写这里）
 runtime/shadow-apps/<gameKey>/    策略B 影子目录
+runtime/rgss-bridge/bridge.rb     注入 RGSS 游戏的 Ruby bridge（镜像 MV/MZ 命令词汇，须兼容 Ruby 1.8.1）
+runtime/rgss-shadow/<gameKey>/    RGSS shadow 副本（junction+hardlink，每次启动重建，不入库）
 runtime/profiles/<gameKey>/       策略A 游戏的私有 Chromium profile（按游戏隔离单实例锁）
 runtime/screenshots/              cdp.mjs 调试截图
 tools/           CLI（rmch.mjs / send.mjs / serve.mjs）、setup/launch 脚本、测试、验收驱动、
                  gui-check.mjs（GUI 预检）、cdp.mjs（零依赖 CDP 客户端）、
                  winshot.py（窗口截图，被遮挡的 NW.js 窗口也能截）、
                  bake-icon.mjs（零依赖图标烘焙：SDF 栅格化 → app/gui/icon.png）、
+                 rgss-probe.mjs（RGSS 冒烟测试）、rgss-dump-scripts.mjs（脚本 dump）、
+                 test-rgss-*.mjs（Marshal/归档/hook/存档/存档树编辑测试）、
                  pack-release.mjs（Release zip 打包）
 ```
 
 ## 构建与测试
 
 ```powershell
-npm test                                 # ws-server 合同 + bridge harness + GUI 预检
+npm test                                 # ws-server 合同 + bridge harness + shadow-launcher + rgss marshal/archive + GUI 预检
+npm run test:rgss                        # 只跑 RGSS 单元测试（设 RMCH_RGSS_SAMPLES 环境变量可启用真实归档用例）
 node tools/gui-check.mjs                 # 只跑 GUI 预检（模板编译 / store 引用 / vendor 校验）
 node tools/m2-acceptance.mjs <gameRoot>  # 全链路验收（启动→连接→命令→退出）
+node tools/rgss-probe.mjs <gameRoot>     # RGSS 冒烟测试（注入→启动→连桥→读写数据）
 node tools/pack-release.mjs              # 构建 output/RMToolbox-v<version>-win-x64.zip
 ```
 
-四个游戏的验收记录见 [ACCEPTANCE.md](ACCEPTANCE.md)。
+四个游戏的验收记录见 [ACCEPTANCE.md](ACCEPTANCE.md)。RGSS（XP/VX/VX Ace）支持的
+完整实现细节、踩坑记录与实测矩阵见 [RGSS-HANDOVER.md](RGSS-HANDOVER.md)。
 
 ## GUI 技术栈（Vue 3 + Naive UI，无构建步骤）
 
@@ -135,6 +147,11 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   回真实游戏根（root 布局重建时先把影子残留存档按 mtime 较新者胜合并回去），存档读写直达真实目录。
   bg-script 在子目录（如 `bg_script/boot.js`）时该路径会从链接树里抠出来、在影子内重建真实目录——
   隔着 junction 写补丁会改掉游戏原文件
+- **RGSS（rgss-script）**：XP/VX/VX Ace 专用。shadow 副本（目录 junction + 文件 hardlink，
+  加密归档用真实副本）里往 Scripts 归档插一个 Ruby bridge 条目，位置在调用 `rgss_main`
+  的条目之前（它之后的代码永远不会执行）。通信走 shadow 目录里一对 append-only 文件
+  （RGSS 精简 Ruby 没有 socket 库）；游戏退出时把 shadow 里的存档同步回真实目录。
+  细节见 [RGSS-HANDOVER.md](RGSS-HANDOVER.md)
 
 ## 窗口显示看门狗（90-startup.js）
 
@@ -149,6 +166,10 @@ BGM 在放，但窗口永远不出现。bridge 在窗口从未可见期间每 1.
 bridge 是 WS 客户端，连 GUI/serve 的 `127.0.0.1:47412`（URL 携带 `runtime/rmch.token`）。
 断线指数退避重连；`runtime/bridge-state/<gameKey>/commands.jsonl` 文件队列作为兜底通道。
 命令结构化返回 `{ok, payload|error}`；handler 可同步或异步（MV/MZ 均支持）。
+
+RGSS 不走 WS：`runtime/rgss-shadow/<gameKey>/` 里的 `rmch-cmd.jsonl` / `rmch-res.jsonl`
+append-only 文件对，双方各自记录读偏移。bridge.rb 镜像同一套命令词汇（同名同 payload），
+GUI 前端零感知；host.cjs 的 `send()`/`listSessions()` 按 gameKey 路由到对应通道。
 
 ## 目录数据（关键设计）
 

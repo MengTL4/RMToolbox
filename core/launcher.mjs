@@ -14,6 +14,11 @@ import { scanGame, injectionStrategy } from "./scanner.mjs";
 import { buildBridge } from "./bridge-bundler.mjs";
 import { getToken } from "./token.mjs";
 import { launchShadowGame } from "./shadow-launcher.mjs";
+import { launchRgssGame, getRgssSession, listRgssSessions } from "./rgss-launcher.mjs";
+
+// The GUI host routes commands/sessions through these; re-export so it only
+// ever talks to this module.
+export { getRgssSession, listRgssSessions };
 
 function portInUse(port, host = "127.0.0.1") {
   return new Promise((resolve) => {
@@ -57,8 +62,27 @@ export async function ensureServer({ projectRoot, port, token }) {
 
 export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy = "auto", build = true }) {
   const scan = scanGame(gameRoot);
-  if (scan.engine.id === "RM2K" || scan.engine.id === "RGSS") {
+  if (scan.engine.id === "RM2K") {
     throw new Error(`engine "${scan.engine.id}" is not supported by the M1 injectors (planned: ${injectionStrategy(scan).id})`);
+  }
+  if (/^RGSS/i.test(scan.engine.id)) {
+    // RGSS games need no ws server and no extension build: the bridge is a
+    // Ruby entry spliced into the shadow copy's Scripts archive.
+    const handle = await launchRgssGame({ gameRoot: scan.root, projectRoot, gameKey: scan.gameKey });
+    return {
+      game: scan.title,
+      gameKey: scan.gameKey,
+      root: scan.root,
+      engine: scan.engine.id,
+      protection: scan.protection,
+      strategy: "rgss-script",
+      strategyReason: "shadow copy + Scripts archive entry before rgss_main",
+      pid: handle.child.pid,
+      shadowApp: handle.prepared.shadowRoot,
+      rgssSession: handle.session,
+      server: null,
+      port: null
+    };
   }
   if (!scan.paths.exe) throw new Error("Game.exe not found in game root");
 

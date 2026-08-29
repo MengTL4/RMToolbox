@@ -36,7 +36,11 @@
   }
 
   function slotOf(name) {
+    // MV/MZ: fileN.rpgsave / fileN.rmmzsave. RGSS: SaveN.rxdata (XP),
+    // SaveN.rvdata (VX), SaveNN.rvdata2 (VX Ace) — all 1-based like MV/MZ.
     var match = /^file(\d+)\.(rpgsave|rmmzsave)$/i.exec(name || "");
+    if (match) return Number(match[1]);
+    match = /^save(\d+)\.(rxdata|rvdata|rvdata2)$/i.exec(name || "");
     return match ? Number(match[1]) : null;
   }
 

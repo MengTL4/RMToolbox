@@ -78,7 +78,8 @@ async function boot() {
   const wsServer = await loadModule("core/ws-server.mjs");
   const launcher = await loadModule("core/launcher.mjs");
   const tokenMod = await loadModule("core/token.mjs");
-  state.modules = { scanner, wsServer, launcher, tokenMod };
+  const rgssArchive = await loadModule("core/rgss-archive.mjs");
+  state.modules = { scanner, wsServer, launcher, tokenMod, rgssArchive };
 
   state.libraryPath = path.join(state.projectRoot, "runtime", "gui-library.json");
   try {
@@ -134,9 +135,9 @@ function notifySessions() {
 }
 
 function listSessions() {
-  if (!state.server) return [];
+  const sessions = state.server ? state.server.listSessions() : [];
   // BridgeSession.describe() flattens its info ({...this.info, alive, state}).
-  return state.server.listSessions().map((session) => ({
+  const described = sessions.map((session) => ({
     gameKey: session.gameKey,
     alive: session.alive,
     bridgeVersion: session.bridgeVersion,
@@ -144,6 +145,13 @@ function listSessions() {
     connectedAt: session.connectedAt,
     state: session.state
   }));
+  // RGSS sessions live outside the WebSocket server (file channel) but must
+  // look identical to the page.
+  const { launcher } = state.modules || {};
+  if (launcher && launcher.listRgssSessions) {
+    return described.concat(launcher.listRgssSessions());
+  }
+  return described;
 }
 
 function saveLibrary() {
@@ -196,6 +204,20 @@ async function launch(gameRoot) {
     strategy: summary.strategy,
     pid: summary.pid
   });
+  // RGSS sessions bypass the WebSocket server; wire their events into the same
+  // GUI sinks here so the page cannot tell the difference.
+  const rgssSession = summary.rgssSession;
+  if (rgssSession) {
+    guiLog("bridge connected", { gameKey: summary.gameKey, channel: "file" });
+    rgssSession.on("state", (gameState) => {
+      if (state.onState) state.onState(summary.gameKey, gameState);
+    });
+    rgssSession.on("close", () => {
+      guiLog("bridge disconnected", { gameKey: summary.gameKey });
+      notifySessions();
+    });
+    notifySessions();
+  }
   return summary;
 }
 
@@ -212,6 +234,12 @@ function stop(pid) {
 }
 
 function send(gameKey, type, args) {
+  // RGSS sessions sit outside the WebSocket server; route by gameKey first.
+  const launcher = state.modules && state.modules.launcher;
+  if (launcher && launcher.getRgssSession) {
+    const rgss = launcher.getRgssSession(gameKey);
+    if (rgss) return rgss.send(type, args || {});
+  }
   if (!state.server) return Promise.reject(new Error("server not started"));
   return state.server.sendCommand(gameKey, type, args || {});
 }
@@ -241,6 +269,12 @@ function saveDirOf(gameKey) {
   return null;
 }
 
+// Only real save files are copied: for RGSS games the save directory is often
+// the game root itself, and an unfiltered copy would drag Game.exe and the
+// archive into every backup. MV/MZ save dirs contain nothing but these
+// extensions anyway, so the filter is a no-op there.
+const SAVE_FILE_EXT_RE = /\.(rpgsave|rmmzsave|rxdata|rvdata|rvdata2)$/i;
+
 function backupSaves(gameKey) {
   const sourceDir = saveDirOf(gameKey);
   if (!sourceDir || !fs.existsSync(sourceDir)) throw new Error(`save directory not found for "${gameKey}"`);
@@ -249,6 +283,7 @@ function backupSaves(gameKey) {
   fs.mkdirSync(destDir, { recursive: true });
   let count = 0;
   for (const entry of fs.readdirSync(sourceDir)) {
+    if (!SAVE_FILE_EXT_RE.test(entry)) continue;
     const source = path.join(sourceDir, entry);
     if (fs.statSync(source).isFile()) {
       fs.copyFileSync(source, path.join(destDir, entry));
@@ -344,6 +379,18 @@ function deleteSaveFile(gameKey, fileName) {
   const target = path.join(dir, name);
   if (!fs.existsSync(target)) throw new Error(`file not found: ${name}`);
   fs.unlinkSync(target);
+  // An RGSS shadow copy (live session or leftover) would resurrect the file
+  // on the next save sync, so remove it too. Junctioned subdirectories point
+  // at the real directory, where the unlink above already landed — those
+  // attempts just miss. Best-effort: the real delete already succeeded.
+  const shadowRoot = path.join(state.projectRoot, "runtime", "rgss-shadow", gameKey);
+  try {
+    for (const entry of [".", ...fs.readdirSync(shadowRoot)]) {
+      const sub = entry === "." ? shadowRoot : path.join(shadowRoot, entry);
+      if (!fs.statSync(sub).isDirectory()) continue;
+      fs.rmSync(path.join(sub, name), { force: true });
+    }
+  } catch (_) {}
   guiLog("save file deleted", { gameKey, name });
   return { gameKey, name, deleted: true };
 }
@@ -373,9 +420,28 @@ function gameIcon(root) {
 }
 
 // The shared icon sheet items/weapons/armors/skills/states index into.
+// MV/MZ: www/img/system/IconSet.png (32px cells). RGSS2/3 (VX/Ace): the same
+// sheet concept at Graphics/System/IconSet.png (24px cells) — encrypted games
+// keep it inside the packed archive, so fall back to extracting the entry.
+// RGSS1 (XP) uses one file per icon (Graphics/Icons/<name>.png) and does not
+// expose icon_index through the bridge catalog, so no sheet applies there.
 function iconSetImage(root) {
   const file = path.join(root, "www", "img", "system", "IconSet.png");
-  return fs.existsSync(file) ? readImageDataUrl(file) : null;
+  if (fs.existsSync(file)) return readImageDataUrl(file);
+  const rgssFile = path.join(root, "Graphics", "System", "IconSet.png");
+  if (fs.existsSync(rgssFile)) return readImageDataUrl(rgssFile);
+  const { rgssArchive } = state.modules || {};
+  if (rgssArchive) {
+    for (const rel of ["Game.rgss3a", "Game.rgss2a"]) {
+      const archive = path.join(root, rel);
+      if (!fs.existsSync(archive)) continue;
+      try {
+        const bytes = rgssArchive.extractEntry(archive, "Graphics\\System\\IconSet.png");
+        return "data:image/png;base64," + Buffer.from(bytes).toString("base64");
+      } catch (_) {}
+    }
+  }
+  return null;
 }
 
 // --- value-lock persistence (MTool 保存/读取锁定状态) -------------------------
