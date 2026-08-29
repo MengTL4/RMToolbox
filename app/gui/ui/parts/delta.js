@@ -27,7 +27,7 @@
     },
     template: [
       '<n-flex :size="6" :wrap="true" align="center">',
-      '  <n-input-number :value="value" :min="min" :show-button="false" size="small"',
+      '  <n-input-number :value="value" :min="min" :show-button="false" :precision="0" size="small"',
       '                  :disabled="disabled" :placeholder="placeholder" style="flex: 1 1 96px; min-width: 88px"',
       '                  @update:value="v => $emit(\'update:value\', v)"',
       '                  @keyup.enter="$emit(\'commit\', value)"/>',

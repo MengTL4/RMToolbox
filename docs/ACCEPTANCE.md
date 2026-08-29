@@ -1,5 +1,75 @@
 # RMCH 验收记录
 
+## v0.4.2：附加注入存活率 + 物品数量整数化（2026-08-30 凌晨）
+
+用户报告两件事：①物品/武器/防具数量出现小数；②「附加到运行中」对三个带保护的
+游戏（Nightmare without return / 再刷一把 PlayAgain / 三国志潜龙在渊）会导致闪退或
+卡死（MTool 的附加同样挂，其主动注入正常）。逐项排查结果：
+
+### ① 数量小数 —— 游戏侧数据，工具箱读写两端已收口
+
+桥接全部写入路径（item.add / item.set / 锁定值）本来就逐个 `Math.floor`；
+小数来自游戏自身：倍率/增幅类插件会在容器里存 2.5 这样的分数。顺藤摸瓜还发现
+**再刷一把把 `Game_Party.prototype.gainItem` 换成了 native 空操作桩**——旧的
+item.set 走 gainItem 等于什么都没写。修复（bridge 侧，`62-commands-party.js`）：
+
+- item.set / item.add：先正常调 gainItem（能吃插件簿记的游戏不受影响），随后
+  **校验结果并对不上就直接写容器**（等效 gainItem 本体：写槽位 + map.requestRefresh），
+  空操作桩和放大插件都被钉回精确值。
+- item.list：数量**显示层取整**（`Math.round`），不动内存原值；RGSS 侧本来就 `.to_i`。
+- GUI 数量/锁定值输入框 `precision=0`，输不进小数。
+
+实机验证：再刷一把附加后 item.set 5018 号防具 1→5→(+3)→8→复原 1，全部精确；
+harness 新增两条断言（分数显示取整、桩 gainItem 下 set/add 落点精确）。
+
+### ② 附加注入闪退/卡死 —— 游戏反篡改扫描撞见常驻 DLL，已修
+
+实机复现：附加本身成功（eval state=1、bridge 注入、WS 连上），但 40~70 秒后游戏
+进程组整体消失，`Crashpad/reports` 留下新 dump——异常码 **0xE0000008**（自定义
+代码 + ntdll 地址），是游戏**周期性完整性扫描发现常驻的 rmch-mvhook.dll 后主动
+崩溃**，不是注入失败。对照实验：同一游戏走启动注入（扩展路径，零外来原生代码）
+挂同样的 bridge/hooks 长时间存活——它们只查原生残留，不查 JS。
+
+修复（两条都在 `runtime/inject/` + `core/attach.mjs`）：
+
+- **mvhook.dll 评估完立即自卸载**（FreeLibraryAndExitThread；失败路径同样卸载），
+  顺带释放 bootstrap 缓冲。外来模块暴露窗口从「永久」缩到几秒。
+- **attach 逐个渲染器尝试、成功即停**（原来不管成败全部注一遍）；普通渲染器优先，
+  `--extension-process` 排后（再刷一把/梦魇无归这类游戏本体就是 chrome-extension
+  页面，只有 extension 渲染器，排后但不跳过）。
+
+### ③ 连带发现：潜龙在渊附加后工具箱「找不到游戏」—— WS 被拦，已修
+
+这个游戏（新版 x64 NW，扩展页形态）页面里的 `new WebSocket("ws://127.0.0.1:47412")`
+**根本连不上**（扩展页 CSP / Private-Network-Access；x86 老 NW 的那两个不受限），
+bridge 静默退回 commands.jsonl/events.jsonl 文件通道——而服务器原先只认 WS 会话，
+于是 GUI/CLI 全看不到它。修复：`BridgeServer` 新增 `stateDir` 选项，**收养文件通道
+会话**（state.json 每秒重写即心跳；命令写 commands.jsonl、从 events.jsonl 按
+commandId 收结果；WS 会话优先；state.json 陈旧即摘除）。host.cjs / serve.mjs 均已传入。
+
+### ④ 再连带：潜龙在渊的僵尸 WS 会话（pong 通、命令不通），已修
+
+GUI 重启后出现更刁钻的状态：潜龙在渊重连上了 WS（会话显示 alive、传输层 ping/pong
+正常），但**应用层命令全部 20 秒超时**——同一时刻它的文件通道明明活着（state.json
+每秒更新，手动往 commands.jsonl 追加命令 65ms 内执行并回结果）。即「半死 WS 会话」
+挡住了文件通道的收养（WS 优先规则），游戏在工具箱里看得见、用不了。修复
+（`core/ws-server.mjs`）：
+
+- **命令超时即剔除会话**：WS 会话的 cmd 超时后主动 drop，让文件收养或 bridge 自重连
+  接管，不再僵死占座。
+- **先探测后顶替**：某游戏已有新鲜文件会话时，新 WS 连接必须先用应用层 `ping` 命令
+  自证（8 秒），应答才转正替换；不应答的僵尸连接安静丢弃，永不顶掉可用的文件会话。
+
+实机验证（v0.4.2 全部本机真游戏跑过）：
+
+- 三个保护游戏：附加 → bridge 可用 → **长时间存活不闪退**（再刷一把顺带验证 item.set
+  精确写）；潜龙在渊经收养的文件会话正常应答 party.info 等命令。
+- 僵尸会话修复后：5 个测试游戏（含潜龙在渊）console.eval 全部即时应答。
+- 回归：三国真龙传（NW 0.29 x86，3 hooks）、大千世界2 Demo（x64）附加一切正常。
+- `npm test` 全绿（含 ws-server / bridge-harness 新断言 / gui-check 哨兵）。
+
+注意：RGSS（XP/VX/VX Ace）的「附加到运行中」依然没有真机验证过——本机没有这类游戏。
+
 ## v0.4.1：GUI 内嵌 Node 16.1 兼容热修（2026-08-29 深夜）
 
 用户报告两个「启动并注入」问题，排查结论一真一假：

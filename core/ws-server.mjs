@@ -11,16 +11,35 @@
 //   server -> client: {"t":"welcome"} {"t":"list","sessions":[...]}
 //                         {"t":"result",...} {"t":"state",...} {"t":"event",...}
 // The bridge identifies itself by URL path /bridge/<encodeURIComponent(gameKey)>.
+//
+// File-channel adoption: some games' pages cannot open a WebSocket at all
+// (strict extension CSP / Private-Network-Access on newer NW.js, e.g.
+// 三国志潜龙在渊). The in-page bridge falls back to the JSONL file channel
+// (runtime/bridge-state/<gameKey>/{state,commands,events}.jsonl), which a
+// WS-only server never sees. Given `stateDir`, the server scans it and adopts
+// any live file-channel bridge as a FileSession with the same interface, so
+// the GUI/CLI can drive those games too. A real WS session always wins over
+// an adopted one.
 
 import http from "node:http";
+import { appendFileSync, closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import path from "node:path";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { StringDecoder } from "node:string_decoder";
 
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const PING_INTERVAL_MS = 10000;
 const PONG_TIMEOUT_MS = 15000;
 const COMMAND_TIMEOUT_MS = 20000;
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
+// state.json is rewritten by the bridge every second; younger than this = alive.
+const FILE_FRESH_MS = 4000;
+const FILE_SCAN_MS = 1500;   // adoption scan period
+const FILE_POLL_MS = 250;    // events.jsonl / state.json poll per file session
+// App-level ping a WS newcomer must answer before it may replace a live file
+// session (zombie filter — see proveWebSocketSession).
+const PROBE_TIMEOUT_MS = 8000;
 
 export class BridgeServerError extends Error {}
 
@@ -184,11 +203,13 @@ function encodeFrame(opcode, payload) {
 }
 
 export class BridgeServer extends EventEmitter {
-  constructor({ port = 47412, token, host = "127.0.0.1" } = {}) {
+  constructor({ port = 47412, token, host = "127.0.0.1", stateDir = null } = {}) {
     super();
     this.port = port;
     this.host = host;
     this.token = token;
+    // runtime/bridge-state — enables file-channel adoption when set.
+    this.stateDir = stateDir;
     this.httpServer = null;
     /** @type {Map<string, Session>} gameKey -> session */
     this.sessions = new Map();
@@ -210,12 +231,18 @@ export class BridgeServer extends EventEmitter {
     this.httpServer = server;
     this.pingTimer = setInterval(() => this.pingAll(), PING_INTERVAL_MS);
     this.pingTimer.unref?.();
+    if (this.stateDir) {
+      this.fileScanTimer = setInterval(() => this.scanFileSessions(), FILE_SCAN_MS);
+      this.fileScanTimer.unref?.();
+      this.scanFileSessions();
+    }
     return this;
   }
 
   async stop() {
     this.stopped = true;
     clearInterval(this.pingTimer);
+    clearInterval(this.fileScanTimer);
     for (const session of this.sessions.values()) session.drop("server stopped");
     this.sessions.clear();
     if (this.clients) {
@@ -264,6 +291,18 @@ export class BridgeServer extends EventEmitter {
     }
 
     const previous = this.sessions.get(gameKey);
+    if (previous && previous.isFileSession && previous.fresh()) {
+      // The file channel is live, so this WS newcomer may be a zombie from a
+      // frozen page of the same game (pong flows, commands never come back).
+      // Make it prove itself with an app-level ping before it may take over.
+      this.proveWebSocketSession(gameKey, connection);
+      return;
+    }
+    this.registerSession(gameKey, connection);
+  }
+
+  registerSession(gameKey, connection) {
+    const previous = this.sessions.get(gameKey);
     if (previous) previous.drop("replaced by a new bridge connection");
 
     const session = new Session(gameKey, connection, this);
@@ -271,16 +310,79 @@ export class BridgeServer extends EventEmitter {
     connection.onmessage = (text) => session.handleMessage(text);
     connection.onclose = () => {
       session.clearPingDeadline();
-      if (this.sessions.get(gameKey) === session) this.sessions.delete(gameKey);
-      this.emit("session-closed", gameKey);
+      if (this.sessions.get(gameKey) === session) {
+        this.sessions.delete(gameKey);
+        this.emit("session-closed", gameKey);
+      }
     };
 
     session.sendJson({ t: "hello", ok: true });
     this.emit("session-open", gameKey);
+    return session;
+  }
+
+  // A WS newcomer shadowing a live file session stays unannounced until an
+  // app-level "ping" command comes back; only then does it replace the file
+  // session. Unproven zombies are dropped quietly (no session-open/closed
+  // noise — the probe timeout's own drop() closes the socket) and the
+  // bridge's reconnect backoff simply retries later.
+  proveWebSocketSession(gameKey, connection) {
+    const session = new Session(gameKey, connection, this);
+    connection.onmessage = (text) => session.handleMessage(text);
+    connection.onclose = () => session.clearPingDeadline();
+    session.sendJson({ t: "hello", ok: true });
+    session.sendCommand("ping", {}, PROBE_TIMEOUT_MS).then(
+      () => {
+        if (connection.closed) return;
+        const previous = this.sessions.get(gameKey);
+        if (previous) previous.drop("replaced by a verified ws bridge");
+        this.sessions.set(gameKey, session);
+        connection.onclose = () => {
+          session.clearPingDeadline();
+          if (this.sessions.get(gameKey) === session) {
+            this.sessions.delete(gameKey);
+            this.emit("session-closed", gameKey);
+          }
+        };
+        this.emit("session-open", gameKey);
+      },
+      () => {}
+    );
   }
 
   pingAll() {
     for (const session of this.sessions.values()) session.ping();
+  }
+
+  // Adopt live file-channel bridges (state.json fresh) that have no WS session,
+  // and drop adopted ones whose state.json has gone stale (game exited).
+  scanFileSessions() {
+    if (!this.stateDir || this.stopped) return;
+    let entries;
+    try {
+      entries = readdirSync(this.stateDir, { withFileTypes: true });
+    } catch (_) {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const gameKey = entry.name;
+      const existing = this.sessions.get(gameKey);
+      if (existing && !existing.isFileSession) continue; // WS session wins
+      const dir = path.join(this.stateDir, gameKey);
+      const fresh = FileSession.isFresh(dir);
+      if (existing) {
+        if (fresh) continue;
+        this.sessions.delete(gameKey);
+        existing.drop("state.json went stale");
+        this.emit("session-closed", gameKey);
+        continue;
+      }
+      if (!fresh) continue;
+      const session = new FileSession(gameKey, dir, this);
+      this.sessions.set(gameKey, session);
+      this.emit("session-open", gameKey);
+    }
   }
 
   // --- /client control channel ------------------------------------------------
@@ -454,6 +556,11 @@ class Session {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new BridgeServerError(`command "${type}" timed out after ${timeoutMs}ms`));
+        // Half-dead session: pong keeps flowing but commands never come back
+        // (seen on a protected game's frozen renderer holding a zombie WS
+        // while the live bridge talked over the file channel). Drop it so
+        // file-channel adoption or the bridge's own reconnect can take over.
+        this.drop(`command "${type}" timed out`);
       }, timeoutMs);
       timer.unref?.();
       this.pending.set(id, { resolve, reject, timer });
@@ -470,6 +577,167 @@ class Session {
     for (const entry of this.pending.values()) {
       clearTimeout(entry.timer);
       entry.reject(new BridgeServerError(reason));
+    }
+    this.pending.clear();
+  }
+}
+
+// --- file-channel sessions -----------------------------------------------------
+// A bridge whose page cannot open WebSockets (strict extension CSP / Private
+// Network Access on newer NW.js) talks over runtime/bridge-state/<gameKey>/:
+// it rewrites state.json every second (liveness), polls commands.jsonl for
+// work, and appends results to events.jsonl. FileSession adapts that to the
+// Session interface so clients cannot tell the difference.
+class FileSession {
+  constructor(gameKey, dir, server) {
+    this.isFileSession = true;
+    this.gameKey = gameKey;
+    this.dir = dir;
+    this.server = server;
+    this.statePath = path.join(dir, "state.json");
+    this.commandPath = path.join(dir, "commands.jsonl");
+    this.eventPath = path.join(dir, "events.jsonl");
+    this.info = { gameKey, bridgeVersion: null, engine: null, connectedAt: Date.now(), transport: "file" };
+    this.state = null;
+    this.pending = new Map();
+    this.lastStateText = "";
+    this.eventOffset = 0;
+    this.eventRemainder = "";
+    this.decoder = new StringDecoder("utf8");
+    try {
+      if (existsSync(this.eventPath)) this.eventOffset = statSync(this.eventPath).size;
+    } catch (_) {}
+    this.readState();
+    this.pollTimer = setInterval(() => {
+      this.readState();
+      this.readEvents();
+    }, FILE_POLL_MS);
+    this.pollTimer.unref?.();
+  }
+
+  static isFresh(dir) {
+    try {
+      return Date.now() - statSync(path.join(dir, "state.json")).mtimeMs < FILE_FRESH_MS;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  fresh() {
+    return FileSession.isFresh(this.dir);
+  }
+
+  describe() {
+    return { ...this.info, alive: this.fresh(), state: this.state };
+  }
+
+  readState() {
+    let text;
+    try {
+      text = readFileSync(this.statePath, "utf8");
+    } catch (_) {
+      return;
+    }
+    if (text === this.lastStateText) return;
+    this.lastStateText = text;
+    let state = null;
+    try {
+      state = JSON.parse(text);
+    } catch (_) {
+      return;
+    }
+    this.state = state;
+    if (!this.info.bridgeVersion && (state.bridgeVersion || state.engine)) {
+      this.info.bridgeVersion = state.bridgeVersion || null;
+      this.info.engine = state.engine || null;
+      this.server.emit("bridge-info", this.gameKey, this.info);
+    }
+    this.server.emit("state", this.gameKey, state);
+    this.server.broadcastToClients({ t: "state", gameKey: this.gameKey, state });
+  }
+
+  readEvents() {
+    let size;
+    try {
+      size = statSync(this.eventPath).size;
+    } catch (_) {
+      return;
+    }
+    if (size < this.eventOffset) this.eventOffset = 0; // file was truncated
+    if (size === this.eventOffset) return;
+    let text;
+    try {
+      const fd = openSync(this.eventPath, "r");
+      try {
+        const length = size - this.eventOffset;
+        const chunk = Buffer.allocUnsafe(length);
+        const got = readSync(fd, chunk, 0, length, this.eventOffset);
+        this.eventOffset += got;
+        text = this.decoder.write(got === length ? chunk : chunk.subarray(0, got));
+      } finally {
+        closeSync(fd);
+      }
+    } catch (_) {
+      return;
+    }
+    const lines = (this.eventRemainder + text).split(/\r?\n/);
+    this.eventRemainder = lines.pop();
+    for (const line of lines) {
+      if (!line) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch (_) {
+        continue;
+      }
+      if (!message || typeof message.commandId !== "string") continue;
+      // The bridge prefixes file-channel ids: commands.jsonl "f7" -> events "file:f7".
+      const id = message.commandId.replace(/^file:/, "");
+      const entry = this.pending.get(id);
+      if (!entry) continue;
+      this.pending.delete(id);
+      clearTimeout(entry.timer);
+      if (message.ok) entry.resolve(message.payload);
+      else {
+        const error = message.payload && message.payload.error;
+        entry.reject(new BridgeServerError(error || "command failed"));
+      }
+    }
+  }
+
+  sendCommand(type, args, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      if (!this.fresh()) {
+        reject(new BridgeServerError(`file bridge for "${this.gameKey}" is gone`));
+        return;
+      }
+      const id = `f${this.server.nextCommandId++}`;
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new BridgeServerError(`command "${type}" timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref?.();
+      try {
+        appendFileSync(this.commandPath, JSON.stringify({ commandId: id, ts: Date.now(), type, args }) + "\n", "utf8");
+      } catch (error) {
+        clearTimeout(timer);
+        reject(new BridgeServerError(`file queue write failed: ${error.message}`));
+        return;
+      }
+      this.pending.set(id, { resolve, reject, timer });
+      this.readEvents();
+    });
+  }
+
+  ping() {} // liveness is the adoption scanner's job (state.json freshness)
+
+  clearPingDeadline() {}
+
+  drop(reason) {
+    clearInterval(this.pollTimer);
+    for (const entry of this.pending.values()) {
+      clearTimeout(entry.timer);
+      entry.reject(new BridgeServerError(`file bridge dropped: ${reason}`));
     }
     this.pending.clear();
   }

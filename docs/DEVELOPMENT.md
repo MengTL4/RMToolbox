@@ -192,7 +192,13 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   （Blink 每帧 rAF 必经；`NewFromUtf8` 留作后备），在自然的 V8 调用点里
   `Script::Compile+Run` 一段 bootstrap——设好 RMCH_* env 后 indirect-eval `page-bridge.js`，
   之后走普通 WS 通道。bootstrap 在非游戏 context（NW 扩展背景页等）会主动 throw，
-  DLL 看到空结果就释放 claim、限频 400ms 等下一个 context 重试。RGSS：`rmch-rgsshook.dll`
+  DLL 看到空结果就释放 claim、限频 400ms 等下一个 context 重试。**评估完成（或彻底失败）
+  后 DLL 立即 FreeLibraryAndExitThread 自卸载**——带保护的游戏（再刷一把 / 梦魇无归 /
+  潜龙在渊）有周期性的模块完整性扫描，发现常驻外来 DLL 就主动崩溃（crashpad dump，
+  异常码 0xE0000008）；纯 JS 的 bridge 它们不查，所以启动注入（扩展路径）不受影响。
+  同一理由，attach 逐个渲染器尝试、**成功即停**（普通渲染器优先，`--extension-process`
+  的排后——再刷一把这类把游戏本体打包成 chrome-extension 页面的游戏只有后者）。
+  RGSS：`rmch-rgsshook.dll`
   经 SetWindowsHookEx 挂进游戏主线程，`rb_eval_string_protect` 执行渲染过的 `bridge.rb`，
   文件通道放 `runtime/rgss-attach/<gameKey>/`。
   **x86/x64 的 v8 ABI 都已实测**：`Local<T>`/`MaybeLocal<T>` 因带用户构造函数，两架构都走
@@ -213,6 +219,17 @@ BGM 在放，但窗口永远不出现。bridge 在窗口从未可见期间每 1.
 bridge 是 WS 客户端，连 GUI/serve 的 `127.0.0.1:47412`（URL 携带 `runtime/rmch.token`）。
 断线指数退避重连；`runtime/bridge-state/<gameKey>/commands.jsonl` 文件队列作为兜底通道。
 命令结构化返回 `{ok, payload|error}`；handler 可同步或异步（MV/MZ 均支持）。
+
+有的游戏页面根本开不了 WebSocket（新版 NW.js 的扩展页 CSP / Private-Network-Access
+拦截 `ws://127.0.0.1`，实测：潜龙在渊）——bridge 静默退回文件队列。服务器侧做了
+**文件通道收养**：`BridgeServer` 传入 `stateDir`（host.cjs 与 serve.mjs 都传了）后，
+周期性扫描 `runtime/bridge-state/*/state.json` 的新鲜度（bridge 每秒重写），把活着的
+文件通道 bridge 收养成与 WS 会话同接口的 FileSession（describe/sendCommand 一致，
+`transport: "file"` 标记），命令经 commands.jsonl 下发、events.jsonl 收结果；
+state.json 变陈旧（游戏退出）即摘掉。WS 会话优先于同名收养会话，但有两条防僵尸规则
+（实测：保护游戏的冻结渲染器会持有 pong 正常、命令永不应答的半死 WS）：
+WS 会话的 cmd 一旦超时即被剔除（给收养/重连让位）；已有新鲜文件会话时，新 WS 连接
+必须先应答一次应用层 `ping` 探测（8s）才允许转正顶替，否则安静丢弃。
 
 RGSS 不走 WS：`runtime/rgss-shadow/<gameKey>/` 里的 `rmch-cmd.jsonl` / `rmch-res.jsonl`
 append-only 文件对，双方各自记录读偏移。bridge.rb 镜像同一套命令词汇（同名同 payload），

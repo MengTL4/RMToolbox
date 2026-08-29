@@ -3,11 +3,15 @@
 // existing bridge bootstrap inside the game, and from there on everything
 // reuses the normal transports (WebSocket for MV/MZ, JSONL files for RGSS).
 //
-//   MV/MZ (NW.js): rmch-mvhook.dll is CreateRemoteThread-injected into the
-//     renderer child process, resolves the v8 C++ symbols exported by nw.dll,
-//     and Script::Compile+Run's a bootstrap that sets the RMCH_* env vars and
-//     then evals runtime/bridge/page-bridge.js — exactly what the launch-time
-//     extension does, so the bridge dials in over WS as usual.
+//   MV/MZ (NW.js): rmch-mvhook.dll is CreateRemoteThread-injected into ONE
+//     renderer child process at a time (plain renderers first, extension
+//     renderers last — games packaged as a chrome-extension page only have
+//     the latter), stopping at the first success. The DLL resolves the v8
+//     C++ symbols exported by nw.dll, Script::Compile+Run's a bootstrap that
+//     sets the RMCH_* env vars and evals runtime/bridge/page-bridge.js —
+//     exactly what the launch-time extension does — then UNLOADS ITSELF, so
+//     games with periodic module-integrity scans find no foreign residue.
+//     The bridge dials in over WS as usual.
 //   RGSS (XP/VX/VXAce): rmch-rgsshook.dll is loaded via SetWindowsHookEx on
 //     the game's main thread and rb_eval_string_protect's a rendered
 //     runtime/rgss-bridge/bridge.rb — after which the file channel runs from
@@ -257,9 +261,14 @@ async function attachNw({ scan, projectRoot, port }) {
   }
   const renderers = procs.filter((p) => /--type=renderer/.test(p.CommandLine || ""));
   const mains = procs.filter((p) => !/--type=/.test(p.CommandLine || ""));
-  // The page (and its V8 isolate) lives in a renderer child process. Some NW
-  // setups run single-process; fall back to the main process then.
-  const targets = renderers.length ? renderers : mains;
+  // Game pages usually live in a plain renderer; --extension-process renderers
+  // host background pages — but games packaged AS a chrome-extension page
+  // (再刷一把) only have the extension renderer, so it is tried last, not never.
+  // Some NW setups run single-process; fall back to the main process then.
+  const pageRenderers = renderers.filter((p) => !/--extension-process/.test(p.CommandLine || ""));
+  const extRenderers = renderers.filter((p) => /--extension-process/.test(p.CommandLine || ""));
+  const targets = [...pageRenderers, ...extRenderers];
+  if (!targets.length) targets.push(...mains);
 
   const arch = readPeArch(scan.paths.exe);
   const bootstrap = buildNwBootstrap({
@@ -268,14 +277,15 @@ async function attachNw({ scan, projectRoot, port }) {
 
   const results = [];
   for (const target of targets) {
-    results.push({
-      pid: target.ProcessId,
-      ...(await injectAndDeliver({
-        projectRoot, arch, pid: target.ProcessId,
-        dllName: "rmch-mvhook.dll", bootstrap, mode: "crt",
-        timeoutMs: INJECT_RESULT_TIMEOUT_MS
-      }))
+    const result = await injectAndDeliver({
+      projectRoot, arch, pid: target.ProcessId,
+      dllName: "rmch-mvhook.dll", bootstrap, mode: "crt",
+      timeoutMs: INJECT_RESULT_TIMEOUT_MS
     });
+    results.push({ pid: target.ProcessId, ...result });
+    // One live bridge is enough — every extra injection is more foreign-module
+    // exposure on games with integrity scans.
+    if (result.ok) break;
   }
   const ok = results.filter((r) => r.ok);
   if (!ok.length) {
