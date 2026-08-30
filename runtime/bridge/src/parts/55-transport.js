@@ -1,5 +1,5 @@
   // ---------------------------------------------------------------------------
-  // Transport. Two channels, one executor.
+  // Transport. Three channels, one executor.
   //
   //   WebSocket  — primary. The bridge is the CLIENT; the GUI (or `rmch serve`)
   //                hosts 127.0.0.1:47412. Reconnects with exponential backoff,
@@ -8,8 +8,16 @@
   //   JSONL file — fallback. commands.jsonl in / events.jsonl out, polled every
   //                250ms. Survives a missing server entirely, and is the only
   //                channel available when a game's CSP blocks WebSocket.
+  //   CDP outbox — Tauri shells (RMCH_TRANSPORT="cdp"). The page origin is
+  //                https://tauri.localhost and Chromium refuses ws:// loopback
+  //                from it, so nothing network-shaped can work from here.
+  //                Instead outbound messages pile up in window.__rmchOutbox,
+  //                which the launcher drains via Runtime.evaluate polling;
+  //                inbound commands arrive through window.__rmchDispatch evals.
+  //                (Runtime.enable/addBinding are NOT used: this game family's
+  //                watchdog kills the process the moment Runtime.enable lands.)
   //
-  // Both funnel into execute() and both must handle handlers that return a
+  // All funnel into execute() and all must handle handlers that return a
   // promise (MZ's loadGame does), which is what settleResult exists for.
   // ---------------------------------------------------------------------------
 
@@ -17,11 +25,26 @@
   let wsBackoffMs = 1000;
   let wsConnected = false;
 
+  // The transport mode arrives via the env shim (05-node-io reads
+  // window.__rmchEnv), so its value doubles as the CDP selector.
+  const cdpTransport = transportMode === "cdp";
+
   function wsUrl() {
     return `ws://127.0.0.1:${wsPort}/bridge/${encodeURIComponent(gameKey)}?token=${encodeURIComponent(wsToken)}`;
   }
 
   function wsSend(value) {
+    if (cdpTransport) {
+      try {
+        // Drained by the launcher's Runtime.evaluate polling (host side of
+        // the CDP link). Entries are JSON strings, joined with \n on drain —
+        // JSON.stringify never emits raw newlines, so the framing is safe.
+        (window.__rmchOutbox || (window.__rmchOutbox = [])).push(JSON.stringify(value));
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
     try {
       if (ws && ws.readyState === 1) {
         ws.send(JSON.stringify(value));
@@ -72,9 +95,54 @@
     reply(true, payload === undefined ? null : payload);
   }
 
+  // Shared by the WebSocket onmessage and the CDP __rmchDispatch entry: parse
+  // one inbound message and act on it. ping/pong keep WS sessions alive; cmd
+  // runs through settleResult and every result triggers a state push.
+  function handleIncoming(text) {
+    let message = null;
+    try {
+      message = JSON.parse(text);
+    } catch (_) {
+      return;
+    }
+    if (!message || typeof message !== "object") return;
+    if (message.t === "ping") {
+      wsSend({ t: "pong" });
+      return;
+    }
+    if (message.t !== "cmd") return;
+    const id = message.id;
+    settleResult(message.type, message.args, (ok, value) => {
+      const result = { t: "result", id, ok };
+      if (ok) result.payload = value;
+      else result.error = value;
+      wsSend(result);
+      // The GUI treats every result as a chance to re-render live values.
+      writeState();
+    });
+  }
+
   // --- WebSocket --------------------------------------------------------------
 
   function connectWs() {
+    if (cdpTransport) {
+      // No socket at all: outbound piles into window.__rmchOutbox (drained by
+      // the launcher's polling), inbound arrives via window.__rmchDispatch
+      // (eval'd by the launcher over the same CDP link).
+      wsConnected = true;
+      window.__rmchDispatch = function (text) {
+        handleIncoming(String(text));
+      };
+      wsSend({
+        t: "hello",
+        bridgeVersion: bridge.version,
+        engine: engineInfo(),
+        gameKey,
+        profile: bridge.profile || null
+      });
+      writeState();
+      return;
+    }
     let socket = null;
     try {
       socket = new WebSocket(wsUrl());
@@ -99,27 +167,7 @@
     };
 
     socket.onmessage = function (socketEvent) {
-      let message = null;
-      try {
-        message = JSON.parse(socketEvent.data);
-      } catch (_) {
-        return;
-      }
-      if (!message || typeof message !== "object") return;
-      if (message.t === "ping") {
-        wsSend({ t: "pong" });
-        return;
-      }
-      if (message.t !== "cmd") return;
-      const id = message.id;
-      settleResult(message.type, message.args, (ok, value) => {
-        const result = { t: "result", id, ok };
-        if (ok) result.payload = value;
-        else result.error = value;
-        wsSend(result);
-        // The GUI treats every result as a chance to re-render live values.
-        writeState();
-      });
+      handleIncoming(socketEvent.data);
     };
 
     socket.onclose = function () {
@@ -148,6 +196,8 @@
   }
 
   function pollCommands() {
+    // No fs (Tauri degraded mode) means no JSONL channel to poll at all.
+    if (!fileIo || !commandPath) return;
     try {
       ensureDir();
       if (!fs.existsSync(commandPath)) return;

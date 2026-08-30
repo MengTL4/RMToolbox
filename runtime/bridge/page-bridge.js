@@ -85,10 +85,12 @@
   // store-slice pattern (app/gui/ui/store/*.js) on purpose.
   const commandHandlers = Object.create(null);
   // ---------------------------------------------------------------------------
-  // Node I/O. The bridge runs in a NW.js page, so `require` is available — but
-  // only inside the game's own context, which is exactly why this bails loudly
-  // instead of limping on. Everything below is paths + append-only writers;
-  // the JSONL files double as the fallback command channel (55-transport.js).
+  // Node I/O. In a NW.js page `require` is available — but only inside the
+  // game's own context. In a Tauri shell (WebView2) there is no Node at all:
+  // config then comes from window.__rmchEnv and every writer below degrades
+  // to a no-op, leaving the CDP outbox as the only transport (55-transport).
+  // Everything below is paths + append-only writers; the JSONL files double
+  // as the fallback command channel where fs exists.
   // ---------------------------------------------------------------------------
 
   function tryRequire(name) {
@@ -102,25 +104,41 @@
 
   const fs = tryRequire("fs");
   const path = tryRequire("path");
-  if (!fs || !path || typeof process === "undefined") {
+
+  // Two runtime contexts:
+  //   NW.js page  — require/process exist; RMCH_* arrive via process.env.
+  //   Tauri shell — no Node at all. The CDP bootstrap (core/tauri-cdp.mjs)
+  //     leaves config on window.__rmchEnv and file I/O degrades to no-ops:
+  //     the JSONL fallback channel, state.json and bridge.log all need fs,
+  //     so under RMCH_TRANSPORT="cdp" everything moves over the CDP link.
+  const envShim = window.__rmchEnv || null;
+  if ((!fs || !path || typeof process === "undefined") && !envShim) {
     bridge.lastError = "Node require/process is unavailable in page context";
     return;
+  }
+  const fileIo = !!(fs && path);
+
+  function envVar(name) {
+    if (typeof process !== "undefined" && process.env && process.env[name]) return process.env[name];
+    return (envShim && envShim[name]) || "";
   }
 
   // RMCH_* environment variables are set by the launcher (core/launcher.mjs).
   // State lives under <projectRoot>/runtime/bridge-state/<gameKey>/.
-  const gameRoot = process.env.RMCH_GAME_ROOT || process.cwd();
-  const projectRoot = process.env.RMCH_PROJECT_ROOT || path.join(gameRoot, "RMCH");
-  const gameKey = process.env.RMCH_GAME_KEY || "unknown";
-  const wsPort = Number(process.env.RMCH_WS_PORT) || 47412;
-  const wsToken = process.env.RMCH_WS_TOKEN || "";
-  const bridgeDir = path.join(projectRoot, "runtime", "bridge-state", gameKey);
-  const commandPath = path.join(bridgeDir, "commands.jsonl");
-  const eventPath = path.join(bridgeDir, "events.jsonl");
-  const statePath = path.join(bridgeDir, "state.json");
-  const logPath = path.join(bridgeDir, "bridge.log");
+  const gameRoot = envVar("RMCH_GAME_ROOT") || (typeof process !== "undefined" ? process.cwd() : "");
+  const projectRoot = envVar("RMCH_PROJECT_ROOT") || (fileIo ? path.join(gameRoot, "RMCH") : "");
+  const gameKey = envVar("RMCH_GAME_KEY") || "unknown";
+  const wsPort = Number(envVar("RMCH_WS_PORT")) || 47412;
+  const wsToken = envVar("RMCH_WS_TOKEN") || "";
+  const transportMode = envVar("RMCH_TRANSPORT") || "auto";
+  const bridgeDir = fileIo && projectRoot ? path.join(projectRoot, "runtime", "bridge-state", gameKey) : null;
+  const commandPath = bridgeDir ? path.join(bridgeDir, "commands.jsonl") : null;
+  const eventPath = bridgeDir ? path.join(bridgeDir, "events.jsonl") : null;
+  const statePath = bridgeDir ? path.join(bridgeDir, "state.json") : null;
+  const logPath = bridgeDir ? path.join(bridgeDir, "bridge.log") : null;
 
   function ensureDir() {
+    if (!fileIo || !bridgeDir) return;
     try {
       // existsSync first: NW.js 0.29 ships Node 9.7.1, where mkdirSync has no
       // recursive option and an existing dir throws EEXIST. The throw is
@@ -133,17 +151,20 @@
   }
 
   function append(file, value) {
+    if (!fileIo || !file) return;
     ensureDir();
     fs.appendFileSync(file, JSON.stringify(value) + "\n", "utf8");
   }
 
   function log(message, extra) {
+    if (!fileIo || !logPath) return;
     ensureDir();
     const line = `[${new Date().toISOString()}] ${message}${extra ? " " + JSON.stringify(extra) : ""}\n`;
     fs.appendFileSync(logPath, line, "utf8");
   }
 
   function event(command, ok, payload) {
+    if (!eventPath) return;
     append(eventPath, {
       ts: Date.now(),
       commandId: command && command.__rmchQueueId || null,
@@ -373,10 +394,17 @@
         if (dir) return String(dir);
       }
     } catch (_) {}
-    for (const candidate of [path.join(gameRoot, "www", "save"), path.join(gameRoot, "save")]) {
-      if (fs.existsSync(candidate)) return candidate;
+    // The launcher can pin it explicitly — Tauri shells have no fs to scan
+    // with, and their save dir convention is <gameRoot>/save.
+    const pinned = envVar("RMCH_SAVE_DIR");
+    if (pinned) return pinned;
+    if (fs && path) {
+      for (const candidate of [path.join(gameRoot, "www", "save"), path.join(gameRoot, "save")]) {
+        if (fs.existsSync(candidate)) return candidate;
+      }
+      return path.join(gameRoot, "www", "save");
     }
-    return path.join(gameRoot, "www", "save");
+    return gameRoot ? gameRoot + "\\save" : "save";
   }
   // ---------------------------------------------------------------------------
   // Value coercion, argument guards, re-entrancy scopes, hook counters.
@@ -1496,7 +1524,7 @@
     }
   }
   // ---------------------------------------------------------------------------
-  // Transport. Two channels, one executor.
+  // Transport. Three channels, one executor.
   //
   //   WebSocket  — primary. The bridge is the CLIENT; the GUI (or `rmch serve`)
   //                hosts 127.0.0.1:47412. Reconnects with exponential backoff,
@@ -1505,8 +1533,16 @@
   //   JSONL file — fallback. commands.jsonl in / events.jsonl out, polled every
   //                250ms. Survives a missing server entirely, and is the only
   //                channel available when a game's CSP blocks WebSocket.
+  //   CDP outbox — Tauri shells (RMCH_TRANSPORT="cdp"). The page origin is
+  //                https://tauri.localhost and Chromium refuses ws:// loopback
+  //                from it, so nothing network-shaped can work from here.
+  //                Instead outbound messages pile up in window.__rmchOutbox,
+  //                which the launcher drains via Runtime.evaluate polling;
+  //                inbound commands arrive through window.__rmchDispatch evals.
+  //                (Runtime.enable/addBinding are NOT used: this game family's
+  //                watchdog kills the process the moment Runtime.enable lands.)
   //
-  // Both funnel into execute() and both must handle handlers that return a
+  // All funnel into execute() and all must handle handlers that return a
   // promise (MZ's loadGame does), which is what settleResult exists for.
   // ---------------------------------------------------------------------------
 
@@ -1514,11 +1550,26 @@
   let wsBackoffMs = 1000;
   let wsConnected = false;
 
+  // The transport mode arrives via the env shim (05-node-io reads
+  // window.__rmchEnv), so its value doubles as the CDP selector.
+  const cdpTransport = transportMode === "cdp";
+
   function wsUrl() {
     return `ws://127.0.0.1:${wsPort}/bridge/${encodeURIComponent(gameKey)}?token=${encodeURIComponent(wsToken)}`;
   }
 
   function wsSend(value) {
+    if (cdpTransport) {
+      try {
+        // Drained by the launcher's Runtime.evaluate polling (host side of
+        // the CDP link). Entries are JSON strings, joined with \n on drain —
+        // JSON.stringify never emits raw newlines, so the framing is safe.
+        (window.__rmchOutbox || (window.__rmchOutbox = [])).push(JSON.stringify(value));
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
     try {
       if (ws && ws.readyState === 1) {
         ws.send(JSON.stringify(value));
@@ -1569,9 +1620,54 @@
     reply(true, payload === undefined ? null : payload);
   }
 
+  // Shared by the WebSocket onmessage and the CDP __rmchDispatch entry: parse
+  // one inbound message and act on it. ping/pong keep WS sessions alive; cmd
+  // runs through settleResult and every result triggers a state push.
+  function handleIncoming(text) {
+    let message = null;
+    try {
+      message = JSON.parse(text);
+    } catch (_) {
+      return;
+    }
+    if (!message || typeof message !== "object") return;
+    if (message.t === "ping") {
+      wsSend({ t: "pong" });
+      return;
+    }
+    if (message.t !== "cmd") return;
+    const id = message.id;
+    settleResult(message.type, message.args, (ok, value) => {
+      const result = { t: "result", id, ok };
+      if (ok) result.payload = value;
+      else result.error = value;
+      wsSend(result);
+      // The GUI treats every result as a chance to re-render live values.
+      writeState();
+    });
+  }
+
   // --- WebSocket --------------------------------------------------------------
 
   function connectWs() {
+    if (cdpTransport) {
+      // No socket at all: outbound piles into window.__rmchOutbox (drained by
+      // the launcher's polling), inbound arrives via window.__rmchDispatch
+      // (eval'd by the launcher over the same CDP link).
+      wsConnected = true;
+      window.__rmchDispatch = function (text) {
+        handleIncoming(String(text));
+      };
+      wsSend({
+        t: "hello",
+        bridgeVersion: bridge.version,
+        engine: engineInfo(),
+        gameKey,
+        profile: bridge.profile || null
+      });
+      writeState();
+      return;
+    }
     let socket = null;
     try {
       socket = new WebSocket(wsUrl());
@@ -1596,27 +1692,7 @@
     };
 
     socket.onmessage = function (socketEvent) {
-      let message = null;
-      try {
-        message = JSON.parse(socketEvent.data);
-      } catch (_) {
-        return;
-      }
-      if (!message || typeof message !== "object") return;
-      if (message.t === "ping") {
-        wsSend({ t: "pong" });
-        return;
-      }
-      if (message.t !== "cmd") return;
-      const id = message.id;
-      settleResult(message.type, message.args, (ok, value) => {
-        const result = { t: "result", id, ok };
-        if (ok) result.payload = value;
-        else result.error = value;
-        wsSend(result);
-        // The GUI treats every result as a chance to re-render live values.
-        writeState();
-      });
+      handleIncoming(socketEvent.data);
     };
 
     socket.onclose = function () {
@@ -1645,6 +1721,8 @@
   }
 
   function pollCommands() {
+    // No fs (Tauri degraded mode) means no JSONL channel to poll at all.
+    if (!fileIo || !commandPath) return;
     try {
       ensureDir();
       if (!fs.existsSync(commandPath)) return;
@@ -1715,11 +1793,13 @@
 
   function writeState() {
     const state = collectState();
-    try {
-      ensureDir();
-      fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
-    } catch (error) {
-      noteError(error);
+    if (fileIo && statePath) {
+      try {
+        ensureDir();
+        fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+      } catch (error) {
+        noteError(error);
+      }
     }
     wsSend({ t: "state", state });
     return state;
@@ -2784,6 +2864,11 @@
   }
 
   function loadProfile() {
+    // Profiles are read from disk; in a no-Node shell (Tauri) there are none.
+    if (!fileIo) {
+      bridge.profile = { loaded: false, reason: "no fs in page context" };
+      return false;
+    }
     try {
       const profilePath = path.join(projectRoot, "runtime", "bridge", "profiles", `${gameKey}.js`);
       if (!fs.existsSync(profilePath)) {

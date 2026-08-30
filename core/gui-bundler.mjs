@@ -23,6 +23,8 @@ export const MODULES = [
   "core/rgss-savecode.mjs",
   "core/scanner.mjs",
   "core/bridge-bundler.mjs",
+  "core/cdp-client.mjs",
+  "core/tauri-cdp.mjs",
   "core/shadow-launcher.mjs",
   "core/rgss-launcher.mjs",
   "core/launcher.mjs",

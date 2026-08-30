@@ -384,6 +384,14 @@ export async function attachGame({ gameRoot, projectRoot, port = 47412 }) {
   if (scan.engine.id === "RM2K") {
     throw new AttachError('engine "RM2K" is not supported by attach');
   }
+  if (scan.container === "tauri") {
+    // WebView2 takes no external debug flags once running (the app overrides
+    // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS), so there is nothing to hook
+    // into post-launch — the patched exe copy IS the injection vehicle.
+    throw new AttachError(
+      'Tauri-shelled games cannot be attached post-launch; use "launch" instead (a patched exe copy opens the debug port)'
+    );
+  }
   if (/^RGSS/i.test(scan.engine.id)) {
     return attachRgss({ scan, projectRoot });
   }

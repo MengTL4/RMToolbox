@@ -5,6 +5,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import { detectRgss } from "./rgss.mjs";
+import { probeTauriShell } from "./tauri-cdp.mjs";
 
 const RGSS_DLL_RE = /^rgss\d*[a-z]*\.dll$/i;
 const RPG_MAKER_CORE_FILES = {
@@ -173,6 +174,44 @@ export function scanGame(root) {
     return result;
   }
 
+  // --- Tauri-shelled games (WebView2) -------------------------------------------
+  // No www/, no package.json, no RGSS — a single Tauri exe whose rodata carries
+  // the WRY browser-args string. The YanBin "RPG Maker Builder" family ships a
+  // real MZ runtime this way; its arc_img/arc_audio hash-dirs are a cheap
+  // signature. Case-sensitive name check on purpose: the NW.js block below uses
+  // existsSync("Game.exe"), which a lowercase tauri game.exe satisfies on
+  // Windows and would otherwise be mislabeled "unknown-nwjs".
+  const hasArcDirs = ["arc_img", "arc_audio"].every((name) => {
+    try {
+      return statSync(path.join(resolvedRoot, name)).isDirectory();
+    } catch (_) {
+      return false;
+    }
+  });
+  const tauriExeName = rootFiles.includes("game.exe")
+    ? "game.exe"
+    : hasArcDirs
+      ? rootFiles.find((name) => /\.exe$/i.test(name))
+      : null;
+  if (!manifest && tauriExeName) {
+    const exePath = path.join(resolvedRoot, tauriExeName);
+    const probe = probeTauriShell(exePath, { deep: hasArcDirs });
+    if (probe.isTauri) {
+      result.engine = { id: "MZ", bytecode: false, confidence: hasArcDirs ? "medium" : "low" };
+      result.container = "tauri";
+      result.tauri = { exeName: tauriExeName, patchable: !!probe.anchor };
+      addFlag("tauri-webview2");
+      result.paths.exe = exePath;
+      const tauriSaveDir = path.join(resolvedRoot, "save");
+      if (existsSync(tauriSaveDir) && statSync(tauriSaveDir).isDirectory()) {
+        result.paths.saveDir = tauriSaveDir;
+      }
+      result.saveDirKnown = !!result.paths.saveDir;
+      result.protection.level = computeProtectionLevel(flags);
+      return result;
+    }
+  }
+
   // --- NW.js RPG Maker family ------------------------------------------------
   const layout = detectLayout(resolvedRoot);
   result.layout = layout;
@@ -313,6 +352,9 @@ export function injectionStrategy(scan) {
   if (scan.engine.id === "RM2K") return { id: "easyrpg", reason: "RM2000/2003 has no script runtime; use EasyRPG player debug menu" };
   if (/^RGSS/i.test(scan.engine.id)) {
     return { id: "rgss-script", reason: "RGSS (Ruby): bridge spliced into the Scripts archive inside a shadow copy" };
+  }
+  if (scan.container === "tauri") {
+    return { id: "tauri-cdp", reason: "Tauri (WebView2) shell over an MZ runtime: patched exe copy exposes CDP, bridge transport is Runtime.evaluate outbox polling" };
   }
   if (scan.manifest && scan.manifest.nodeMain) return { id: "extension", reason: "node-main guard tolerates --load-extension; verify game does not self-close" };
   if (scan.manifest && scan.manifest.bgScript) return { id: "extension-then-shadow", reason: "bg-script startup chain may detect extensions; fall back to shadow-dir bg-script patch" };

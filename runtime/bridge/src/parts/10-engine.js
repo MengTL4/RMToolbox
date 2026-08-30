@@ -212,8 +212,15 @@
         if (dir) return String(dir);
       }
     } catch (_) {}
-    for (const candidate of [path.join(gameRoot, "www", "save"), path.join(gameRoot, "save")]) {
-      if (fs.existsSync(candidate)) return candidate;
+    // The launcher can pin it explicitly — Tauri shells have no fs to scan
+    // with, and their save dir convention is <gameRoot>/save.
+    const pinned = envVar("RMCH_SAVE_DIR");
+    if (pinned) return pinned;
+    if (fs && path) {
+      for (const candidate of [path.join(gameRoot, "www", "save"), path.join(gameRoot, "save")]) {
+        if (fs.existsSync(candidate)) return candidate;
+      }
+      return path.join(gameRoot, "www", "save");
     }
-    return path.join(gameRoot, "www", "save");
+    return gameRoot ? gameRoot + "\\save" : "save";
   }

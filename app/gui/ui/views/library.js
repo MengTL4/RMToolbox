@@ -115,7 +115,7 @@
 
       '        <n-flex align="center" :size="8" :wrap="true">',
       '          <n-tag size="small" :bordered="false" type="info">',
-      '            {{ game.engine.id }}{{ game.engine.bytecode ? " · 字节码" : "" }}',
+      '            {{ game.engine.id }}{{ game.container === "tauri" ? " · Tauri" : "" }}{{ game.engine.bytecode ? " · 字节码" : "" }}',
       '          </n-tag>',
       '          <n-tag size="small" :bordered="false" :type="protectionTag(game.protection.level).type">',
       '            {{ protectionTag(game.protection.level).label }}',
@@ -146,8 +146,9 @@
       '            <template #icon><rm-icon name="stop" :size="15"/></template>停止',
       '          </n-button>',
       // Attach to an already-running game (separate v-if so it stays out of
-      // the launch/stop if-else chain above).
-      '          <n-button v-if="!sessionFor(game.gameKey) && game.paths.exe" size="small" secondary',
+      // the launch/stop if-else chain above). Tauri shells have no post-launch
+      // entry point at all, so the button is hidden rather than erroring.
+      '          <n-button v-if="!sessionFor(game.gameKey) && game.paths.exe && game.container !== \'tauri\'" size="small" secondary',
       '                    :loading="state.busy[game.gameKey] === \'attaching\'"',
       '                    @click="store.attach(game)">',
       '            <template #icon><rm-icon name="zap" :size="15"/></template>附加到运行中',

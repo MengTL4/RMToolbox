@@ -15,10 +15,11 @@ import { buildBridge } from "./bridge-bundler.mjs";
 import { getToken } from "./token.mjs";
 import { launchShadowGame } from "./shadow-launcher.mjs";
 import { launchRgssGame, getRgssSession, listRgssSessions } from "./rgss-launcher.mjs";
+import { launchTauriGame, getTauriSession, listTauriSessions } from "./tauri-cdp.mjs";
 
 // The GUI host routes commands/sessions through these; re-export so it only
 // ever talks to this module.
-export { getRgssSession, listRgssSessions };
+export { getRgssSession, listRgssSessions, getTauriSession, listTauriSessions };
 
 function portInUse(port, host = "127.0.0.1") {
   return new Promise((resolve) => {
@@ -83,6 +84,11 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
       server: null,
       port: null
     };
+  }
+  if (scan.container === "tauri") {
+    // Tauri (WebView2) shells need neither the ws server nor the extension:
+    // the bridge is eval'd over CDP and its transport is outbox polling.
+    return launchTauriGame({ scan, projectRoot });
   }
   if (!scan.paths.exe) throw new Error("Game.exe not found in game root");
 

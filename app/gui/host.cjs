@@ -149,13 +149,13 @@ function listSessions() {
     connectedAt: session.connectedAt,
     state: session.state
   }));
-  // RGSS sessions live outside the WebSocket server (file channel) but must
-  // look identical to the page.
+  // RGSS (file channel) and Tauri (CDP tunnel) sessions live outside the
+  // WebSocket server but must look identical to the page.
   const { launcher } = state.modules || {};
-  if (launcher && launcher.listRgssSessions) {
-    return described.concat(launcher.listRgssSessions());
-  }
-  return described;
+  let all = described;
+  if (launcher && launcher.listRgssSessions) all = all.concat(launcher.listRgssSessions());
+  if (launcher && launcher.listTauriSessions) all = all.concat(launcher.listTauriSessions());
+  return all;
 }
 
 function saveLibrary() {
@@ -197,6 +197,32 @@ function removeManualRoot(root) {
   saveLibrary();
 }
 
+// Out-of-band sessions (RGSS file channel, Tauri CDP tunnel) bypass the
+// WebSocket server; wire their events into the same GUI sinks here so the
+// page cannot tell the difference.
+function wireExternalSession(session, gameKey, channel) {
+  // A second launch returns the SAME live session (tauri-cdp launch guard);
+  // wiring it twice would double every state/event push into the UI.
+  if (session.__rmchWired) return;
+  session.__rmchWired = true;
+  guiLog("bridge connected", { gameKey, channel });
+  // describe().alive only flips once the bridge hello lands (Tauri: ~250ms
+  // after launch returns, via the outbox poll) — re-push the session list at
+  // that moment or the library card keeps showing 启动并注入 until something
+  // else refreshes it.
+  session.on("hello", () => {
+    notifySessions();
+  });
+  session.on("state", (gameState) => {
+    if (state.onState) state.onState(gameKey, gameState);
+  });
+  session.on("close", () => {
+    guiLog("bridge disconnected", { gameKey });
+    notifySessions();
+  });
+  notifySessions();
+}
+
 async function launch(gameRoot) {
   const summary = await state.modules.launcher.launchGame({
     gameRoot,
@@ -208,20 +234,8 @@ async function launch(gameRoot) {
     strategy: summary.strategy,
     pid: summary.pid
   });
-  // RGSS sessions bypass the WebSocket server; wire their events into the same
-  // GUI sinks here so the page cannot tell the difference.
-  const rgssSession = summary.rgssSession;
-  if (rgssSession) {
-    guiLog("bridge connected", { gameKey: summary.gameKey, channel: "file" });
-    rgssSession.on("state", (gameState) => {
-      if (state.onState) state.onState(summary.gameKey, gameState);
-    });
-    rgssSession.on("close", () => {
-      guiLog("bridge disconnected", { gameKey: summary.gameKey });
-      notifySessions();
-    });
-    notifySessions();
-  }
+  if (summary.rgssSession) wireExternalSession(summary.rgssSession, summary.gameKey, "file");
+  if (summary.tauriSession) wireExternalSession(summary.tauriSession, summary.gameKey, "cdp");
   return summary;
 }
 
@@ -269,11 +283,16 @@ function stop(pid) {
 }
 
 function send(gameKey, type, args) {
-  // RGSS sessions sit outside the WebSocket server; route by gameKey first.
+  // RGSS (file channel) and Tauri (CDP tunnel) sessions sit outside the
+  // WebSocket server; route by gameKey first.
   const launcher = state.modules && state.modules.launcher;
   if (launcher && launcher.getRgssSession) {
     const rgss = launcher.getRgssSession(gameKey);
     if (rgss) return rgss.send(type, args || {});
+  }
+  if (launcher && launcher.getTauriSession) {
+    const tauri = launcher.getTauriSession(gameKey);
+    if (tauri) return tauri.send(type, args || {});
   }
   if (!state.server) return Promise.reject(new Error("server not started"));
   return state.server.sendCommand(gameKey, type, args || {});

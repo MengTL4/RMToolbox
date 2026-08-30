@@ -10,6 +10,8 @@
 core/            ESM 核心模块
   scanner.mjs        引擎(MV/MZ/XP/VX/Ace/RM2k) + 保护等级(L0-L3) + 布局识别
   launcher.mjs       注入启动（策略自动选择，RGSS 分发到 rgss-launcher）
+  tauri-cdp.mjs      Tauri(WebView2) 壳 MZ：exe 副本打 CDP 补丁 + 启动 + 会话（evaluate 轮询传输）
+  cdp-client.mjs     零依赖 CDP 客户端库（/json 列表 + RFC6455 + Runtime.evaluate）
   shadow-launcher.mjs 策略B：影子目录 + 补丁 bg-script + 环境伪装
   rgss.mjs           RGSS(XP/VX/Ace) 识别(Game.ini Library 字段) + shadow 构建 + 脚本注入
   rgss-launcher.mjs  RGSS 启动 + 文件轮询传输层 + 会话注册表 + 存档回同步
@@ -63,6 +65,8 @@ tools/           CLI（rmch.mjs / send.mjs / serve.mjs）、setup/launch 脚本�
                  test-rgss-*.mjs（Marshal/归档/hook/存档/存档树编辑测试）、
                  test-attach.mjs（attach 单元：PE 解析/bootstrap 组装/管道分帧回环）、
                  test-inject-selftest.mjs（注入器 + 双 DLL 对自测目标进程的真机回路）、
+                 test-tauri-cdp.mjs（Tauri 补丁/扫描 fixture 测试）、
+                 e2e-tauri.mjs（Tauri-CDP 实机冒烟，需 Demon forest 游戏本体）、
                  pack-release.mjs（Release zip 打包）
 ```
 
@@ -70,7 +74,7 @@ tools/           CLI（rmch.mjs / send.mjs / serve.mjs）、setup/launch 脚本�
 
 ```powershell
 npm test                                 # ws-server 合同 + bridge harness + shadow-launcher + rgss marshal/archive
-                                         # + attach 单元 + 注入自测 + GUI 预检
+                                         # + attach 单元 + 注入自测 + tauri-cdp fixture + GUI 预检
 npm run test:rgss                        # 只跑 RGSS 单元测试（设 RMCH_RGSS_SAMPLES 环境变量可启用真实归档用例）
 npm run test:inject                      # 只跑 attach 单元测试 + 注入自测（预构建二进制已入库，无编译器也能跑）
 npm run build:inject                     # 重建 runtime/inject/bin（需要 MSYS2 MinGW 工具链，见下）
@@ -151,7 +155,7 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
 00-prelude   IIFE 开头 + bridge 状态对象       40-hooks          patchMethod + 倍率/遇敌/移速/技能消耗
 05-node-io   require/路径/log/event            45-vitals-locks   上帝模式：HP/MP/TP 锁
 10-engine    TK.$ 别名解析、$game*/$data*      50-value-locks    数据锁定：逐帧回写
-20-values    强转/守卫/抑制作用域/统计         55-transport      WS 客户端 + JSONL 兜底队列
+20-values    强转/守卫/抑制作用域/统计         55-transport      WS 客户端 + JSONL 兜底 + CDP outbox
 25-battlers  battler/队伍/敌群、actorInfo      58-state          state.json 快照
 30-catalogs  目录缓存、背包槽位、地图          60..68-commands-* 命令，按领域分片
                                               69-router         冻结命令表 + execute()
@@ -187,6 +191,17 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   的条目之前（它之后的代码永远不会执行）。通信走 shadow 目录里一对 append-only 文件
   （RGSS 精简 Ruby 没有 socket 库）；游戏退出时把 shadow 里的存档同步回真实目录。
   细节见 [RGSS-HANDOVER.md](RGSS-HANDOVER.md)
+- **Tauri（tauri-cdp）**：Tauri/WebView2 壳打包的 MZ 游戏（YanBin RPG Maker Builder 系列）。
+  没有 NW.js、没有 www/ 目录、页面源是 https://tauri.localhost，常规三条路全堵死。
+  入口在 WRY 写死的 WebView2 浏览器参数：把 game.exe **复制**成 `game.rmch-cdp.exe`
+  （原文件不动），将整段参数字符串等长覆写成 `--remote-debugging-port=<port>`+空格填充
+  （WRY 会乱序重拼并截断到 ~105 字节，原 token 一个都不能留）。启动副本即得到
+  127.0.0.1 上的 CDP。**两个实测杀机**：① 启动后 ~2s 内碰 DevTools HTTP 端点游戏立即
+  退出（先等 BOOT_GRACE_MS=5s 再轮询）；② 页面看门狗检测到 `Runtime.enable` 会在
+  毫秒内杀进程（Inspector.detached → exit 0）——所以传输只用 `Runtime.evaluate`：
+  页面出站消息堆 `window.__rmchOutbox` 由宿主 250ms 轮询取回，入站走
+  `window.__rmchDispatch` eval。bridge 在无 Node 环境降级运行（无 fs，
+  save.list 由宿主侧直接读存档目录应答）。不支持 attach（无法事后开 CDP）。
 - **附加（attach，不改文件也不启动游戏）**：游戏已在运行时注入。MV/MZ：`rmch-mvhook.dll`
   经 CreateRemoteThread 进渲染进程，MinHook detour 住 nw.dll 导出的 `v8::Function::Call`
   （Blink 每帧 rAF 必经；`NewFromUtf8` 留作后备），在自然的 V8 调用点里

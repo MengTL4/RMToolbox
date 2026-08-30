@@ -72,6 +72,11 @@
   }
 
   function loadProfile() {
+    // Profiles are read from disk; in a no-Node shell (Tauri) there are none.
+    if (!fileIo) {
+      bridge.profile = { loaded: false, reason: "no fs in page context" };
+      return false;
+    }
     try {
       const profilePath = path.join(projectRoot, "runtime", "bridge", "profiles", `${gameKey}.js`);
       if (!fs.existsSync(profilePath)) {

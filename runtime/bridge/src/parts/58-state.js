@@ -32,11 +32,13 @@
 
   function writeState() {
     const state = collectState();
-    try {
-      ensureDir();
-      fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
-    } catch (error) {
-      noteError(error);
+    if (fileIo && statePath) {
+      try {
+        ensureDir();
+        fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+      } catch (error) {
+        noteError(error);
+      }
     }
     wsSend({ t: "state", state });
     return state;
