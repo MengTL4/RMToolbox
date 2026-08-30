@@ -6,6 +6,10 @@
 支持 **MV / MZ** 和 **XP / VX / VX Ace**（RGSS 系列）：修改器、数据读写、
 存档编辑等核心功能两边基本一致；个别能力因引擎本身差异略有出入
 （RGSS 没有自开关、XP 没有物品图标表、部分角色操作仅 VX Ace 可用）。
+另外支持一类特殊打包的 MZ 游戏：用 **Tauri / WebView2 壳**发行的
+（如「YanBin RPG Maker Builder」系列，《魔物召唤森林》等）——内核是完整的
+MZ，工具箱通过浏览器的 DevTools 协议接入，功能与原生 MZ 基本一致，
+但不支持「附加到运行中」（只能从工具箱启动）。
 
 ![游戏库](docs/screenshots/library.png)
 ![修改器](docs/screenshots/trainer.png)
@@ -50,6 +54,8 @@
 
 - 只适用于本地单机游戏，请勿用于任何带在线排行、联机或账号系统的游戏。
 - 不修改游戏安装目录里的文件；所有改动都在内存里，重启游戏即还原（存档除外）。
+  唯一的例外：Tauri 壳游戏会在游戏目录生成一个 `*.rmch-cdp.exe` 副本
+  （原 exe 一个字节都不动，副本只改了一行浏览器启动参数，Steam 校验不受影响）。
 - 「附加到运行中」使用 DLL 注入（`runtime/inject/bin/` 下的预置二进制，源码与构建脚本在
   `runtime/inject/src/` + `tools/build-inject.mjs`）。部分杀毒软件对注入器一律误报，
   如遇拦截请自行核对源码后加白名单。

@@ -59,6 +59,10 @@
   }
 
   async function launch(game) {
+    // A Tauri launch takes several seconds (boot grace before the CDP link);
+    // ignore extra clicks while one is in flight instead of piling up
+    // concurrent launches.
+    if (state.busy[game.gameKey]) return null;
     state.busy[game.gameKey] = "launching";
     try {
       var summary = await server.launch(game.root);

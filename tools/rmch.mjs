@@ -95,7 +95,18 @@ async function main() {
         port: Number(options.port) || 47412,
         strategy: options.strategy || "auto"
       });
-      console.log(JSON.stringify(summary, null, 2));
+      // Session objects are live EventEmitters — not printable. A Tauri
+      // session also pins the event loop via its CDP socket; the CLI has no
+      // IPC back to it, so close it and point interactive use at the GUI.
+      const tauriSession = summary.tauriSession;
+      const printable = { ...summary };
+      delete printable.rgssSession;
+      delete printable.tauriSession;
+      console.log(JSON.stringify(printable, null, 2));
+      if (tauriSession) {
+        tauriSession.close();
+        console.error("[rmch] tauri-cdp sessions live inside the launcher process — use the GUI (or keep this process alive) for trainer commands");
+      }
       break;
     }
     case "attach": {
