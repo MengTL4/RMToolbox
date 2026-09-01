@@ -38,8 +38,33 @@ detached 进程）：
   相同，取第一个无害（单例桶重复仍告警）。
 - **Game_Screen 被改**：无 `fadeOut` 方法（按 `_brightness + _flashColor` 识别）；
   **Game_Troop 无 `_units`**（按 `_troopId` 且无 `_phase` 识别，与 BattleManager 区分）。
-- **BattleManager 没找到**（两种形状都不中，疑似方法被改名）——战斗类功能
-  （一击必杀/战斗倍率）在这游戏上可能不可用，属已知限制；核心修改器不受影响。
+- **BattleManager/JsonEx/ImageManager 找不到的真正原因**（第二轮真机修正）：这三个在本游戏
+  里和 SceneManager 一样是**带静态方法的函数**，而种子函数的「对象形状分支」前面有个
+  `typeof x === "function"` 早退分支把它们直接跳过了。函数分支补上
+  `startBattle+isBattleTest`（BattleManager）、`maxDepth+_encode+stringify`（JsonEx）、
+  `loadSystem+loadFace`（ImageManager）后全部命中。
+
+### 当天补强（第二轮真机）：图标 / 战斗 / 存档树编辑器全部解锁
+
+用户追问三件事，逐一落地：
+
+- **列表图标**：GUI 的图标子系统（`entry-list` + `assets.iconset`）本来就是现成的，
+  卡壳点只是种子没发布 `ImageManager`。补上后 `assets.iconset` 实测返回解码好的
+  IconSet（512×768 dataUrl）——游戏 img 目录是明文，解码走游戏自己的加载管线。
+- **存档数据树编辑器**：此前验收结论「无法离线解析」是**错的**——`save.contents.get`
+  走的是**内存路径**（`DataManager.makeSaveContents` + `JsonEx.stringify`），跟加密的
+  存档文件无关。发布 `JsonEx` 后实测返回 60KB 完整树（system/screen/timer/switches/
+  variables/selfSwitches/actors/party/map/player 十键）。
+- **战斗功能**：BattleManager 发布后，bridge 的 sealed 慢重试自动补装 hook（27→29：
+  `BattleManager.makeRewards/gainRewards`），倍率/一击必杀路径就绪。
+- **活集合判定（重要）**：堆里发现同一单例有**多代副本**（轮回快照/存档预览解码遗留，
+  3 个 party 候选里只有一个是活的——步数在涨那一个）。形状猜「第一个」不可靠，改为
+  **优先调 `DataManager.makeSaveContents()`**：它返回的就是闭包活引用集合，实测发布后
+  `window.$gameParty === makeSaveContents().party`。新鲜度补丁同步调整：`JsonEx._decode`
+  包装（第一版方案）会**误伤存档预览解码**——预览也解码完整对象树，会把 window 引用
+  换成预览副本——改为包装 **`DataManager.extractSaveContents`**（只在真读档时触发，
+  读完后重新发布 makeSaveContents 活集合），同时覆盖游戏自带读档和 save.contents.apply
+  两条路径。
 
 ### 实测结果（真机，WS 通道 = GUI 同路径）
 
@@ -60,9 +85,9 @@ hook 安装 27 个**（gainExp/gainGold/setHp/setMp/setTp/canPaySkillCost/skillM
 - **bridge 90-startup**：`RMCH_SEALED=1` 时 hook 重试不封顶——先快速重试到首次稳定，
   之后降为 5 秒永久慢重试（读档后才会出现的类也能补上 hook；patchMethod 幂等）。
 - **attach**：sealed 游戏显式拒绝并给出原因（发布引擎对象必须有 CDP 端口，只能工具箱启动）。
-- 存档文件为自定义加密（熵 7.99），「存档数据」树编辑器无法离线解析——已知限制；
-  槽位列表/备份不受影响。`save.load`/`save.contents.*` 未实测（依赖 Scene_Map 跳转，
-  这游戏 mapId=0 无标准地图，风险大于收益）。
+- 存档**文件**为自定义加密（熵 7.99），离线解析存档文件不可行；但「存档数据」树编辑器
+  走内存路径不受影响（见上）。存档槽位列表/备份正常。`save.load`/`save.contents.apply`
+  已由 extractSaveContents 包装保障引用保鲜，未做破坏性实测。
 
 ## v0.4.3：RGSS 附加真机落地（BLACK SOULS Ⅰ/Ⅱ 实测）（2026-08-30 凌晨）
 
