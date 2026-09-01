@@ -1,5 +1,69 @@
 # RMCH 验收记录
 
+## v0.6.0：sealed 启动器 MZ 游戏落地（停不下来的轮回 v1.4 实测）（2026-09-02）
+
+用户请求适配 `D:\Downloads\停不下来的轮回正式版v1.4.1`（国产放置轮回类，NW.js）。
+这个游戏是第五种发行形态：**整个 MZ 引擎 + 游戏逻辑被 javascript-obfuscator 混进一个
+4.3MB 的 IIFE（`game.js`）**，由 Vite 打包的启动器页在 md5 校验后用 `<script>` 注入执行；
+MZ 的数据文件加密在 `game.data`（启动时解到 `window.Game.data` 用完置 null）。
+后果：页面上**没有任何引擎全局**——无 `$gameParty`、无 `DataManager`、无 `SceneManager`，
+连 `$data*` 表都不在 window 上。扩展注入本身工作正常（v0.5.0 时代用户实测 bridge 已注入、
+state.json 已写出），但 resolver 全空、hook 60 秒后放弃（gameRoot 下那份
+`RMCH/runtime/bridge-state/unknown/` 就是那次残留）。
+
+### 方案：extension 通道不动，CDP 堆扫描做「引擎发布」
+
+NW.js 游戏可以带 `--remote-debugging-port`，而 CDP 有 `Runtime.queryObjects`——
+按原型全堆枚举。实测一次扫描 ~31 万个对象、数秒完成、游戏无感（Runtime.enable 安全，
+Tauri 那套看门狗不适用于 NW.js）。流程（`core/sealed-seed.mjs` + `tools/seed-sealed.mjs`
+detached 进程）：
+
+1. launch 时给游戏进程加 seed 端口，并派一个 detached seeder；
+2. seeder 轮询 CDP：启动器页可见且按钮文案是「开始游戏」时自动点掉（更新中不动）；
+3. `__PIXI_APP__` 出现（游戏引导完成）后做堆扫描，按字段形状捞引擎对象并发布到 window：
+   `$game*` 单例、`$data*` 表、`SceneManager/DataManager/ConfigManager/StorageManager`、
+   以及从实例 `.constructor` 反发布的 `Game_*` 类；
+4. 给每个单例的**原型 `initialize` 打补丁**：新游戏/读档会整体重建所有 `$game*`，
+   包装器把新实例重新发布到 window，引用永久保鲜（真机验证：`fake.initialize()` 后
+   `window.$gameParty` 立即跟随替换）。
+
+### 扫描器踩过的形状坑（全部真机修正）
+
+- **switches/vars 无法靠字段区分**：`Game_Switches` 与 `Game_Variables` 同形，且启动时
+  `_data` 都是空数组（首版 seed 把两者混进一个桶、丢掉其一）。用越界读探针区分：
+  `value(999999)` 强转布尔返回 `false`（开关）、返回 `0`（变量）。
+- **数据表是自定义 schema**：物品表没有 `atypeId`（泄漏样本证实），首版
+  `itypeId && atypeId` 匹配不上。改为 itypeId→物品、wtypeId→武器、atypeId→防具。
+  另有**成对的模板副本表**（物品/武器/防具各两份 2001 行，轮回重置用的克隆）——内容
+  相同，取第一个无害（单例桶重复仍告警）。
+- **Game_Screen 被改**：无 `fadeOut` 方法（按 `_brightness + _flashColor` 识别）；
+  **Game_Troop 无 `_units`**（按 `_troopId` 且无 `_phase` 识别，与 BattleManager 区分）。
+- **BattleManager 没找到**（两种形状都不中，疑似方法被改名）——战斗类功能
+  （一击必杀/战斗倍率）在这游戏上可能不可用，属已知限制；核心修改器不受影响。
+
+### 实测结果（真机，WS 通道 = GUI 同路径）
+
+launch → seed 全自动：**2.5 秒自动点掉启动器、8 秒完成发布、37 个对象、0 警告、
+hook 安装 27 个**（gainExp/gainGold/setHp/setMp/setTp/canPaySkillCost/skillMpCost/…，
+含 window.Game_* 原型与 runtime 原型链双路）。命令实测：`gold.set` 999999、
+`item.add/set/list`（怪物图鉴 ×3）、`switch.set`、`variable.set`、`actor.level.set`
+21→50、`actor.vitals.set`、`trainer.options.set`（invincible/goldRate）、`save.list`
+（加密 .rmmzsave 正常列出）、`party.info`、`runtime.info`（title 读到「停不下来的轮回」）。
+测试后状态已复原（gold 0 / Lv21 / hp396 / mp418 / 物品清空 / 开关变量复位）。
+
+### 顺带修复与新能力
+
+- **scanner**：新增 sealed 指纹（game.js/game.data/game.version/game.md5 四件套 +
+  js/libs MZ 库或 .rmmzsave 存档）→ engine=MZ(medium)、container=`nwjs-sealed`；
+  exe 解析增加「manifest 名.exe → 根目录唯一 exe」兜底（Nightmare without return
+  原本报找不到 exe，现在也能解析到）。
+- **bridge 90-startup**：`RMCH_SEALED=1` 时 hook 重试不封顶——先快速重试到首次稳定，
+  之后降为 5 秒永久慢重试（读档后才会出现的类也能补上 hook；patchMethod 幂等）。
+- **attach**：sealed 游戏显式拒绝并给出原因（发布引擎对象必须有 CDP 端口，只能工具箱启动）。
+- 存档文件为自定义加密（熵 7.99），「存档数据」树编辑器无法离线解析——已知限制；
+  槽位列表/备份不受影响。`save.load`/`save.contents.*` 未实测（依赖 Scene_Map 跳转，
+  这游戏 mapId=0 无标准地图，风险大于收益）。
+
 ## v0.4.3：RGSS 附加真机落地（BLACK SOULS Ⅰ/Ⅱ 实测）（2026-08-30 凌晨）
 
 RGSS 附加此前从未真机验证过——用户拿 BLACK SOULS Ⅰ/Ⅱ（VX Ace / RGSS3）一测就挂。

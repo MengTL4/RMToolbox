@@ -66,6 +66,49 @@ function detectEngineFromJs(jsFiles) {
   return null;
 }
 
+// Sealed-launcher MZ games (停不下来的轮回 family): the MZ engine ships as one
+// obfuscated IIFE in game.js, executed by a Vite launcher page after an md5
+// check against game.md5. No rmmz_core.js / plugins.js exists, so the plain JS
+// scan calls it unknown — this fingerprint catches the family: the launcher's
+// game.* container files plus an MZ runtime fingerprint (the stock MZ library
+// set in js/libs, or MZ-format saves on disk).
+function detectSealedLauncher(root) {
+  for (const marker of ["game.js", "game.data", "game.version", "game.md5"]) {
+    if (!existsSync(path.join(root, marker))) return false;
+  }
+  const libsDir = path.join(root, "js", "libs");
+  try {
+    if (readdirSync(libsDir).some((name) => /^(pixi|effekseer|vorbisdecoder)/i.test(name))) return true;
+  } catch (_) {}
+  const saveDir = path.join(root, "save");
+  try {
+    if (readdirSync(saveDir).some((name) => /\.rmmzsave$/i.test(name))) return true;
+  } catch (_) {}
+  return false;
+}
+
+// The exe behind an NW.js game is not always Game.exe: sealed launchers name it
+// after the manifest (停不下来的轮回.exe), and some titles ship exactly one
+// other exe. Junk filter keeps installers/uninstallers out of the fallback.
+function resolveNwExe(root, manifest) {
+  const candidates = [path.join(root, "Game.exe")];
+  const manifestName = manifest && manifest.name;
+  if (manifestName && !/[\\/:*?"<>|]/.test(manifestName)) {
+    candidates.push(path.join(root, `${manifestName}.exe`));
+  }
+  const direct = firstExisting(candidates);
+  if (direct) return direct;
+  let exes;
+  try {
+    exes = readdirSync(root).filter((name) => /\.exe$/i.test(name));
+  } catch (_) {
+    return null;
+  }
+  const junk = /unins|setup|install|crash|redist|vc_redist|dxsetup|dotnet|launch|update|patch/i;
+  const real = exes.filter((name) => !junk.test(name));
+  return real.length === 1 ? path.join(root, real[0]) : null;
+}
+
 function looksLikeEncryptedData(dataDir) {
   try {
     const files = readdirSync(dataDir).filter((name) => /\.json$/i.test(name));
@@ -220,14 +263,19 @@ export function scanGame(root) {
   const jsFiles = listJsDir(resolvedRoot, layout);
 
   const engine = detectEngineFromJs(jsFiles);
+  const sealed = !engine && detectSealedLauncher(resolvedRoot);
   if (engine) {
     result.engine = engine;
+  } else if (sealed) {
+    result.engine = { id: "MZ", bytecode: false, confidence: "medium" };
+    result.container = "nwjs-sealed";
+    addFlag("sealed-launcher");
   } else if (manifest || existsSync(path.join(resolvedRoot, "Game.exe"))) {
     result.engine = { id: "unknown-nwjs", bytecode: false, confidence: "low" };
   }
 
   result.paths = {
-    exe: firstExisting([path.join(resolvedRoot, "Game.exe")]),
+    exe: resolveNwExe(resolvedRoot, manifest),
     wwwDir,
     jsDir,
     dataDir: firstExisting([path.join(wwwDir, "data"), path.join(resolvedRoot, "data")]),
@@ -251,6 +299,7 @@ export function scanGame(root) {
     if (/--disable-devtools/i.test(manifest["chromium-args"] || "")) addFlag("disable-devtools");
     const title = manifest.window && manifest.window.title;
     if (title && title !== "Game" && !/^rmmz-game$/i.test(title)) result.title = title;
+    if (result.container === "nwjs-sealed" && manifest.name) result.title = manifest.name;
   }
 
   if (result.engine.bytecode) addFlag("bytecode-js");
@@ -355,6 +404,9 @@ export function injectionStrategy(scan) {
   }
   if (scan.container === "tauri") {
     return { id: "tauri-cdp", reason: "Tauri (WebView2) shell over an MZ runtime: patched exe copy exposes CDP, bridge transport is Runtime.evaluate outbox polling" };
+  }
+  if (scan.container === "nwjs-sealed") {
+    return { id: "extension-cdp-seed", reason: "sealed MZ engine (obfuscated game.js, no window globals): extension bridge + a CDP heap scan publishes the engine objects once the game boots" };
   }
   if (scan.manifest && scan.manifest.nodeMain) return { id: "extension", reason: "node-main guard tolerates --load-extension; verify game does not self-close" };
   if (scan.manifest && scan.manifest.bgScript) return { id: "extension-then-shadow", reason: "bg-script startup chain may detect extensions; fall back to shadow-dir bg-script patch" };

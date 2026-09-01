@@ -392,6 +392,16 @@ export async function attachGame({ gameRoot, projectRoot, port = 47412 }) {
       'Tauri-shelled games cannot be attached post-launch; use "launch" instead (a patched exe copy opens the debug port)'
     );
   }
+  if (scan.container === "nwjs-sealed") {
+    // Injecting the bridge alone is not enough: the sealed engine never puts
+    // its objects on window, and publishing them needs a CDP heap scan that
+    // only works when the process was started with --remote-debugging-port —
+    // which only the toolbox launch does.
+    throw new AttachError(
+      "sealed-launcher games (engine hidden inside an obfuscated game.js) cannot be attached " +
+      'post-launch; use "launch" instead — the toolbox starts the game with a debug port and publishes the engine objects itself'
+    );
+  }
   if (/^RGSS/i.test(scan.engine.id)) {
     return attachRgss({ scan, projectRoot });
   }
