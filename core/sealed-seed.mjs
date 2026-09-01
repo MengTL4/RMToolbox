@@ -45,7 +45,7 @@ const SEALED_SEED_FN = `function () {
     party: [], map: [], vars: [], switches: [], selfSwitches: [], actors: [],
     system: [], temp: [], screen: [], troop: [], player: [],
     sceneManager: [], dataManager: [], configManager: [], storageManager: [],
-    battleManager: [],
+    battleManager: [], jsonEx: [], imageManager: [],
     dataItems: [], dataWeapons: [], dataArmors: [], dataSkills: [], dataStates: [],
     dataActors: [], dataEnemies: [], dataTroops: [], dataMapInfos: [],
     dataCommonEvents: [], dataSystem: []
@@ -55,9 +55,17 @@ const SEALED_SEED_FN = `function () {
     try {
       const kind = typeof x;
       if (kind === "function") {
+        // Most MZ "managers" are functions with statics (SceneManager,
+        // DataManager, JsonEx, ImageManager, BattleManager, StorageManager —
+        // the latter two could be either form; the family under test ships
+        // them as functions). Without these branch checks they would be
+        // skipped and every manager-shaped resolver in the bridge stays dead.
         if ("_scene" in x && "_stack" in x && typeof x.run === "function") found.sceneManager.push(x);
         else if ("_databaseFiles" in x && typeof x.isDatabaseLoaded === "function") found.dataManager.push(x);
         else if (typeof x.saveObject === "function" && typeof x.loadObject === "function") found.storageManager.push(x);
+        else if (typeof x.startBattle === "function" && typeof x.isBattleTest === "function") found.battleManager.push(x);
+        else if (x.maxDepth !== undefined && typeof x.stringify === "function" && typeof x._encode === "function") found.jsonEx.push(x);
+        else if (typeof x.loadSystem === "function" && typeof x.loadFace === "function") found.imageManager.push(x);
         continue;
       }
       if (kind !== "object") continue;
@@ -145,9 +153,34 @@ const SEALED_SEED_FN = `function () {
   }
   for (const entry of [["SceneManager", "sceneManager"], ["DataManager", "dataManager"],
       ["ConfigManager", "configManager"], ["StorageManager", "storageManager"],
-      ["BattleManager", "battleManager"]]) {
+      ["BattleManager", "battleManager"], ["JsonEx", "jsonEx"], ["ImageManager", "imageManager"]]) {
     publish(entry[0], takeSingleton(entry[1]));
   }
+
+  // The shape scan alone cannot pick the LIVE singleton generation: this game
+  // family leaves older generations (loop snapshots / save previews) alive in
+  // the heap, and "first candidate" once picked a frozen clone. The game's
+  // own DataManager.makeSaveContents returns the closure-live set — prefer it
+  // whenever it answers, keeping the shape picks as fallback only.
+  try {
+    const dataManager = window.DataManager;
+    if (dataManager && typeof dataManager.makeSaveContents === "function") {
+      const contents = dataManager.makeSaveContents();
+      if (contents && typeof contents === "object") {
+        const contentsAliases = {
+          system: "$gameSystem", screen: "$gameScreen", temp: "$gameTemp",
+          map: "$gameMap", player: "$gamePlayer", party: "$gameParty",
+          actors: "$gameActors", switches: "$gameSwitches",
+          variables: "$gameVariables", selfSwitches: "$gameSelfSwitches"
+        };
+        for (const key of Object.keys(contentsAliases)) {
+          const value = contents[key];
+          if (value && typeof value === "object") publish(contentsAliases[key], value);
+        }
+        summary.liveSet = true;
+      }
+    }
+  } catch (e) { summary.warnings.push("makeSaveContents: " + e.message); }
 
   // Constructors under their MZ names so the bridge's resolvePrototypeTargets
   // path works on top of its runtime prototype-chain fallbacks.
@@ -192,6 +225,47 @@ const SEALED_SEED_FN = `function () {
     Object.defineProperty(proto, "__rmchFreshPatched", { value: alias, configurable: true });
     summary.patched.push(alias);
   }
+
+  // Second freshness path: DataManager.extractSaveContents (the game's own
+  // load AND the bridge's save.contents.apply) assigns the DECODED objects to
+  // the closure variables directly — no constructor runs, so the initialize
+  // patches above never fire. Wrapping extractSaveContents and re-reading
+  // makeSaveContents afterwards re-publishes the live set exactly once per
+  // real load. (Wrapping JsonEx._decode was tried first and rejected: save
+  // PREVIEWS also decode full object trees, and those must not hijack the
+  // published references.)
+  try {
+    const dataManager = window.DataManager;
+    if (dataManager && typeof dataManager.extractSaveContents === "function" && !dataManager.__rmchExtractPatched) {
+      const originalExtract = dataManager.extractSaveContents;
+      const republishAll = function () {
+        try {
+          const contents = dataManager.makeSaveContents ? dataManager.makeSaveContents() : null;
+          if (!contents) return;
+          const contentsAliases = {
+            system: "$gameSystem", screen: "$gameScreen", temp: "$gameTemp",
+            map: "$gameMap", player: "$gamePlayer", party: "$gameParty",
+            actors: "$gameActors", switches: "$gameSwitches",
+            variables: "$gameVariables", selfSwitches: "$gameSelfSwitches"
+          };
+          for (const key of Object.keys(contentsAliases)) {
+            const value = contents[key];
+            if (value && typeof value === "object") window[contentsAliases[key]] = value;
+          }
+        } catch (_) {}
+      };
+      const wrappedExtract = function () {
+        const result = originalExtract.apply(this, arguments);
+        republishAll();
+        return result;
+      };
+      Object.defineProperty(dataManager, "extractSaveContents", {
+        value: wrappedExtract, writable: true, configurable: true, enumerable: false
+      });
+      Object.defineProperty(dataManager, "__rmchExtractPatched", { value: true, configurable: true });
+      summary.patched.push("DataManager.extractSaveContents");
+    }
+  } catch (e) { summary.warnings.push("extract patch: " + e.message); }
 
   // Only the full core set counts as seeded. A partial hit (e.g. only data
   // tables exist because the game has not entered a session yet) stays

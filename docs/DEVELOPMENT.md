@@ -210,8 +210,12 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   `tools/seed-sealed.mjs`）：自动点掉启动器的「开始游戏」按钮，等 `__PIXI_APP__` 出现后用
   `Runtime.queryObjects` 全堆扫描（~31 万对象），按字段形状捞 `$game*`/`$data*`/管理器
   单例发布到 window（坑与判别式见 ACCEPTANCE v0.6.0：switches/vars 靠 `value(999999)`
-  越界读区分、物品表无 atypeId、模板副本表取第一份），并给每个单例原型的 `initialize`
-  打补丁让读档/新游戏后的实例替换自动重发布。游戏进程带 `RMCH_SEALED=1`，bridge 的 hook
+  越界读区分、物品表无 atypeId、模板副本表取第一份；manager 多为函数形式——
+  BattleManager/JsonEx/ImageManager 都在函数分支找）。堆里有多代副本时形状猜不可靠，
+  **单例以 `DataManager.makeSaveContents()` 的返回为准**（闭包活引用）。保鲜两条腿：
+  原型 `initialize` 包装（新游戏重建时重发布）+ `DataManager.extractSaveContents`
+  包装（读档 / save.contents.apply 后重发布活集合；不能用 JsonEx._decode——存档
+  预览也会解码完整树，会把引用劫持到预览副本）。游戏进程带 `RMCH_SEALED=1`，bridge 的 hook
   重试不封顶（先快后慢、5s 永久慢重试）。种子日志在
   `runtime/bridge-state/<gameKey>/seed.log`。不支持 attach（发布引擎对象必须有 CDP 端口）。
 - **附加（attach，不改文件也不启动游戏）**：游戏已在运行时注入。MV/MZ：`rmch-mvhook.dll`
