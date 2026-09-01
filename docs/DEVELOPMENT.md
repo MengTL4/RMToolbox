@@ -216,7 +216,10 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   原型 `initialize` 包装（新游戏重建时重发布）+ `DataManager.extractSaveContents`
   包装（读档 / save.contents.apply 后重发布活集合；不能用 JsonEx._decode——存档
   预览也会解码完整树，会把引用劫持到预览副本）。游戏进程带 `RMCH_SEALED=1`，bridge 的 hook
-  重试不封顶（先快后慢、5s 永久慢重试）。种子日志在
+  重试不封顶（先快后慢、5s 永久慢重试）。**自建主循环陷阱**：这类游戏可能完全不调
+  `SceneManager.update`（实测 2s 内 0 次），updateMain 包装器上的每帧路径（值锁、
+  按住 Ctrl 加速）不会跑——值锁已有 100ms 心跳兜底（90-startup），加速无解，已记录。
+  种子日志在
   `runtime/bridge-state/<gameKey>/seed.log`。不支持 attach（发布引擎对象必须有 CDP 端口）。
 - **附加（attach，不改文件也不启动游戏）**：游戏已在运行时注入。MV/MZ：`rmch-mvhook.dll`
   经 CreateRemoteThread 进渲染进程，MinHook detour 住 nw.dll 导出的 `v8::Function::Call`
