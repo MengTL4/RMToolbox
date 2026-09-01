@@ -76,6 +76,24 @@ hook 安装 27 个**（gainExp/gainGold/setHp/setMp/setTp/canPaySkillCost/skillM
 （加密 .rmmzsave 正常列出）、`party.info`、`runtime.info`（title 读到「停不下来的轮回」）。
 测试后状态已复原（gold 0 / Lv21 / hp396 / mp418 / 物品清空 / 开关变量复位）。
 
+### 全量功能实测（tools/e2e-sealed.mjs，49/49 通过）
+
+回应「功能都测试一遍」：新写 `tools/e2e-sealed.mjs`（对齐 e2e-tauri.mjs 惯例的真机
+冒烟脚本，连 ws /client 通道，49 项检查、每项变更后自动恢复状态）。覆盖：ping/runtime
+信息、hook 数量、trainer 选项往返、金币 set/add、物品 set/list、物品/技能/状态目录
+（含 iconIndex）、角色 exp/param/vitals/recover/name/nickname/skill learn+forget/
+state add+remove、队伍加减人/recover、开关/变量列表与写入、地图列表/信息/事件、穿墙
+开关、战斗命令（非战斗期优雅空转）、**值锁（金币锁定 1.3s 内把 999 拉回 500）**、
+存档槽列表、真存档（file20 落盘后清理）、存档数据树 get/apply（apply 后活引用恒等）、
+console.eval、IconSet 图集。git 状态：49/49。
+
+**测出一个真 bug 并修复**：这游戏完全自建主循环——实测 `SceneManager.update` 2 秒内
+被调用 **0 次**（MZ 标准循环根本没跑），导致「数据锁定」依赖 updateMain 包装器的
+每帧重申路径全部失效（金币锁不生效）。修复：bridge 的 100ms 心跳定时器同时跑
+`applyValueLocks()`（无锁时空转，与帧路径幂等），任何游戏循环形态下锁都生效。
+注意：`gameSpeedMulti`（按住 Ctrl 加速）依赖 updateMain 帧差，在自建循环游戏上
+仍不可用——本作是放置游戏无影响，已记录为限制。
+
 ### 顺带修复与新能力
 
 - **scanner**：新增 sealed 指纹（game.js/game.data/game.version/game.md5 四件套 +
@@ -85,6 +103,7 @@ hook 安装 27 个**（gainExp/gainGold/setHp/setMp/setTp/canPaySkillCost/skillM
 - **bridge 90-startup**：`RMCH_SEALED=1` 时 hook 重试不封顶——先快速重试到首次稳定，
   之后降为 5 秒永久慢重试（读档后才会出现的类也能补上 hook；patchMethod 幂等）。
 - **attach**：sealed 游戏显式拒绝并给出原因（发布引擎对象必须有 CDP 端口，只能工具箱启动）。
+- **gameSpeedMulti（按住 Ctrl 加速）依赖 MZ 标准主循环，自建循环的游戏（本作）不可用**；值锁已有 100ms 时钟兜底，不受影响。
 - 存档**文件**为自定义加密（熵 7.99），离线解析存档文件不可行；但「存档数据」树编辑器
   走内存路径不受影响（见上）。存档槽位列表/备份正常。`save.load`/`save.contents.apply`
   已由 extractSaveContents 包装保障引用保鲜，未做破坏性实测。

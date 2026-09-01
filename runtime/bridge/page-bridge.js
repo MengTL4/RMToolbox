@@ -3023,7 +3023,15 @@
   writeState();
 
   setInterval(applyWorldOptions, WORLD_OPTION_MS);
-  setInterval(preserveVitalsTick, VITALS_GUARD_MS);
+  setInterval(function () {
+    preserveVitalsTick();
+    // Value locks normally reassert from the SceneManager.updateMain wrapper
+    // (40-hooks), but games with a fully custom main loop never call it
+    // (停不下来的轮回: 0 invocations of SceneManager.update in 2s — measured).
+    // Tick them here too, on a clock no game loop can break. Cheap when no
+    // locks are armed (tiny object scans) and idempotent with the frame path.
+    applyValueLocks();
+  }, VITALS_GUARD_MS);
   setInterval(writeState, STATE_WRITE_MS);
   setInterval(pollCommands, COMMAND_POLL_MS);
 })();
