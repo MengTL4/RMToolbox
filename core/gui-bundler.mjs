@@ -111,6 +111,16 @@ function convertModule(source, name) {
 }
 
 export function buildGuiBundle(projectRoot) {
+  const output = assembleGuiBundle(projectRoot);
+  const outputPath = path.join(projectRoot, "app", "gui", "gui-bundle.cjs");
+  writeFileSync(outputPath, output, "utf8");
+  return outputPath;
+}
+
+// Assemble without writing — tools/gui-check.mjs compares this against the
+// file on disk so a stale generated bundle fails npm test instead of
+// silently shipping old core sources inside the GUI.
+export function assembleGuiBundle(projectRoot) {
   // Every relative import inside a bundled module must itself be bundled:
   // convertModule rewrites imports to require_mod() calls, and a module
   // missing from MODULES would only blow up at GUI boot ("module not
@@ -158,7 +168,5 @@ function require_mod(name) {
 module.exports = { mod: require_mod, modules: __rmch_modules };
 `);
 
-  const outputPath = path.join(projectRoot, "app", "gui", "gui-bundle.cjs");
-  writeFileSync(outputPath, parts.join("\n"), "utf8");
-  return outputPath;
+  return parts.join("\n");
 }

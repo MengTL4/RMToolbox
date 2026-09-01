@@ -12,7 +12,8 @@ import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
-import { MODULES as GUI_BUNDLED_MODULES } from "../core/gui-bundler.mjs";
+import { MODULES as GUI_BUNDLED_MODULES, assembleGuiBundle } from "../core/gui-bundler.mjs";
+import { assembleBridgeBody, BANNER as BRIDGE_BANNER } from "../core/bridge-bundler.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const guiDir = path.join(projectRoot, "app", "gui");
@@ -358,6 +359,25 @@ console.log(compiled + " templates compiled, " + renderOnly + " render-function 
 for (const expected of ["Library", "Trainer", "Console", "Saves", "Log"]) {
   if (!RMCH.views || !RMCH.views[expected]) fail("missing RMCH.views." + expected);
 }
+
+// Freshness: the generated bundles are committed, so core/ or bridge part
+// edits without a rebuild would silently ship old sources in the GUI. Fail
+// npm test when the on-disk bundles differ from a fresh assembly.
+function checkGeneratedFresh(name, file, expected) {
+  if (!existsSync(file)) {
+    fail(name + " missing: " + file + " — run node tools/gui-build.mjs and bridge-build");
+    return;
+  }
+  if (readFileSync(file, "utf8") !== expected) {
+    fail(name + " is stale against its sources — run node tools/gui-build.mjs && node tools/rmch.mjs bridge-build, then commit");
+  }
+}
+checkGeneratedFresh("gui-bundle.cjs",
+  path.join(guiDir, "gui-bundle.cjs"), assembleGuiBundle(projectRoot));
+checkGeneratedFresh("page-bridge.js",
+  path.join(projectRoot, "runtime", "bridge", "page-bridge.js"),
+  BRIDGE_BANNER + assembleBridgeBody(projectRoot));
+console.log("generated bundles fresh");
 
 if (process.exitCode) {
   console.error("gui-check FAILED");
