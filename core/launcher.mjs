@@ -16,6 +16,7 @@ import { getToken } from "./token.mjs";
 import { launchShadowGame } from "./shadow-launcher.mjs";
 import { launchRgssGame, getRgssSession, listRgssSessions } from "./rgss-launcher.mjs";
 import { launchTauriGame, getTauriSession, listTauriSessions } from "./tauri-cdp.mjs";
+import { pickFreePort } from "./sealed-seed.mjs";
 
 // The GUI host routes commands/sessions through these; re-export so it only
 // ever talks to this module.
@@ -90,6 +91,9 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
     // the bridge is eval'd over CDP and its transport is outbox polling.
     return launchTauriGame({ scan, projectRoot });
   }
+  if (scan.container === "nwjs-sealed") {
+    return launchSealedGame({ scan, projectRoot, port });
+  }
   if (!scan.paths.exe) throw new Error("Game.exe not found in game root");
 
   const plan = injectionStrategy(scan);
@@ -159,6 +163,86 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
     pid: processInfo.pid,
     shadowApp: processInfo.appDir || null,
     profileDir: processInfo.profileDir || null,
+    server,
+    port,
+    extensionDir
+  };
+}
+
+// Sealed-launcher MZ games (停不下来的轮回 family): the engine lives in one
+// obfuscated IIFE executed by a bundled launcher page, so the extension bridge
+// boots but its resolvers start empty. Two additions to the standard extension
+// launch fix that:
+//   1. --remote-debugging-port on the game process, so the seeder process can
+//      heap-scan via CDP and publish the engine objects onto window
+//      (core/sealed-seed.mjs) once the game enters a session.
+//   2. RMCH_SEALED=1, which tells the bridge to keep retrying hooks on a slow
+//      cadence instead of giving up after 60s (the globals appear late).
+// Everything else — ws server, per-game profile, extension injection — is the
+// proven standard path. The seeder logs to runtime/bridge-state/<gameKey>/seed.log.
+async function launchSealedGame({ scan, projectRoot, port }) {
+  if (!scan.paths.exe) {
+    throw new Error(`game exe not found in ${scan.root} (looked for Game.exe, <manifest name>.exe, or a single root exe)`);
+  }
+  const token = getToken(projectRoot);
+  buildBridge(projectRoot);
+  const extensionDir = path.join(projectRoot, "runtime", "bridge");
+  if (!existsSync(path.join(extensionDir, "manifest.json"))) throw new Error(`bridge extension missing: ${extensionDir}`);
+
+  const server = await ensureServer({ projectRoot, port, token });
+  const seedPort = await pickFreePort();
+
+  const profileDir = path.join(projectRoot, "runtime", "profiles", scan.gameKey);
+  mkdirSync(profileDir, { recursive: true });
+  const child = spawn(scan.paths.exe, [
+    `--user-data-dir=${profileDir}`,
+    `--load-extension=${extensionDir}`,
+    `--remote-debugging-port=${seedPort}`
+  ], {
+    cwd: scan.root,
+    detached: true,
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      RMCH_GAME_ROOT: scan.root,
+      RMCH_PROJECT_ROOT: projectRoot,
+      RMCH_GAME_KEY: scan.gameKey,
+      RMCH_WS_PORT: String(port),
+      RMCH_WS_TOKEN: token,
+      RMCH_SEALED: "1",
+      RMCH_SEED_CDP_PORT: String(seedPort)
+    },
+    // See the extension-path note above: windowsHide lands as SW_HIDE in old
+    // NW.js builds and leaves the game window invisible.
+    windowsHide: false
+  });
+  child.unref();
+
+  const seeder = spawn(process.execPath, [path.join(projectRoot, "tools", "seed-sealed.mjs")], {
+    detached: true,
+    stdio: "ignore",
+    env: {
+      ...process.env,
+      RMCH_SEED_CDP_PORT: String(seedPort),
+      RMCH_GAME_KEY: scan.gameKey,
+      RMCH_GAME_ROOT: scan.root,
+      RMCH_PROJECT_ROOT: projectRoot
+    },
+    windowsHide: true
+  });
+  seeder.unref();
+
+  return {
+    game: scan.title,
+    gameKey: scan.gameKey,
+    root: scan.root,
+    engine: scan.engine.id,
+    protection: scan.protection,
+    strategy: "extension-cdp-seed",
+    strategyReason: injectionStrategy(scan).reason,
+    pid: child.pid,
+    profileDir,
+    seedPort,
     server,
     port,
     extensionDir

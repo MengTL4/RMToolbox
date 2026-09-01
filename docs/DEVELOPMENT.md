@@ -11,6 +11,7 @@ core/            ESM 核心模块
   scanner.mjs        引擎(MV/MZ/XP/VX/Ace/RM2k) + 保护等级(L0-L3) + 布局识别
   launcher.mjs       注入启动（策略自动选择，RGSS 分发到 rgss-launcher）
   tauri-cdp.mjs      Tauri(WebView2) 壳 MZ：exe 副本打 CDP 补丁 + 启动 + 会话（evaluate 轮询传输）
+  sealed-seed.mjs    sealed 启动器 MZ：CDP 堆扫描(Runtime.queryObjects)发布引擎对象 + initialize 保鲜补丁
   cdp-client.mjs     零依赖 CDP 客户端库（/json 列表 + RFC6455 + Runtime.evaluate）
   shadow-launcher.mjs 策略B：影子目录 + 补丁 bg-script + 环境伪装
   rgss.mjs           RGSS(XP/VX/Ace) 识别(Game.ini Library 字段) + shadow 构建 + 脚本注入
@@ -202,6 +203,17 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   页面出站消息堆 `window.__rmchOutbox` 由宿主 250ms 轮询取回，入站走
   `window.__rmchDispatch` eval。bridge 在无 Node 环境降级运行（无 fs，
   save.list 由宿主侧直接读存档目录应答）。不支持 attach（无法事后开 CDP）。
+- **sealed 启动器（extension-cdp-seed）**：引擎整体混淆进一个 IIFE、由 Vite 启动器页
+  eval 的 MZ 游戏（停不下来的轮回家族）。页面（本身是 chrome-extension:// 页）上没有任何
+  引擎全局，扩展注入的 bridge 起得来但 resolver 全空。启动时给游戏进程加
+  `--remote-debugging-port` 并派一个 detached seeder（`core/sealed-seed.mjs` +
+  `tools/seed-sealed.mjs`）：自动点掉启动器的「开始游戏」按钮，等 `__PIXI_APP__` 出现后用
+  `Runtime.queryObjects` 全堆扫描（~31 万对象），按字段形状捞 `$game*`/`$data*`/管理器
+  单例发布到 window（坑与判别式见 ACCEPTANCE v0.6.0：switches/vars 靠 `value(999999)`
+  越界读区分、物品表无 atypeId、模板副本表取第一份），并给每个单例原型的 `initialize`
+  打补丁让读档/新游戏后的实例替换自动重发布。游戏进程带 `RMCH_SEALED=1`，bridge 的 hook
+  重试不封顶（先快后慢、5s 永久慢重试）。种子日志在
+  `runtime/bridge-state/<gameKey>/seed.log`。不支持 attach（发布引擎对象必须有 CDP 端口）。
 - **附加（attach，不改文件也不启动游戏）**：游戏已在运行时注入。MV/MZ：`rmch-mvhook.dll`
   经 CreateRemoteThread 进渲染进程，MinHook detour 住 nw.dll 导出的 `v8::Function::Call`
   （Blink 每帧 rAF 必经；`NewFromUtf8` 留作后备），在自然的 V8 调用点里

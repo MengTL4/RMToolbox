@@ -256,7 +256,7 @@ async function main() {
   vm.runInContext(bridgeSource, context, { filename: "page-bridge.js" });
 
   assert.ok(sandbox.__rmchBridge, "bridge must attach to window");
-  assert.equal(sandbox.__rmchBridge.version, "0.3.1");
+  assert.equal(sandbox.__rmchBridge.version, "0.4.0");
 
   let commandCounter = 0;
   const sendCommand = async (type, args = {}) => {

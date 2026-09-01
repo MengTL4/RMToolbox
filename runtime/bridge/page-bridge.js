@@ -17,7 +17,7 @@
   if (window.__rmchBridge) return;
 
   const bridge = {
-    version: "0.3.1",
+    version: "0.4.0",
     startedAt: new Date().toISOString(),
     startedAtMs: Date.now(),
     processed: Object.create(null),
@@ -2922,17 +2922,59 @@
 
   loadProfile();
 
+  // Sealed-launcher games (RMCH_SEALED=1): the engine's singletons are not on
+  // window when this runs — a CDP seeder publishes them after the game enters
+  // a session, which can be minutes after boot (the bundled launcher gates the
+  // game behind its own start button). Hook installation therefore never gives
+  // up for these games: it keeps the fast retry until the first stable pass,
+  // then drops to a slow permanent retry so hooks whose classes materialise
+  // later (party actors only exist once a save is loaded) still land.
+  const sealedEngine = envVar("RMCH_SEALED") === "1";
   let hookRetries = 0;
-  const hookTimer = setInterval(function () {
+  let stablePasses = 0;
+  let lastHookCount = -1;
+  let hookTimer = null;
+  let hookSlowTimer = null;
+  // The permanent slow cadence: patchMethod is idempotent and the pass is
+  // cheap, so hooks whose classes materialise later (a save loaded minutes
+  // into the session) still land without burning CPU in the meantime.
+  const startSlowRetry = function (summary) {
+    if (hookTimer) clearInterval(hookTimer);
+    hookTimer = null;
+    log("hook install finished", { ...summary, retries: hookRetries });
+    applyWorldOptions();
+    writeState();
+    hookSlowTimer = setInterval(function () {
+      const slow = patchTrainerHooks();
+      if (slow.count !== lastHookCount) {
+        lastHookCount = slow.count;
+        applyWorldOptions();
+        writeState();
+      }
+    }, 5000);
+  };
+  const hookTick = function () {
     hookRetries += 1;
     const summary = patchTrainerHooks();
-    if (summary.count > 0 || hookRetries >= HOOK_RETRY_LIMIT) {
-      clearInterval(hookTimer);
-      log("hook install finished", { ...summary, retries: hookRetries });
-      applyWorldOptions();
-      writeState();
+    if (summary.count > 0 && summary.count === lastHookCount) stablePasses += 1;
+    else stablePasses = 0;
+    lastHookCount = summary.count;
+    const done = summary.count > 0 && (!sealedEngine || stablePasses >= 10);
+    if (done || (!sealedEngine && hookRetries >= HOOK_RETRY_LIMIT)) {
+      if (sealedEngine) startSlowRetry(summary);
+      else {
+        if (hookTimer) clearInterval(hookTimer);
+        log("hook install finished", { ...summary, retries: hookRetries });
+        applyWorldOptions();
+        writeState();
+      }
+    } else if (sealedEngine && hookRetries >= HOOK_RETRY_LIMIT && summary.count === 0) {
+      // Game still hasn't entered a session after the standard window — keep
+      // trying, just at the slow cadence.
+      startSlowRetry(summary);
     }
-  }, HOOK_RETRY_MS);
+  };
+  hookTimer = setInterval(hookTick, HOOK_RETRY_MS);
 
   // Plugins can replace prototypes after boot, so patch once more when the page
   // is fully loaded — patchMethod makes the repeat harmless.
