@@ -1,8 +1,14 @@
 // Live e2e smoke test for sealed-launcher games, mirroring tools/e2e-tauri.mjs.
 //
-//   1. Launch the game via the toolbox (node tools/rmch.mjs launch <gameRoot>)
-//      and wait for the seeder to publish the engine + the bridge to connect.
-//   2. node tools/e2e-sealed.mjs <gameRoot>
+//   node tools/e2e-sealed.mjs <gameRoot> --launch
+//     One-command mode: launches the game under NW.js GUI conditions — WS
+//     server in-process (host.cjs style) and process.execPath pointing at a
+//     non-Node GUI shell, reproducing the v0.6.1 bug — then waits for the
+//     seeder + bridge and runs the whole suite. Kills the game at the end.
+//
+//   node tools/e2e-sealed.mjs <gameRoot>
+//     Two-step mode: launch via the toolbox first (node tools/rmch.mjs launch
+//     <gameRoot>), then run this to drive the already-running session.
 //
 // Connects to the ws server's /client channel and drives every non-destructive
 // bridge command against the running game, restoring game state after each
@@ -10,13 +16,15 @@
 // Skipped as game-specific/dangerous: map.transfer*, scene.push/pop,
 // game.repair, game.newGame, save.load (rolls back live progress).
 
+import { spawn } from "node:child_process";
 import net from "node:net";
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanGame } from "../core/scanner.mjs";
 import { getToken } from "../core/token.mjs";
-import { ensureServer } from "../core/launcher.mjs";
+import { ensureServer, launchGame } from "../core/launcher.mjs";
+import { BridgeServer } from "../core/ws-server.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const gameRoot = process.argv[2];
@@ -82,11 +90,51 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
   if (!scan.paths.exe) throw new Error(`game exe not found: ${scan.root}`);
-  await ensureServer({ projectRoot, port: PORT, token: TOKEN });
-  if (!await serverReachable(PORT)) throw new Error(`no ws server on ${PORT}`);
+  let launchedPid = null;
+  if (process.argv.includes("--launch")) {
+    // Run the launch exactly the way the NW.js GUI does: WS server in-process
+    // (host.cjs style) and process.execPath pointing at a non-Node GUI shell.
+    // The old code spawned the seeder with raw execPath, which under the GUI
+    // was RMToolbox.exe and silently did nothing — this mode keeps that path
+    // regression-tested.
+    const server = new BridgeServer({
+      port: PORT, token: TOKEN,
+      stateDir: path.join(projectRoot, "runtime", "bridge-state")
+    });
+    await server.start();
+    Object.defineProperty(process, "execPath", { value: "C:\\fake\\RMToolbox.exe", configurable: true });
+    const summary = await launchGame({ gameRoot: scan.root, projectRoot, port: PORT });
+    launchedPid = summary.pid;
+    console.log(`launched pid ${summary.pid} (GUI-simulated), waiting for seed + bridge session...`);
+  } else {
+    await ensureServer({ projectRoot, port: PORT, token: TOKEN });
+    if (!await serverReachable(PORT)) throw new Error(`no ws server on ${PORT}`);
+  }
 
-  const client = await makeClient();
+  // The bridge needs the game booted AND the seeder done; poll a real command
+  // rather than racing a fixed delay (the /client socket accepts early and
+  // error-packets commands until a bridge session registers).
+  let client = null;
+  for (let i = 0; i < 90 && !client; i++) {
+    try {
+      const probe = await makeClient();
+      await probe.send("ping", {}, 8000);
+      client = probe;
+    } catch (_) { await sleep(2000); }
+  }
+  if (!client) throw new Error("bridge session never connected");
   const send = client.send;
+
+  // The bridge boots before the seeder publishes; in --launch mode the first
+  // engine commands would still hit "unavailable". Wait until the engine is
+  // actually visible (runtime.info reads the live window globals).
+  for (let i = 0; i < 60; i++) {
+    try {
+      const info = await send("runtime.info", {}, 8000);
+      if (info.engine && info.engine.title) break;
+    } catch (_) {}
+    await sleep(2000);
+  }
 
   // --- core / info ----------------------------------------------------------
   const ping = await send("ping");
@@ -302,13 +350,21 @@ async function main() {
 
   client.close();
 
+  if (launchedPid) {
+    // Stand down the game we launched; the detached seeder exits on its own
+    // ~90s later when it notices the CDP endpoint is gone.
+    try { spawn("taskkill", ["/PID", String(launchedPid), "/T", "/F"], { stdio: "ignore" }); } catch (_) {}
+  }
+
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);
   if (failed.length) {
     console.log("failed:");
     for (const f of failed) console.log(`  - ${f.name}: ${f.detail}`);
-    process.exit(1);
   }
+  // In --launch mode the in-process bridge server keeps the event loop alive;
+  // exit explicitly either way.
+  process.exit(failed.length ? 1 : 0);
 }
 
 main().catch((error) => {

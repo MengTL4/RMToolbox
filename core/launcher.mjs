@@ -16,7 +16,7 @@ import { getToken } from "./token.mjs";
 import { launchShadowGame } from "./shadow-launcher.mjs";
 import { launchRgssGame, getRgssSession, listRgssSessions } from "./rgss-launcher.mjs";
 import { launchTauriGame, getTauriSession, listTauriSessions } from "./tauri-cdp.mjs";
-import { pickFreePort } from "./sealed-seed.mjs";
+import { pickFreePort, runSeededSeeder, appendSeedLog } from "./sealed-seed.mjs";
 
 // The GUI host routes commands/sessions through these; re-export so it only
 // ever talks to this module.
@@ -180,6 +180,39 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
 //      cadence instead of giving up after 60s (the globals appear late).
 // Everything else — ws server, per-game profile, extension injection — is the
 // proven standard path. The seeder logs to runtime/bridge-state/<gameKey>/seed.log.
+// Spawn the detached seeder process for a sealed-launcher game. The seeder is
+// a plain Node script, so the executable matters: inside the NW.js GUI
+// process.execPath is the GUI shell (RMToolbox.exe), which cannot run a .mjs —
+// spawning it silently did nothing and every GUI launch of a sealed game
+// stayed unseeded (empty data tabs, "DataManager is unavailable"). Prefer
+// execPath when it actually is Node (the CLI path), fall back to "node" from
+// PATH, and if even that fails run the seeder loop in-process so seeding never
+// depends on a standalone Node install.
+export function startSealedSeeder({ projectRoot, gameKey, gameRoot, seedPort }) {
+  const env = {
+    ...process.env,
+    RMCH_SEED_CDP_PORT: String(seedPort),
+    RMCH_GAME_KEY: gameKey,
+    RMCH_GAME_ROOT: gameRoot,
+    RMCH_PROJECT_ROOT: projectRoot
+  };
+  const seederScript = path.join(projectRoot, "tools", "seed-sealed.mjs");
+  const isNodeSelf = path.basename(process.execPath).toLowerCase().startsWith("node");
+  const seeder = spawn(isNodeSelf ? process.execPath : "node", [seederScript], {
+    detached: true,
+    stdio: "ignore",
+    env,
+    windowsHide: true
+  });
+  seeder.on("error", () => {
+    // No standalone Node available (GUI install without a dev toolchain):
+    // the poll loop is plain fs/net code, so run it in this process instead.
+    const log = (message, extra) => appendSeedLog(projectRoot, gameKey, message, extra);
+    runSeededSeeder({ cdpPort: seedPort, log }).catch(() => {});
+  });
+  seeder.unref();
+}
+
 async function launchSealedGame({ scan, projectRoot, port }) {
   if (!scan.paths.exe) {
     throw new Error(`game exe not found in ${scan.root} (looked for Game.exe, <manifest name>.exe, or a single root exe)`);
@@ -218,19 +251,7 @@ async function launchSealedGame({ scan, projectRoot, port }) {
   });
   child.unref();
 
-  const seeder = spawn(process.execPath, [path.join(projectRoot, "tools", "seed-sealed.mjs")], {
-    detached: true,
-    stdio: "ignore",
-    env: {
-      ...process.env,
-      RMCH_SEED_CDP_PORT: String(seedPort),
-      RMCH_GAME_KEY: scan.gameKey,
-      RMCH_GAME_ROOT: scan.root,
-      RMCH_PROJECT_ROOT: projectRoot
-    },
-    windowsHide: true
-  });
-  seeder.unref();
+  startSealedSeeder({ projectRoot, gameKey: scan.gameKey, gameRoot: scan.root, seedPort });
 
   return {
     game: scan.title,

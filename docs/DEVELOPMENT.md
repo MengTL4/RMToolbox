@@ -11,7 +11,7 @@ core/            ESM 核心模块
   scanner.mjs        引擎(MV/MZ/XP/VX/Ace/RM2k) + 保护等级(L0-L3) + 布局识别
   launcher.mjs       注入启动（策略自动选择，RGSS 分发到 rgss-launcher）
   tauri-cdp.mjs      Tauri(WebView2) 壳 MZ：exe 副本打 CDP 补丁 + 启动 + 会话（evaluate 轮询传输）
-  sealed-seed.mjs    sealed 启动器 MZ：CDP 堆扫描(Runtime.queryObjects)发布引擎对象 + initialize 保鲜补丁
+  sealed-seed.mjs    sealed 启动器 MZ：CDP 堆扫描(Runtime.queryObjects)发布引擎对象 + initialize 保鲜补丁 + reload 看门狗
   cdp-client.mjs     零依赖 CDP 客户端库（/json 列表 + RFC6455 + Runtime.evaluate）
   shadow-launcher.mjs 策略B：影子目录 + 补丁 bg-script + 环境伪装
   rgss.mjs           RGSS(XP/VX/Ace) 识别(Game.ini Library 字段) + shadow 构建 + 脚本注入
@@ -219,6 +219,11 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   重试不封顶（先快后慢、5s 永久慢重试）。**自建主循环陷阱**：这类游戏可能完全不调
   `SceneManager.update`（实测 2s 内 0 次），updateMain 包装器上的每帧路径（值锁、
   按住 Ctrl 加速）不会跑——值锁已有 100ms 心跳兜底（90-startup），加速无解，已记录。
+  seeder 播种后**常驻为 reload 看门狗**：F5/崩溃重启会抹掉全部发布对象（连保鲜补丁
+  一起），看门狗发现 `__rmchSealed` 消失即自动重播种（含点开始按钮），游戏关闭
+  （CDP 消失 90s）才退出。派 seeder 必须经 `startSealedSeeder`（launcher.mjs）：
+  **GUI（NW.js）里 `process.execPath` 是 GUI 壳 exe 而非 node**，直接 spawn 会静默
+  失败——该函数按「execPath 是 node → PATH 上的 node → 进程内兜底」解析。
   种子日志在
   `runtime/bridge-state/<gameKey>/seed.log`。不支持 attach（发布引擎对象必须有 CDP 端口）。
 - **附加（attach，不改文件也不启动游戏）**：游戏已在运行时注入。MV/MZ：`rmch-mvhook.dll`
