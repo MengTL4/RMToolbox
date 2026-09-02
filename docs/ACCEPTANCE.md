@@ -1,5 +1,46 @@
 # RMCH 验收记录
 
+## v0.6.1：GUI 启动 sealed 游戏 seeder 静默失败 + reload 看门狗（2026-09-02）
+
+用户报告：数据页全空、`save.contents.get` 报 `DataManager is unavailable`，怀疑「没更新」。
+
+### 排查：不是陈旧构建，是 seeder 从没跑过
+
+- 用户堆栈逐行比对当前构建（`requireEngineObject:463` / `requireDataManager:477` /
+  `save.contents.get:2457` / `execute:2791`…）完全一致，bridge 就是 0.4.0 最新；
+- `state.json`：`bridgeVersion: 0.4.0`、会话 07:44 启动、WS 已连；
+- `seed.log`：最后一次成功播种在 07:28，当前会话**没有新条目**——新会话从未被播种。
+
+根因：`app/gui/host.cjs` 是在 NW.js 进程内直接调 `launcher.launchGame()` 的，而
+`launchSealedGame` 派 seeder 用的是 `spawn(process.execPath, [tools/seed-sealed.mjs])`。
+**GUI 里 `process.execPath` 是 `RMToolbox.exe`（NW 壳）**，拿去跑 .mjs 静默失败 → GUI
+启动的 sealed 游戏从未播种（数据空、全部命令报 unavailable）。CLI 路径 execPath=node
+所以 e2e 一直是绿的——这是纯 GUI 路径 bug。同模式的 `ensureServer`（spawn serve.mjs）
+没炸只是被遮住了：host.cjs 自己进程内起了 BridgeServer，ensureServer 走「端口已占用」
+短路，坏的 spawn 根本没执行到。
+
+### 修复
+
+1. **`core/launcher.mjs` 拆出 `startSealedSeeder`**：execPath 是 node 才直接用，否则用
+   PATH 上的 `node`；spawn 报 error（PATH 也没有 node，比如无开发工具链的 GUI 安装）就
+   **进程内兜底**跑 `runSeededSeeder`（纯 fs/net 代码，NW 内嵌 Node 16.1 兼容——它本来
+   就在 gui-bundle 清单里）。
+2. **`core/sealed-seed.mjs` 播种后不再退出，转常驻看门狗**：F5/崩溃重启会把 window 上的
+   发布对象连同保鲜补丁一起抹掉，旧的一次性 seeder 早就退了，会话从此全废。看门狗轮询
+   `__rmchSealed`，消失（页面 reload）即重播种——同样自动点「开始游戏」，与首次启动
+   契约一致；CDP 消失 90s（游戏关闭）才退出，`game-closed` 为正常退出码。
+3. `tools/seed-sealed.mjs` 退出码相应调整：只有播种阶段 timeout 才是非 0。
+
+### 验证（真机）
+
+- 模拟 GUI 全条件（进程内 BridgeServer + `Object.defineProperty(process,"execPath")`
+  spoof 成 `C:\fake\RMToolbox.exe`）：播种成功；`Page.reload` 后看门狗 ~6s 内自动点掉
+  开始按钮并 `re-seeded after page reload`。
+- `tools/e2e-sealed.mjs` 新增 **`--launch` 模式**：一条命令在上述 GUI 条件下从零启动并跑
+  完整套件（固化本次回归），**49/49 通过**。顺带修了连接探测：/client socket 会提前
+  accept 但对命令回错误包、且 bridge 起得比 seed 早——现在先 ping 探测会话、再等
+  `runtime.info` 出现 engine.title 才开跑。
+
 ## v0.6.0：sealed 启动器 MZ 游戏落地（停不下来的轮回 v1.4 实测）（2026-09-02）
 
 用户请求适配 `D:\Downloads\停不下来的轮回正式版v1.4.1`（国产放置轮回类，NW.js）。

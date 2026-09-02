@@ -1,8 +1,8 @@
 // Detached seeder process for sealed-launcher MZ games (core/sealed-seed.mjs
 // has the design notes). Spawned by core/launcher.mjs with env:
 //   RMCH_SEED_CDP_PORT, RMCH_GAME_KEY, RMCH_GAME_ROOT, RMCH_PROJECT_ROOT
-// Logs to runtime/bridge-state/<gameKey>/seed.log and exits once seeded
-// (or on timeout / game close).
+// Logs to runtime/bridge-state/<gameKey>/seed.log, seeds once, then stays as a
+// reload watchdog until the game closes (exit 0) or the seed phase times out.
 //
 // Manual/testing use:
 //   node tools/seed-sealed.mjs --port 9333 [--once] [--timeout 60000]
@@ -42,4 +42,6 @@ if (args.includes("--once")) {
 log("seeder started", { cdpPort, pid: process.pid });
 const result = await runSeededSeeder({ cdpPort, log });
 log("seeder exit", { status: result.status });
-process.exit(result.status === "seeded" || result.status === "already-seeded" ? 0 : 1);
+// "game-closed" is the normal end of a fully seeded session (the watchdog
+// standing down); only a seed-phase timeout is a failure.
+process.exit(result.status === "timeout" ? 1 : 0);

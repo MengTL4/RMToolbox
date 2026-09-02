@@ -369,15 +369,22 @@ export async function seedAttempt(cdpPort) {
 
 // Long-running seeder loop for the detached process (tools/seed-sealed.mjs):
 // waits for the game, auto-starts the bundled launcher, seeds once the engine
-// singletons exist, then exits. Gives up on timeout or when the CDP endpoint
-// has been gone long enough to mean the game closed.
+// singletons exist — then keeps running as a watchdog. A page reload (F5) or a
+// game crash-restart wipes every published global INCLUDING the freshness
+// patches, and the old one-shot seeder was long gone by then, leaving the
+// bridge with "DataManager is unavailable" for the rest of the session. The
+// watchdog re-seeds whenever __rmchSealed disappears — auto-clicking the
+// launcher's start button again, same as the initial launch contract — and
+// exits only when the CDP endpoint has been gone long enough to mean the game
+// closed.
 export async function runSeededSeeder({ cdpPort, log }) {
   const startedAt = Date.now();
   let lastCdpErrorAt = 0;
   let seedAttempts = 0;
   let clicks = 0;
+  let seededOnce = false;
   for (;;) {
-    if (Date.now() - startedAt > SEED_TIMEOUT_MS) {
+    if (!seededOnce && Date.now() - startedAt > SEED_TIMEOUT_MS) {
       log("seed timed out", { minutes: Math.round((Date.now() - startedAt) / 60000) });
       return { status: "timeout" };
     }
@@ -389,11 +396,20 @@ export async function runSeededSeeder({ cdpPort, log }) {
     }
     switch (attempt.status) {
       case "seeded":
-        log("seeded", attempt.summary);
-        return { status: "seeded", summary: attempt.summary };
+        if (seededOnce) {
+          log("re-seeded after page reload", { published: attempt.summary && attempt.summary.published });
+        } else {
+          log("seeded", attempt.summary);
+          seededOnce = true;
+          log("watchdog armed: re-seeding automatically if the page reloads");
+        }
+        break;
       case "already-seeded":
-        log("already seeded by an earlier run");
-        return { status: "already-seeded" };
+        if (!seededOnce) {
+          log("already seeded by an earlier run");
+          seededOnce = true;
+        }
+        break;
       case "clicked-start":
         clicks += 1;
         log("auto-clicked launcher start button", { clicks });
