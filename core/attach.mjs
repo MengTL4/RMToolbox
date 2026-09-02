@@ -421,6 +421,15 @@ async function attachSealed({ scan, projectRoot, port }) {
 
 export async function attachGame({ gameRoot, projectRoot, port = 47412 }) {
   const scan = scanGame(gameRoot);
+  if (scan.container === "nb-shell") {
+    // Measured (ACCEPTANCE v0.6.3): the shell detects the injected DLL within
+    // seconds of the LoadLibrary event and force-exits the game — attaching
+    // would crash the user's live session for zero benefit.
+    throw new AttachError(
+      "nb-shell protected game (nbtool.node): the shell detects injected code and force-exits the game — " +
+      "attaching would crash the running game; this shell has no toolbox injection vector"
+    );
+  }
   if (scan.engine.id === "RM2K") {
     throw new AttachError('engine "RM2K" is not supported by attach');
   }
