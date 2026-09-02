@@ -225,7 +225,9 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   **GUI（NW.js）里 `process.execPath` 是 GUI 壳 exe 而非 node**，直接 spawn 会静默
   失败——该函数按「execPath 是 node → PATH 上的 node → 进程内兜底」解析。
   种子日志在
-  `runtime/bridge-state/<gameKey>/seed.log`。不支持 attach（发布引擎对象必须有 CDP 端口）。
+  `runtime/bridge-state/<gameKey>/seed.log`。attach 对这类游戏是**接管式**（`attachSealed`）：
+  停掉该游戏目录下的运行进程（手工启动的实例没有调试端口，无法事后播种），再走标准
+  sealed 启动路径，游戏自动续上最后存档。
 - **附加（attach，不改文件也不启动游戏）**：游戏已在运行时注入。MV/MZ：`rmch-mvhook.dll`
   经 CreateRemoteThread 进渲染进程，MinHook detour 住 nw.dll 导出的 `v8::Function::Call`
   （Blink 每帧 rAF 必经；`NewFromUtf8` 留作后备），在自然的 V8 调用点里

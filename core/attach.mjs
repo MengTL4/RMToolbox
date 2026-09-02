@@ -26,7 +26,7 @@ import path from "node:path";
 import { scanGame } from "./scanner.mjs";
 import { detectRgss, renderBridgeSource } from "./rgss.mjs";
 import { buildBridge } from "./bridge-bundler.mjs";
-import { ensureServer } from "./launcher.mjs";
+import { ensureServer, launchGame } from "./launcher.mjs";
 import { getToken } from "./token.mjs";
 import { adoptRgssSession } from "./rgss-launcher.mjs";
 
@@ -61,7 +61,12 @@ function runPowerShellJson(script) {
 // All processes whose executable is `exeName`. Returns [{ProcessId,
 // ParentProcessId, ExecutablePath, CommandLine}].
 export async function listProcessesByExeName(exeName) {
-  if (!/^[\w. -]+$/.test(exeName)) throw new AttachError(`refusing exe name: ${exeName}`);
+  // Unicode letters/digits so Chinese-named exes (停不下来的轮回.exe…) pass;
+  // everything here goes into a WQL string filter, and this class still
+  // refuses every character that could break out of it (quotes, semicolons…).
+  if (!/^[\p{L}\p{N}][\p{L}\p{N}_. -]*$/u.test(exeName)) {
+    throw new AttachError(`refusing exe name: ${exeName}`);
+  }
   return runPowerShellJson(
     `Get-CimInstance Win32_Process -Filter "Name='${exeName}'" ` +
       `| Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine ` +
@@ -377,6 +382,41 @@ async function attachRgss({ scan, projectRoot }) {
   };
 }
 
+// --- sealed takeover ----------------------------------------------------------
+
+// Sealed games cannot be hooked post-launch: the engine never reaches window,
+// and publishing it needs a CDP heap scan whose port only a toolbox launch
+// adds. So "attach" means TAKEOVER: stop the running (manually started)
+// instance, then go through the normal sealed launch path — the seeder
+// publishes the engine objects and the game auto-resumes its last save.
+// Only processes running from THIS game directory are stopped.
+async function attachSealed({ scan, projectRoot, port }) {
+  const exeName = path.basename(scan.paths.exe);
+  let stopped = 0;
+  const processes = await listProcessesByExeName(exeName); // throws = no takeover, fail loudly
+  for (const target of processesUnderRoot(processes, scan.root)) {
+    await new Promise((resolve) => {
+      const killer = spawn("taskkill", ["/PID", String(target.ProcessId), "/T", "/F"], { stdio: "ignore" });
+      killer.on("close", resolve);
+      killer.on("error", resolve);
+    });
+    stopped += 1;
+  }
+  if (stopped) {
+    // Let the dying process release file handles before the relaunch re-opens
+    // the same profile/save files.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  const summary = await launchGame({ gameRoot: scan.root, projectRoot, port });
+  return {
+    ...summary,
+    strategy: "sealed-relaunch",
+    strategyReason: stopped
+      ? `sealed engine cannot be hooked post-launch: stopped ${stopped} game process(es) and relaunched via the toolbox (debug port + engine publish; the game auto-resumes its last save)`
+      : "no running game process found; launched via the toolbox (debug port + engine publish)"
+  };
+}
+
 // --- entry -------------------------------------------------------------------------
 
 export async function attachGame({ gameRoot, projectRoot, port = 47412 }) {
@@ -393,14 +433,7 @@ export async function attachGame({ gameRoot, projectRoot, port = 47412 }) {
     );
   }
   if (scan.container === "nwjs-sealed") {
-    // Injecting the bridge alone is not enough: the sealed engine never puts
-    // its objects on window, and publishing them needs a CDP heap scan that
-    // only works when the process was started with --remote-debugging-port —
-    // which only the toolbox launch does.
-    throw new AttachError(
-      "sealed-launcher games (engine hidden inside an obfuscated game.js) cannot be attached " +
-      'post-launch; use "launch" instead — the toolbox starts the game with a debug port and publishes the engine objects itself'
-    );
+    return attachSealed({ scan, projectRoot, port });
   }
   if (/^RGSS/i.test(scan.engine.id)) {
     return attachRgss({ scan, projectRoot });
