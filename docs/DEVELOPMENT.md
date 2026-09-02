@@ -8,7 +8,7 @@
 
 ```
 core/            ESM 核心模块
-  scanner.mjs        引擎(MV/MZ/XP/VX/Ace/RM2k) + 保护等级(L0-L3) + 布局识别
+  scanner.mjs        引擎(MV/MZ/XP/VX/Ace/RM2k) + 保护等级(L0-L4) + 布局识别（L4=nb-shell，只识别不注入）
   launcher.mjs       注入启动（策略自动选择，RGSS 分发到 rgss-launcher）
   tauri-cdp.mjs      Tauri(WebView2) 壳 MZ：exe 副本打 CDP 补丁 + 启动 + 会话（evaluate 轮询传输）
   sealed-seed.mjs    sealed 启动器 MZ：CDP 堆扫描(Runtime.queryObjects)发布引擎对象 + initialize 保鲜补丁 + reload 看门狗
@@ -67,6 +67,7 @@ tools/           CLI（rmch.mjs / send.mjs / serve.mjs）、setup/launch 脚本�
                  test-attach.mjs（attach 单元：PE 解析/bootstrap 组装/管道分帧回环）、
                  test-inject-selftest.mjs（注入器 + 双 DLL 对自测目标进程的真机回路）、
                  test-tauri-cdp.mjs（Tauri 补丁/扫描 fixture 测试）、
+                 test-nb-shell.mjs（NB 壳识别 + 拒绝路径 fixture 测试）、
                  e2e-tauri.mjs（Tauri-CDP 实机冒烟，需 Demon forest 游戏本体）、
                  pack-release.mjs（Release zip 打包）
 ```
@@ -75,7 +76,7 @@ tools/           CLI（rmch.mjs / send.mjs / serve.mjs）、setup/launch 脚本�
 
 ```powershell
 npm test                                 # ws-server 合同 + bridge harness + shadow-launcher + rgss marshal/archive
-                                         # + attach 单元 + 注入自测 + tauri-cdp fixture + GUI 预检
+                                         # + attach 单元 + 注入自测 + tauri-cdp/nb-shell fixture + GUI 预检
 npm run test:rgss                        # 只跑 RGSS 单元测试（设 RMCH_RGSS_SAMPLES 环境变量可启用真实归档用例）
 npm run test:inject                      # 只跑 attach 单元测试 + 注入自测（预构建二进制已入库，无编译器也能跑）
 npm run build:inject                     # 重建 runtime/inject/bin（需要 MSYS2 MinGW 工具链，见下）
@@ -203,6 +204,15 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   页面出站消息堆 `window.__rmchOutbox` 由宿主 250ms 轮询取回，入站走
   `window.__rmchDispatch` eval。bridge 在无 Node 环境降级运行（无 fs，
   save.list 由宿主侧直接读存档目录应答）。不支持 attach（无法事后开 CDP）。
+- **NB 壳（nb-shell，不支持）**：`nb_data/nbtool.node`（Themida 加壳原生模块）+
+  index.html `bootEncryptedBin()` 指纹（重装机兵-宿敌家族）。引擎与数据全部加密在
+  nb_data/，登录页之后才引导。scanner 识别为 `container: "nb-shell"`、保护级别 4，
+  launcher/attach 在任何动作之前直接拒绝。**不要试图注入**：实测定性（ACCEPTANCE
+  v0.6.3，每条都有对照）——启动旗标零容忍（任意额外参数 ~3s 干净退出）、祖先进程
+  链有 node.exe 即杀（改名即可绕过，按名不按行为）、package.json/index.html 哈希
+  校验（无关字段/纯 noop 标签同样死，TOCTOU 换回无效）、DLL 注入事件检测（注入
+  本身必成功、bridge 必连上、游戏 ≤6s 必被杀——杀的是加载事件，事后清理无效）、
+  影子副本要求父进程常驻。五条递送路全死，拒绝是唯一正确行为。
 - **sealed 启动器（extension-cdp-seed）**：引擎整体混淆进一个 IIFE、由 Vite 启动器页
   eval 的 MZ 游戏（停不下来的轮回家族）。页面（本身是 chrome-extension:// 页）上没有任何
   引擎全局，扩展注入的 bridge 起得来但 resolver 全空。启动时给游戏进程加

@@ -87,6 +87,26 @@ function detectSealedLauncher(root) {
   return false;
 }
 
+// NB-shell protected games (重装机兵-宿敌 family): the whole engine ships
+// encrypted inside nb_data/ and is booted by a Themida-packed native addon
+// (nbtool.node) that index.html requires for bootEncryptedBin(). Measured on
+// 宿敌 v3.5.3 (see ACCEPTANCE v0.6.3): the shell hash-verifies its boot files
+// (package.json, index.html), rejects ANY extra launch flag, kills processes
+// whose ancestry contains node.exe, detects CreateRemoteThread DLL injection
+// within seconds, and requires its parent process to stay alive. Every
+// injection vector the toolbox has is fatal to it — detection exists so the
+// toolbox can refuse cleanly instead of getting the user's game killed.
+function detectNbShell(root) {
+  if (!existsSync(path.join(root, "nb_data", "nbtool.node"))) return false;
+  const indexHtml = firstExisting([path.join(root, "index.html"), path.join(root, "www", "index.html")]);
+  if (!indexHtml) return false;
+  try {
+    return /bootEncryptedBin/.test(readFileSync(indexHtml, "utf8"));
+  } catch (_) {
+    return false;
+  }
+}
+
 // The exe behind an NW.js game is not always Game.exe: sealed launchers name it
 // after the manifest (停不下来的轮回.exe), and some titles ship exactly one
 // other exe. Junk filter keeps installers/uninstallers out of the fallback.
@@ -264,12 +284,17 @@ export function scanGame(root) {
 
   const engine = detectEngineFromJs(jsFiles);
   const sealed = !engine && detectSealedLauncher(resolvedRoot);
+  const nbShell = !engine && !sealed && detectNbShell(resolvedRoot);
   if (engine) {
     result.engine = engine;
   } else if (sealed) {
     result.engine = { id: "MZ", bytecode: false, confidence: "medium" };
     result.container = "nwjs-sealed";
     addFlag("sealed-launcher");
+  } else if (nbShell) {
+    result.engine = { id: "MZ", bytecode: false, confidence: "low" };
+    result.container = "nb-shell";
+    addFlag("nb-shell-protected");
   } else if (manifest || existsSync(path.join(resolvedRoot, "Game.exe"))) {
     result.engine = { id: "unknown-nwjs", bytecode: false, confidence: "low" };
   }
@@ -328,7 +353,9 @@ export function scanGame(root) {
 function computeProtectionLevel(flags) {
   let level = 0;
   for (const flag of flags) {
-    if (flag === "node-main-guard" || flag === "bg-script-startup") {
+    if (flag === "nb-shell-protected") {
+      level = Math.max(level, 4);
+    } else if (flag === "node-main-guard" || flag === "bg-script-startup") {
       level = Math.max(level, 3);
     } else if (flag === "bytecode-js" || flag === "index-obfuscated") {
       level = Math.max(level, 2);
@@ -407,6 +434,9 @@ export function injectionStrategy(scan) {
   }
   if (scan.container === "nwjs-sealed") {
     return { id: "extension-cdp-seed", reason: "sealed MZ engine (obfuscated game.js, no window globals): extension bridge + a CDP heap scan publishes the engine objects once the game boots" };
+  }
+  if (scan.container === "nb-shell") {
+    return { id: "unsupported-nb-shell", reason: "NB shell (nbtool.node/Themida) hash-verifies its boot files, refuses every launch flag and kills injected code — no toolbox injection vector survives; measured on 重装机兵-宿敌 v3.5.3, see ACCEPTANCE v0.6.3" };
   }
   if (scan.manifest && scan.manifest.nodeMain) return { id: "extension", reason: "node-main guard tolerates --load-extension; verify game does not self-close" };
   if (scan.manifest && scan.manifest.bgScript) return { id: "extension-then-shadow", reason: "bg-script startup chain may detect extensions; fall back to shadow-dir bg-script patch" };

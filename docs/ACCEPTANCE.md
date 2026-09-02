@@ -1,5 +1,57 @@
 # RMCH 验收记录
 
+## v0.6.3：NB 壳识别——无法适配的壳（重装机兵-宿敌 v3.5.3 实测）（2026-09-02）
+
+用户请求适配 `D:\Downloads\RPG\重装机兵-宿敌_V3.5.3_电脑端`（重装机兵同人，NW.js）。
+第五种发行形态之外的第六种：**NB 加密壳**。入口 index.html 只有一行
+`require('./nb_data/nbtool.node').bootEncryptedBin()`——整个 MZ 引擎（game-bundle.bin.enc
+11.9MB）与 426 个数据文件（md5 文件名自校验的密文 json）全部加密在 nb_data/ 里，由
+5.6MB 的 **Themida 加壳**原生模块解密执行；登录页（layui UI + QQ 号账号体系）由密文
+bundle 在页面里现画，引擎在登录成功后才引导。本次结论是**判定不可适配**，并把判定
+固化为产品行为（识别 + 拒绝），避免现状下「unknown-nwjs 附加 → 注入把用户游戏杀掉」。
+
+### 实测定性的壳防护模型（每一条都有对照实验）
+
+1. **启动旗标零容忍**：`--remote-debugging-port`、`--load-extension`、
+   `--user-data-dir`、乃至任意无害 `--rmch-noop-flag=1`，加了进程树起来 ~2-4s 即
+   干净退出（无 crashpad dump、无事件日志、exit 0）。
+2. **祖先进程黑名单**：bash→powershell→游戏 活；bash→node→powershell→游戏 死；
+   bash→cmd→游戏 活；bash→node→cmd→游戏 死。链上有 node.exe（隔代即可）就杀。
+   **改名 node.exe（RMCH-helper.exe）当父进程则活**——按进程名，不是按行为。
+3. **package.json 哈希校验**：影子副本里把 chromium-args 加 CDP 端口 → 秒死；
+   只加一个无关字段 `rmchNote` → 同样秒死。整个文件必须字节一致。
+4. **index.html 哈希校验**：影子副本（全量真实拷贝，无 junction）里给 index.html
+   加 `<script src="rmch-bridge.js">`（bridge 正常注入并写了 bridge.log/state.json），
+   ~2-5s 后被杀；连纯 noop 脚本标签都死。TOCTOU 竞态（浏览器读走后 1.2-1.5s 换回
+   原版）无效——校验发生在 nbtool 同步引导阶段，早于任何可控时机。
+5. **DLL 注入事件检测**：CreateRemoteThread+LoadLibrary 注入 rmch-mvhook.dll
+   **技术上全部成功**（登录后注入 hook 立即命中、bootstrap eval 成功、bridge 连上
+   WS 并写出 state.json；Themida 不挡 LoadLibrary），但**注入后 ≤6s 游戏必然被杀**
+   ——DLL 0.16s 内已完成递送并自卸载（%TEMP% 日志为证），杀机是**加载事件本身**
+   （事后清理无效），登录页阶段注入（DLL 常驻等待 hook 命中）同样被杀。
+6. **父进程存活校验**：全量副本 + 自定义名父进程 + 非分离 spawn 时游戏稳定存活
+   （实测 65s+），父进程退出则游戏立即退出（真机目录无此要求，机制未知）。
+7. **文件副本无路径锁**：字节级一致的 E: 盘拷贝可以跑（配合第 6 条的常驻父进程）。
+8. layui.js（登录页 CSS 框架的 JS）**从不被加载**（探针从不触发）——最后一个
+   文件级递送向量也不存在。
+
+### 为什么注不进去也要记下来
+
+Bridge 递送的五条路在这层壳面前全部死：extension（旗标）、CDP（旗标）、
+shadow bg-script（package.json 哈希）、script 标签（index.html 哈希）、DLL 注入
+（加载事件）。判别过程共 20+ 次启动/注入对照实验，上述每条结论都有正反两组。
+唯一活着跑完的注入路径证明了引擎判定为 MZ（WebGL mode 引导画面），但拿不到
+window 全局可见性——游戏退出发生在 resolver 报告之前。
+
+### 产品行为（本次改动）
+
+- `scanner.mjs`：`nb_data/nbtool.node` + index.html `bootEncryptedBin` 指纹 →
+  `container: "nb-shell"`、engine MZ(low)、`nb-shell-protected` 旗标、保护级别 4
+  （新档位，最高）。
+- `launcher.mjs` / `attach.mjs`：nb-shell 在任何 spawn/注入/IO 之前直接拒绝，
+  错误信息说明原因（附加更要点明「会把你正在跑的游戏杀掉」）。CLI 实测输出正确。
+- 影子目录、临时脚本、改名 helper 已全部清理；真机目录 mtimes 保持原始下载时间。
+
 ## v0.6.2：sealed 游戏附加=接管重启 + 中文名 exe 附加修复（2026-09-02）
 
 用户对运行中的停不下来的轮回点「附加」，报错

@@ -64,6 +64,15 @@ export async function ensureServer({ projectRoot, port, token }) {
 
 export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy = "auto", build = true }) {
   const scan = scanGame(gameRoot);
+  if (scan.container === "nb-shell") {
+    // Measured (ACCEPTANCE v0.6.3): any extra launch flag (--load-extension,
+    // --remote-debugging-port, --user-data-dir) makes the shell exit at boot,
+    // so even the flag-free parts of a toolbox launch are impossible.
+    throw new Error(
+      "nb-shell protected game (nbtool.node): the shell hash-verifies its boot files, refuses every launch flag and kills injected code — " +
+      "start it with its own exe; the toolbox cannot attach to this shell either"
+    );
+  }
   if (scan.engine.id === "RM2K") {
     throw new Error(`engine "${scan.engine.id}" is not supported by the M1 injectors (planned: ${injectionStrategy(scan).id})`);
   }
