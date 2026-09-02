@@ -1,5 +1,23 @@
 # RMCH 验收记录
 
+## v0.6.2：sealed 游戏附加=接管重启 + 中文名 exe 附加修复（2026-09-02）
+
+用户对运行中的停不下来的轮回点「附加」，报错
+`sealed-launcher games … cannot be attached post-launch`。这个拒绝本身是设计使然
+（sealed 引擎对象发布依赖 CDP 端口，手工启动的进程没有），但体验是死的。改为
+**附加=接管**（`core/attach.mjs` `attachSealed`）：按 exe 名枚举进程、
+`processesUnderRoot` 过滤出属于该游戏目录的进程（主进程 + NW 子进程）全部
+`taskkill /T /F`，然后走标准 sealed 启动路径——seeder 自动点「开始游戏」续上最后
+存档并发布引擎对象，bridge 照常连上。返回 `strategy: "sealed-relaunch"`，原因里写明
+发生了什么。真机验证：手工双击启动（无调试端口）→ attachGame → 7 个游戏进程被停、
+以调试端口重启、~5s 播种完成、state.json 引擎标题正确。
+
+顺带修了一个**通用 bug**：`listProcessesByExeName` 的进程名守卫是
+`/^[\w. -]+$/`，`\w` 不含中文——所有 exe 名带中文的游戏（本项目的绝对主力场景）
+走附加路径会直接 `refusing exe name` 抛错。放宽为
+`/^[\p{L}\p{N}][\p{L}\p{N}_. -]*$/u`：放行全语言字母数字，仍然拒绝一切能逃出
+WQL 字符串字面量的字符（引号、分号、反引号等）。
+
 ## v0.6.1：GUI 启动 sealed 游戏 seeder 静默失败 + reload 看门狗（2026-09-02）
 
 用户报告：数据页全空、`save.contents.get` 报 `DataManager is unavailable`，怀疑「没更新」。
