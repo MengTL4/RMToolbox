@@ -154,7 +154,7 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
 分片一览（每个文件顶部注释写了它为什么存在）：
 
 ```
-00-prelude   IIFE 开头 + bridge 状态对象       40-hooks          patchMethod + 倍率/遇敌/移速/技能消耗
+00-prelude   IIFE 开头 + bridge 状态对象       40-hooks          patchMethod + 倍率/遇敌/移速/技能消耗 + 坏 global 档守卫
 05-node-io   require/路径/log/event            45-vitals-locks   上帝模式：HP/MP/TP 锁
 10-engine    TK.$ 别名解析、$game*/$data*      50-value-locks    数据锁定：逐帧回写
 20-values    强转/守卫/抑制作用域/统计         55-transport      WS 客户端 + JSONL 兜底 + CDP outbox

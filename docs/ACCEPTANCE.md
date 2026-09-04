@@ -1,5 +1,24 @@
 # RMCH 验收记录
 
+## v0.6.4：坏 global 档修复——loadGlobalInfo 守卫（再刷一把2 / 大千世界2 实测）（2026-09-04）
+
+两个游戏同日启动即崩：`setupNewGame → selectSavefileForNewGame → loadGlobalInfo`
+抛 `TypeError: Cannot convert undefined or null to object`，新游戏被锁死。实测定性：
+
+- 再刷一把2 的 `www/save/global.rpgsave` 只剩 12 字节，内容为
+  `base64(zlib(msgpack-nil))`（`0xC0`）——存档槽位元信息缓存被写成了 null
+  （坏档写于工具箱启动之前，疑似游戏崩溃写盘 / Steam 云同步污染）；
+  大千世界2 同型（加密容器，同为崩溃后重写）。
+- 修复（bridge 40-hooks）：新增 `patchGlobalInfoGuard` 包住
+  `DataManager.loadGlobalInfo`——抛错或返回 null 时把坏文件重命名为
+  `global.rpgsave.corrupt-<时间戳>`（隔离不删除，可恢复），重试走原生缺失文件
+  路径，最终兜底 `[]`；每会话至多隔离一次，同步 / Promise 返回值均兼容，
+  经 `TK.$.DataMrg` 别名解析，混淆游戏同样命中。
+- harness 第 33 组用再刷一把2 的真实坏档字节固化「抛错→隔离→重试→`[]`」回归。
+- 实测：再刷一把2（手工备份移除坏档后启动）与大千世界2（保留坏档启动，守卫
+  自动隔离为 `global.rpgsave.corrupt-20260904010807`）均从崩溃画面恢复到
+  Scene_Title，`loadGlobalInfo` 返回 `[]`。npm test 全绿。
+
 ## v0.6.3：NB 壳识别——无法适配的壳（重装机兵-宿敌 v3.5.3 实测）（2026-09-02）
 
 用户请求适配 `D:\Downloads\RPG\重装机兵-宿敌_V3.5.3_电脑端`（重装机兵同人，NW.js）。
