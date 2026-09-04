@@ -202,20 +202,22 @@ class WsClient {
 
 // --- CDP session ---------------------------------------------------------------
 
-// Connects to a page target on `port`. `matchUrl` optionally pins the page
-// (a Tauri game serves https://tauri.localhost/); without it the first page
-// target wins. `onEvent(method, params)` receives unsolicited CDP events —
+// Connects to a page target on `port`. `matchUrl` optionally pins the page —
+// a string or an array of prefixes (a Tauri game serves tauri.localhost over
+// EITHER http or https, build-dependent); without it the first page target
+// wins. `onEvent(method, params)` receives unsolicited CDP events —
 // diagnostics only: the Tauri transport avoids enabling any domain because
 // Runtime.enable is a watchdog kill trigger (see core/tauri-cdp.mjs).
 export async function openCdpSession({ port, matchUrl = null, timeoutMs = 30000, onEvent = null }) {
   const targets = await listTargets(port);
   const pages = targets.filter((t) => t.type === "page" && t.webSocketDebuggerUrl);
-  const page = matchUrl
-    ? pages.find((t) => String(t.url || "").startsWith(matchUrl))
+  const prefixes = matchUrl == null ? [] : (Array.isArray(matchUrl) ? matchUrl : [matchUrl]);
+  const page = prefixes.length
+    ? pages.find((t) => prefixes.some((prefix) => String(t.url || "").startsWith(prefix)))
     : pages[0];
   if (!page) {
     throw new CdpError(
-      `no debuggable page target${matchUrl ? ` matching ${matchUrl}` : ""} on 127.0.0.1:${port} ` +
+      `no debuggable page target${prefixes.length ? ` matching ${prefixes.join("|")}` : ""} on 127.0.0.1:${port} ` +
         `(pages: ${pages.map((t) => t.url).join(", ") || "none"})`
     );
   }

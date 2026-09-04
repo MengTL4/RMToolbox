@@ -32,6 +32,8 @@ runtime/rgss-shadow/
 runtime/rgss-attach/
 # cdp.mjs / winshot.py debug captures
 runtime/screenshots/
+# ad-hoc dumps from rgss-dump-scripts.mjs and friends
+runtime/_scratch/
 # save-directory backups
 backups/
 *.log

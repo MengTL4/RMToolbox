@@ -5,6 +5,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import { detectRgss } from "./rgss.mjs";
+import { detectEvb } from "./evb-unpack.mjs";
 import { probeTauriShell } from "./tauri-cdp.mjs";
 
 const RGSS_DLL_RE = /^rgss\d*[a-z]*\.dll$/i;
@@ -237,6 +238,34 @@ export function scanGame(root) {
     return result;
   }
 
+  // --- Enigma Virtual Box single-file games ----------------------------------
+  // One big exe carrying .enigma1/.enigma2 PE sections; the real game lives in
+  // its embedded virtual filesystem (宝可梦赤途: a 2.9GB exe holding an mkxp-z
+  // Pokemon Essentials tree). Only probed when nothing else matched — the PE
+  // header read is cheap, but pointless once an engine was identified. The
+  // launcher unpacks to <exe base>_unpacked and continues as plain RGSS.
+  if (!manifest && result.engine.id === "unknown") {
+    for (const name of rootFiles) {
+      if (!/\.exe$/i.test(name)) continue;
+      const exePath = path.join(resolvedRoot, name);
+      const evb = detectEvb(exePath);
+      if (!evb) continue;
+      result.engine = { id: "RGSS", bytecode: false, confidence: "medium" };
+      result.container = "evb";
+      result.evb = { exeName: name, exePath, arch: evb.arch };
+      addFlag("evb-packed");
+      result.title = name.replace(/\.exe$/i, "");
+      result.paths.exe = exePath;
+      const saveDir = path.join(resolvedRoot, "save");
+      if (existsSync(saveDir) && statSync(saveDir).isDirectory()) {
+        result.paths.saveDir = saveDir;
+        result.saveDirKnown = true;
+      }
+      result.protection.level = computeProtectionLevel(flags);
+      return result;
+    }
+  }
+
   // --- Tauri-shelled games (WebView2) -------------------------------------------
   // No www/, no package.json, no RGSS — a single Tauri exe whose rodata carries
   // the WRY browser-args string. The YanBin "RPG Maker Builder" family ships a
@@ -426,6 +455,9 @@ export function scanLibrary(commonDir) {
 
 export function injectionStrategy(scan) {
   if (scan.engine.id === "RM2K") return { id: "easyrpg", reason: "RM2000/2003 has no script runtime; use EasyRPG player debug menu" };
+  if (scan.container === "evb") {
+    return { id: "evb-unpack-rgss-script", reason: "Enigma Virtual Box packed exe: extract the virtual filesystem to <exe>_unpacked, then the standard RGSS shadow-copy bridge" };
+  }
   if (/^RGSS/i.test(scan.engine.id)) {
     return { id: "rgss-script", reason: "RGSS (Ruby): bridge spliced into the Scripts archive inside a shadow copy" };
   }

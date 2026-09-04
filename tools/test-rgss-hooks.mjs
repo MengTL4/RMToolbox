@@ -55,6 +55,18 @@ const evalRb = async (code) => (await send("console.eval", { code })).result;
 // console.eval code must not contain "{" or "}" (the request scanner counts
 // braces), so blocks below are all do/end.
 
+// Pokemon Essentials games run their own title/saveflow plugin stack that
+// fights the generic new-game probes; they are covered by
+// tools/_probe-ess-cmds.mjs instead.
+const isEssentials = await evalRb('(defined?(SaveData) && defined?(GameData)) ? "ess-yes" : "ess-no"')
+  .then((r) => /ess-yes/.test(String(r)))
+  .catch(() => false);
+if (isEssentials) {
+  console.log("skip    : Pokemon Essentials game — covered by tools/_probe-ess-cmds.mjs");
+  handle.stop();
+  process.exit(0);
+}
+
 async function poll(fn, timeoutMs, stepMs = 250) {
   const deadline = Date.now() + timeoutMs;
   let last;
@@ -196,7 +208,9 @@ try {
     // Some games start with an empty party and add members via intro events;
     // mirror that with an explicit add_actor so the vitals/battle checks have
     // someone to work with.
-    await evalRb("$game_party.add_actor(1) if $game_party.members.empty? && $data_actors[1]; 'add'").catch(() => null);
+    // XP's Game_Party has no `members` (only `actors`); VX+ have members.
+    const emptyTest = gen === "RGSS1" ? "$game_party.actors.empty?" : "$game_party.members.empty?";
+    await evalRb(`$game_party.add_actor(1) if ${emptyTest} && $data_actors[1]; 'add'`).catch(() => null);
     party = await poll(async () => {
       const p = await send("party.info", {}).catch(() => null);
       return p && p.members && p.members.length ? p : null;

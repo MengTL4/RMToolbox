@@ -44,6 +44,13 @@
     return match ? Number(match[1]) : null;
   }
 
+  // Bridges whose slot names carry no number (Pokemon Essentials multi-slot:
+  // 存档1.rxdata / 自动保存1.rxdata) report an explicit slot id per entry.
+  function slotOfEntry(entry) {
+    if (entry && entry.slot != null) return Number(entry.slot);
+    return slotOf(entry && entry.name);
+  }
+
   RMCH.views.Saves = {
     name: "SavesView",
     components: { RmIcon: RMCH.Icon },
@@ -115,13 +122,13 @@
 
       var slots = computed(function () {
         return files.value
-          .map(function (entry) { return { slot: slotOf(entry.name), entry: entry }; })
+          .map(function (entry) { return { slot: slotOfEntry(entry), entry: entry }; })
           .filter(function (row) { return row.slot !== null; })
           .sort(function (a, b) { return a.slot - b.slot; });
       });
 
       var others = computed(function () {
-        return files.value.filter(function (entry) { return slotOf(entry.name) === null; });
+        return files.value.filter(function (entry) { return slotOfEntry(entry) === null; });
       });
 
       var occupied = computed(function () {

@@ -19,6 +19,8 @@ core/            ESM 核心模块
   rgss-marshal.mjs   最小 Ruby Marshal 读写（Scripts 归档条目字节级拼接）
   rgss-archive.mjs   RGSSAD v1/v3 加密归档索引解析/提取/打补丁（v3 免重建；v1 字节流重写；v2 拒绝）
   rgss-savecode.mjs  save.contents.apply 的 tagged JSON 树 → Ruby 源码 codegen
+  evb-unpack.mjs     Enigma Virtual Box 单文件壳：.enigma1/.enigma2 段识别 + VFS 树解析 +
+                     全量解包（evbunpack 的 Node 移植，raw-only；aPLib 压缩镜像会明确报错）
   attach.mjs         附加到已在运行的游戏（MTool 式 DLL 注入：MV/MZ 走 v8 符号 hook eval，
                      RGSS 走 SetWindowsHookEx + RGSSEval，旧 DLL 回退 rb_eval_string_protect）
   ws-server.mjs      零依赖 RFC6455 WebSocket 服务器（127.0.0.1:47412，token 鉴权）
@@ -63,13 +65,21 @@ tools/           CLI（rmch.mjs / send.mjs / serve.mjs）、setup/launch 脚本�
                  bake-icon.mjs（零依赖图标烘焙：SDF 栅格化 → app/gui/icon.png）、
                  rgss-probe.mjs（RGSS 冒烟测试）、rgss-dump-scripts.mjs（脚本 dump）、
                  _probe-shadow-cmd.mjs（对运行中的 RGSS shadow 实例发 bridge 命令）、
+                 _probe-tauri-cdp.mjs（对运行中的 Tauri 游戏 CDP 端口发 eval 探针）、
+                 evb-unpack.mjs（EVB 单文件壳解包 CLI，核心在 core/evb-unpack.mjs）、
+                 _probe-ess-cmds.mjs（Pokemon Essentials 命令面实机验证）、
+                 _probe-ess-actor.mjs（Essentials 队伍宝可梦详情/改招/异常状态实机验证）、
+                 _probe-ess-storage.mjs（Essentials 存储箱存取/新建宝可梦实机验证）、
+                 _probe-ess-debug.mjs（Essentials 调试菜单 $DEBUG/pbDebugMenu 实机验证）、
+                 _probe-gui-actor.mjs（GUI 端到端：数据›角色渲染 + 页面错误过滤）、
+                 _probe-evb-launch.mjs（EVB 识别→解包→rgss-script 启动全链）、
                  build-inject.mjs（MinGW 双架构构建 runtime/inject/）、
                  test-rgss-*.mjs（Marshal/归档/hook/存档/存档树编辑测试）、
                  test-attach.mjs（attach 单元：PE 解析/bootstrap 组装/管道分帧回环）、
                  test-inject-selftest.mjs（注入器 + 双 DLL 对自测目标进程的真机回路）、
                  test-tauri-cdp.mjs（Tauri 补丁/扫描 fixture 测试）、
                  test-nb-shell.mjs（NB 壳识别 + 拒绝路径 fixture 测试）、
-                 e2e-tauri.mjs（Tauri-CDP 实机冒烟，需 Demon forest 游戏本体）、
+                 e2e-tauri.mjs（Tauri-CDP 实机冒烟，需 Demon forest 或重装机兵：黎明 游戏本体）、
                  pack-release.mjs（Release zip 打包）
 ```
 
@@ -193,9 +203,25 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   加密归档用真实副本）里往 Scripts 归档插一个 Ruby bridge 条目，位置在调用 `rgss_main`
   的条目之前（它之后的代码永远不会执行）。通信走 shadow 目录里一对 append-only 文件
   （RGSS 精简 Ruby 没有 socket 库）；游戏退出时把 shadow 里的存档同步回真实目录。
+  mkxp-z（Ruby 3.x）跑 RGSS1 也行（实测宝可梦赤途 / Pokemon Essentials v21），注意
+  **插件晚加载会覆盖桥的 Graphics.update 包装**（Essentials 的 Transitions 脚本与
+  Main 里 PluginManager 加载的插件都重定义它）——桥的包装带身份校验
+  （$rmch_graphics_wrapper），初始安装 + 300 帧巡检 + 每条命令处理前兜底重装；
+  Essentials 的 pbMessage 循环走 Scene_Map#miniupdate 不走 #update，两处都要挂钩。
   细节见 [RGSS-HANDOVER.md](RGSS-HANDOVER.md)
-- **Tauri（tauri-cdp）**：Tauri/WebView2 壳打包的 MZ 游戏（YanBin RPG Maker Builder 系列）。
-  没有 NW.js、没有 www/ 目录、页面源是 https://tauri.localhost，常规三条路全堵死。
+- **EVB 单文件壳（evb-unpack-rgss-script）**：Enigma Virtual Box 打包的 RGSS 游戏
+  （一个几 GB 的 exe 内含完整游戏树，实测宝可梦赤途）。scanner 按 exe 里的
+  `.enigma1`/`.enigma2` 段识别（`container: "evb"`）；launcher 先用
+  `core/evb-unpack.mjs` 的 `ensureEvbUnpacked` 解包到 `<exe去后缀>_unpacked/`（已有
+  Game.exe 则复用），把原始目录的 save/ junction 进解包目录，之后完全走
+  rgss-script 链（gameKey 仍用原始目录名）。解包器是 Python evbunpack 的 Node
+  移植：只支持 raw（未压缩）镜像，aPLib 压缩会明确报错；EVB 文件记录的可选块是
+  53 字节（stored_size 在偏移 49），不是旧文档说的 39。
+- **Tauri（tauri-cdp）**：Tauri/WebView2 壳打包的 MZ 游戏（YanBin RPG Maker Builder 系列，
+  实测 Demon forest/魔物召唤森林、重装机兵：黎明）。
+  没有 NW.js、没有 www/ 目录、页面源是 `http(s)://tauri.localhost/`（两种 scheme 都
+  存在：Demon forest 是 https，重装机兵：黎明是 http——匹配用 `TAURI_PAGE_PREFIXES`
+  数组/`isTauriPageUrl()`，写死单一会 waitForTauriPage 超时），常规三条路全堵死。
   入口在 WRY 写死的 WebView2 浏览器参数：把 game.exe **复制**成 `game.rmch-cdp.exe`
   （原文件不动），将整段参数字符串等长覆写成 `--remote-debugging-port=<port>`+空格填充
   （WRY 会乱序重拼并截断到 ~105 字节，原 token 一个都不能留）。启动副本即得到

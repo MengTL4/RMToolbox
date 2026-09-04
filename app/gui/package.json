@@ -1,6 +1,6 @@
 {
   "name": "rmch-gui",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "main": "index.html",
   "nodejs": true,
   "chromium-args": "--force-color-profile=srgb",

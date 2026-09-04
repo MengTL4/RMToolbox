@@ -13,7 +13,8 @@
 //   2. Launching the copy makes WebView2 expose Chrome DevTools Protocol on
 //      127.0.0.1:<port>. (The WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS env var is
 //      NOT honored here: an app's own AdditionalBrowserArguments override it.)
-//   3. The page runs under https://tauri.localhost/, and this game family also
+//   3. The page runs under http(s)://tauri.localhost/ (scheme varies by
+//      builder), and this game family also
 //      sabotages loopback with empty --proxy-server= args plus Chromium's
 //      mixed-content/PNA blocking — so the bridge's usual WebSocket dial-out
 //      CANNOT work from page context. Transport therefore rides the CDP
@@ -69,6 +70,16 @@ const PATCH_ANCHORS = [
 // so scanning a library folder never reads a whole 150MB binary per game.
 const TAURI_MARKERS = ["tauri.localhost", "--disable-features=msWebOOUI"];
 const PROBE_WINDOW_BYTES = 16 * 1024 * 1024;
+
+// The page origin differs by builder: some serve https://tauri.localhost/,
+// others plain http:// (实测: 重装机兵黎明 serves http). Accept both anywhere we
+// pin a target by URL.
+const TAURI_PAGE_PREFIXES = ["http://tauri.localhost/", "https://tauri.localhost/"];
+
+function isTauriPageUrl(url) {
+  const text = String(url || "");
+  return TAURI_PAGE_PREFIXES.some((prefix) => text.startsWith(prefix));
+}
 
 // --- exe probing / patching ----------------------------------------------------
 
@@ -290,7 +301,7 @@ class TauriSession extends EventEmitter {
       try {
         this.cdp = await openCdpSession({
           port: this.cdpPort,
-          matchUrl: "https://tauri.localhost/",
+          matchUrl: TAURI_PAGE_PREFIXES,
           timeoutMs: 10000
         });
         this.cdp.onClose = () => {
@@ -456,7 +467,7 @@ async function waitForTauriPage(cdpPort, child, timeoutMs) {
     let status;
     try {
       const targets = await listTargets(cdpPort, 1500);
-      if (targets.some((t) => t.type === "page" && String(t.url || "").startsWith("https://tauri.localhost/"))) {
+      if (targets.some((t) => t.type === "page" && isTauriPageUrl(t.url))) {
         dbg("page target found:", targets.map((t) => `${t.type}:${t.url}`).join(" | "));
         return;
       }

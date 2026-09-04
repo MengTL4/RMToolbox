@@ -485,9 +485,12 @@ function iconFileImage(root, name) {
   if (!safe) return null;
   // Stock XP ships PNGs, custom engines (RGD) also load jpg & co — the FS is
   // case-insensitive on Windows, so lowercase patterns cover .PNG too.
-  for (const ext of [".png", ".jpg", ".jpeg", ".webp", ".bmp"]) {
-    const file = path.join(root, "Graphics", "Icons", safe + ext);
-    if (fs.existsSync(file)) return readImageDataUrl(file);
+  // Essentials games keep item icons per-file under Graphics/Items/<id>.png.
+  for (const dir of ["Icons", "Items"]) {
+    for (const ext of [".png", ".jpg", ".jpeg", ".webp", ".bmp"]) {
+      const file = path.join(root, "Graphics", dir, safe + ext);
+      if (fs.existsSync(file)) return readImageDataUrl(file);
+    }
   }
   const { rgssArchive } = state.modules || {};
   if (rgssArchive) {
