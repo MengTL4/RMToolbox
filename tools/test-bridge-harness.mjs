@@ -3,7 +3,7 @@
 // verify events, state and hook behaviour. No real game process involved.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import vm from "node:vm";
@@ -189,7 +189,16 @@ function makeMockGame(sandbox) {
     makeSaveContents() {
       return { gold: sandbox.$gameParty._gold, switches: sandbox.$gameSwitches._data, marker: "before" };
     },
-    extractSaveContents(contents) { this._extracted = contents; }
+    extractSaveContents(contents) { this._extracted = contents; },
+    // The corrupt-global guard test (group 33) drives this through file
+    // existence: a present global.rpgsave decodes to msgpack-nil and the game
+    // throws; the missing-file path is the fresh-install one and returns [].
+    loadGlobalInfo() {
+      this._globalCalls = (this._globalCalls || 0) + 1;
+      const globalFile = path.join(sandbox.process.env.RMCH_GAME_ROOT, "www", "save", "global.rpgsave");
+      if (existsSync(globalFile)) throw new TypeError("Cannot convert undefined or null to object");
+      return [];
+    }
   };
   sandbox.BattleManager = { _phase: "init" };
   sandbox.Game_BattlerBase = Game_BattlerBase;
@@ -582,9 +591,32 @@ async function main() {
   await sleep(1700);
   assert.equal(mockWindow.showCount, shownBeforeDisarm, "watchdog must disarm once the window is visible");
 
+  // 33. A corrupt global save-info file can no longer brick New Game.
+  // Regression: 再刷一把2 and 大千世界2 both crashed in
+  // selectSavefileForNewGame → loadGlobalInfo ("Cannot convert undefined or
+  // null to object") with a global.rpgsave that decodes to msgpack-nil. The
+  // guard must catch the throw, quarantine the file (renamed, not deleted)
+  // and retry down the missing-file path.
+  const mockSaveDir = path.join(tempGameRoot, "www", "save");
+  mkdirSync(mockSaveDir, { recursive: true });
+  const globalFile = path.join(mockSaveDir, "global.rpgsave");
+  writeFileSync(globalFile, "eJw7AAAAwQDB"); // the real 再刷一把2 payload: base64(zlib(msgpack nil))
+  const guardWait = Date.now() + 5000;
+  while (!sandbox.DataManager.loadGlobalInfo.__rmchPatched && Date.now() < guardWait) await sleep(100);
+  assert.ok(sandbox.DataManager.loadGlobalInfo.__rmchPatched, "guard must patch loadGlobalInfo");
+  const guardedInfo = sandbox.DataManager.loadGlobalInfo();
+  assert.deepEqual(guardedInfo, [], "throwing loadGlobalInfo must degrade to []");
+  assert.ok(!existsSync(globalFile), "corrupt global file must be quarantined");
+  const quarantined = readdirSync(mockSaveDir).filter((name) => name.startsWith("global.rpgsave.corrupt-"));
+  assert.equal(quarantined.length, 1, "quarantine must keep a renamed backup, not delete");
+  assert.equal(sandbox.DataManager._globalCalls, 2, "guard must retry the original after quarantining");
+  const infoAgain = sandbox.DataManager.loadGlobalInfo();
+  assert.deepEqual(infoAgain, [], "missing-file path must now serve [] without drama");
+  assert.equal(sandbox.DataManager._globalCalls, 3);
+
   rmSync(tempGameRoot, { recursive: true, force: true });
   rmSync(tempProjectRoot, { recursive: true, force: true });
-  console.log("bridge harness test: PASS (32 groups)");
+  console.log("bridge harness test: PASS (33 groups)");
   process.exit(0);
 }
 

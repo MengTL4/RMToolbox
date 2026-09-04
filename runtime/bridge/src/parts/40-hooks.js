@@ -8,7 +8,8 @@
   //
   // Vitals (HP/MP/TP) locking lives in 45-vitals-locks.js and per-frame value
   // locking in 50-value-locks.js; this file owns rates, encounters, movement,
-  // skill cost and the scene-update wrapper they share.
+  // skill cost, the scene-update wrapper they share, and the corrupt
+  // global-save-info guard.
   // ---------------------------------------------------------------------------
 
   function patchMethod(owner, name, key, wrapper) {
@@ -148,6 +149,75 @@
     }
   }
 
+  // --- corrupt global save-info guard -----------------------------------------
+  //
+  // global.rpgsave / global.rmmzsave is a cache of slot metadata that
+  // DataManager.loadGlobalInfo feeds to the title screen and to
+  // selectSavefileForNewGame. A crashed write (or a poisoned Steam Cloud sync)
+  // can leave the file decoding to null — 再刷一把2 shipped a 12-byte
+  // base64(zlib(msgpack-nil)) global.rpgsave — and both stock engines and
+  // custom save systems then die on Object.keys(null) the next time a new game
+  // starts: the game is bricked until the file is removed by hand. Catch it
+  // here: quarantine the file ONCE (renamed aside, never deleted) so the retry
+  // takes the missing-file path every fresh install exercises, and fall back
+  // to an empty info object if even that fails. Without the guard the toolbox
+  // session survives but the game still crashes the moment the user launches
+  // it on its own.
+  let globalInfoQuarantined = false;
+
+  function quarantineGlobalInfoFile() {
+    // One shot even on failure: a save dir we cannot fix must not put the
+    // guard into a rename loop on every frame.
+    if (globalInfoQuarantined || !fs || !path) return null;
+    globalInfoQuarantined = true;
+    try {
+      const dir = saveDirPath();
+      const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+      for (const name of ["global.rpgsave", "global.rmmzsave"]) {
+        const file = path.join(dir, name);
+        if (!fs.existsSync(file)) continue;
+        const dest = `${file}.corrupt-${stamp}`;
+        fs.renameSync(file, dest);
+        log("corrupt global save info quarantined", { from: file, to: dest });
+        return dest;
+      }
+    } catch (error) {
+      noteError(error);
+    }
+    return null;
+  }
+
+  function patchGlobalInfoGuard() {
+    const dataManager = resolveDataManager();
+    if (!dataManager) return false;
+    return patchMethod(dataManager, "loadGlobalInfo", "DataManager.loadGlobalInfo", function (original, args) {
+      const callOriginal = () => original.apply(this, args);
+      const sanitize = (info) => {
+        if (info && typeof info === "object") return info;
+        // Custom save systems can decode a present-but-corrupt file to null
+        // instead of throwing; quarantine it too, then report empty.
+        quarantineGlobalInfoFile();
+        return [];
+      };
+      const recover = (error) => {
+        noteError(error);
+        if (quarantineGlobalInfoFile()) {
+          // File gone: the original now takes its missing-file path.
+          try { return sanitize(callOriginal()); } catch (retryError) { noteError(retryError); }
+        }
+        return [];
+      };
+      try {
+        const result = callOriginal();
+        return result && typeof result.then === "function"
+          ? result.then(sanitize, recover)
+          : sanitize(result);
+      } catch (error) {
+        return recover(error);
+      }
+    });
+  }
+
   // --- battle rewards (exp / gold / drop rates) -------------------------------
 
   // Rewards are recomputed from a cached base, not multiplied in place: this
@@ -278,6 +348,7 @@
     track(patchMoveSpeed(), "moveSpeed");
     track(patchSceneUpdate(), "sceneUpdate");
     track(patchEncounter(), "encounter");
+    track(patchGlobalInfoGuard(), "globalInfoGuard");
     patchBattleRewards(track);
     patchScaledGain(
       track,
