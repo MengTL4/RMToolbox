@@ -21,7 +21,8 @@
     components: {
       RmIcon: RMCH.Icon,
       RmEntryList: RMCH.parts.EntryList,
-      RmPicker: RMCH.parts.Picker
+      RmPicker: RMCH.parts.Picker,
+      RmVirtual: RMCH.parts.Virtual
     },
     setup: function () {
       var form = ref({ name: "", nickname: "", level: 1, exp: 0, hp: 0, mp: 0, tp: 0 });
@@ -30,9 +31,15 @@
       var pickerBusy = ref(false);
       var skills = ref([]);
       var states = ref([]);
+      var createOpen = ref(false);
+      var createBusy = ref(false);
+      var createQuery = ref("");
+      var createLevel = ref(5);
+      var species = ref([]);
 
       var actor = computed(function () { return trainer.actor; });
       var selectedId = computed(function () { return data.selected.actor; });
+      var isEssentials = computed(function () { return !!(trainer.live && trainer.live.essentials); });
 
       var inParty = computed(function () {
         if (!actor.value) return false;
@@ -65,6 +72,9 @@
             if (!payload) return;
             store.ok("#" + row.id + " " + (row.name || "") + (enabled ? " 已入队" : " 已离队"));
             store.refreshParty();
+            // Essentials party ids are positional — a store/withdraw shifts
+            // them, so the roster must be re-pulled too (harmless elsewhere).
+            store.loadRoster();
           });
       }
 
@@ -137,6 +147,49 @@
         return list.map(function (entry) { return entry.id; });
       });
 
+      // --- create (Essentials only) ------------------------------------------
+      // The debug menu's own code path (pbAddPokemonSilent) behind a species
+      // picker. Default level follows the party average; the detail form on
+      // the right adjusts it afterwards.
+      var createFiltered = computed(function () {
+        var needle = createQuery.value.trim().toLowerCase();
+        if (!needle) return species.value;
+        return species.value.filter(function (entry) {
+          return String(entry.name || "").toLowerCase().indexOf(needle) !== -1 ||
+            String(entry.id).toLowerCase().indexOf(needle) !== -1;
+        });
+      });
+
+      function openCreate() {
+        createOpen.value = true;
+        var levels = trainer.party.map(function (m) { return m.level || 0; });
+        if (levels.length) {
+          createLevel.value = Math.max(1, Math.round(levels.reduce(function (a, b) { return a + b; }, 0) / levels.length));
+        }
+        if (species.value.length) return;
+        createBusy.value = true;
+        store.cmd("catalog.query", { kind: "enemy", limit: 20000 })
+          .then(function (payload) { if (payload) species.value = payload.entries || []; })
+          .finally(function () { createBusy.value = false; });
+      }
+
+      function createSpecies(entry) {
+        createBusy.value = true;
+        store.cmd("party.createPokemon", { species: entry.id, level: createLevel.value })
+          .then(function (payload) {
+            if (!payload) return;
+            store.ok((entry.name || entry.id) + (payload.where === "party" ? " 已入队" : " 已发送到存储箱"));
+            store.refreshParty();
+            store.loadRoster();
+            if (payload.actor && payload.id != null) {
+              data.selected.actor = payload.id;
+              store.openActor(payload.id);
+            }
+            createOpen.value = false;
+          })
+          .finally(function () { createBusy.value = false; });
+      }
+
       // MTool's "选中已拥有的": jump the list to what the actor already has.
       var ownedOnly = ref(false);
       var visibleEntries = computed(function () {
@@ -150,7 +203,7 @@
         var inPartyIds = Object.create(null);
         trainer.party.forEach(function (member) { inPartyIds[member.id] = true; });
         return trainer.roster.map(function (entry) {
-          return { id: entry.id, name: entry.name, inParty: !!inPartyIds[entry.id] };
+          return { id: entry.id, name: entry.name, inParty: !!inPartyIds[entry.id], box: entry.box || 0 };
         });
       });
 
@@ -163,6 +216,14 @@
         actor: actor,
         selectedId: selectedId,
         inParty: inParty,
+        isEssentials: isEssentials,
+        createOpen: createOpen,
+        createBusy: createBusy,
+        createQuery: createQuery,
+        createLevel: createLevel,
+        createFiltered: createFiltered,
+        openCreate: openCreate,
+        createSpecies: createSpecies,
         form: form,
         paramNames: PARAM_NAMES,
         paramDrafts: paramDrafts,
@@ -183,7 +244,7 @@
         togglePickerEntry: togglePickerEntry,
         closePicker: function () { picker.value = null; ownedOnly.value = false; },
         isInParty: function (row) { return row.inParty; },
-        partyMark: function (row) { return row.inParty ? "在队" : ""; },
+        partyMark: function (row) { return row.inParty ? "在队" : (row.box ? "盒子 " + row.box : ""); },
         queryOf: computed(function () { return data.query.actor; })
       };
     },
@@ -193,6 +254,10 @@
       '    <template #header-extra>',
       '      <n-flex align="center" :size="8">',
       '        <n-text depth="3" style="font-size: 12px">在队 {{ trainer.party.length }}</n-text>',
+      '        <n-button v-if="isEssentials" size="tiny" tertiary type="primary"',
+      '                  :loading="createBusy && !createOpen" @click="openCreate">',
+      '          <template #icon><rm-icon name="plus" :size="14"/></template>新建',
+      '        </n-button>',
       '        <n-button size="tiny" quaternary :loading="trainer.loading.roster"',
       '                  @click="store.loadRoster(); store.refreshParty()">',
       '          <template #icon><rm-icon name="refresh" :size="14"/></template>',
@@ -301,6 +366,33 @@
       '             :game-key="store.trainer.gameKey"',
       '             @update:show="v => { if (!v) closePicker() }"',
       '             @toggle="togglePickerEntry" @select-owned="ownedOnly = !ownedOnly"/>',
+      '',
+      '  <n-modal :show="createOpen" preset="card" title="新建宝可梦" style="width: min(640px, 92vw)"',
+      '           :bordered="false" @update:show="v => createOpen = v">',
+      '    <n-flex vertical :size="10">',
+      '      <n-flex align="center" :size="10" :wrap="false">',
+      '        <n-input v-model:value="createQuery" size="small" placeholder="搜索名称或内部名" clearable style="flex: 1">',
+      '          <template #prefix><rm-icon name="search" :size="14"/></template>',
+      '        </n-input>',
+      '        <n-text depth="3" style="font-size: 12px; flex: none">等级</n-text>',
+      '        <n-input-number v-model:value="createLevel" :min="1" :max="100" size="small"',
+      '                        :show-button="false" style="width: 76px"/>',
+      '      </n-flex>',
+      '      <n-text depth="3" style="font-size: 12px">点一个物种即创建：队伍有空位就入队，满了自动进存储箱。{{ createFiltered.length }} 条</n-text>',
+      '      <rm-virtual :items="createFiltered" :item-size="34" :height="420" key-field="id">',
+      '        <template #default="{ item }">',
+      '          <div class="rm-picker-row" style="cursor: pointer" @click="!createBusy && createSpecies(item)">',
+      '            <span class="rm-picker-item">',
+      '              <span class="rm-picker-name">',
+      '                <n-text depth="3" style="font-variant-numeric: tabular-nums; flex: none">{{ item.id }}</n-text>',
+      '                <span class="rm-picker-label">{{ item.name || "(无名)" }}</span>',
+      '              </span>',
+      '            </span>',
+      '          </div>',
+      '        </template>',
+      '      </rm-virtual>',
+      '    </n-flex>',
+      '  </n-modal>',
       '</div>'
     ].join("\n")
   };

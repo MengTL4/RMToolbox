@@ -11,6 +11,7 @@ import {
   mkdirSync,
   readdirSync,
   lstatSync,
+  readlinkSync,
   linkSync,
   symlinkSync,
   copyFileSync,
@@ -76,11 +77,22 @@ export function detectRgss(gameRoot) {
     );
   }
 
+  // mkxp-z ports keep a GBK-encoded Game.ini whose Title decodes to mojibake;
+  // their mkxp.json windowTitle is proper UTF-8 and wins when present
+  // （宝可梦赤途： Game.ini title is garbage, windowTitle is "宝可梦赤途…").
+  let title = ini["Game.Title"] || "";
+  try {
+    const mkxp = JSON.parse(readFileSync(path.join(gameRoot, "mkxp.json"), "utf8"));
+    if (mkxp && typeof mkxp.windowTitle === "string" && mkxp.windowTitle.trim()) {
+      title = mkxp.windowTitle.trim();
+    }
+  } catch (_) {}
+
   return {
     engine: match.version,
     ruby19: match.ruby19,
     library: dll,
-    title: ini["Game.Title"] || path.basename(gameRoot),
+    title: title || path.basename(gameRoot),
     rtp: [ini["Game.RTP"] || "", ini["Game.RTP1"] || "", ini["Game.RTP2"] || "", ini["Game.RTP3"] || ""]
       .filter(Boolean),
     scriptsRel,
@@ -118,6 +130,15 @@ export function buildShadow({ gameRoot, shadowRoot, replaceRel, copyFiles = [] }
 
   const linkEntry = (source, dest, depth) => {
     const stat = lstatSync(source);
+    if (stat.isSymbolicLink()) {
+      // Junctions/symlinks already in the game root (e.g. a save dir anchored
+      // to another folder) must be recreated as links: lstat reports them as
+      // non-directories, so without this branch they fall through to
+      // linkSync/copyFileSync, both of which fail on a directory reparse
+      // point (EPERM).
+      symlinkSync(readlinkSync(source), dest, "junction");
+      return;
+    }
     if (stat.isDirectory()) {
       // Along the path to the replaced file we need real directories.
       if (replaceTop && path.basename(source) === replaceTop && depth === 0) {

@@ -154,13 +154,30 @@ module RMCH
       return false if @started || @stopped
       begin
         channel_root = (@channel_dir.nil? || @channel_dir.empty?) ? Dir.pwd : @channel_dir
-        @cmd_path = File.join(channel_root, "rmch-cmd.jsonl")
-        @res_path = File.join(channel_root, "rmch-res.jsonl")
+        # mkxp-z routes Ruby file IO through PhysFS: absolute paths outside the
+        # write dir are rejected, while bare relative names land in the write
+        # dir (the process cwd). Try the configured root first, then fall back
+        # to relative names so sandboxed engines still get a channel.
+        roots = [channel_root]
+        roots << "." unless channel_root == "."
+        opened = nil
+        roots.each do |root|
+          cmd = File.join(root, "rmch-cmd.jsonl")
+          res = File.join(root, "rmch-res.jsonl")
+          begin
+            # Starting fresh: truncate both channels so stale ids cannot confuse us.
+            File.open(cmd, "wb") { |f| f.write("") }
+            File.open(res, "wb") { |f| f.write("") }
+            opened = [cmd, res]
+            break
+          rescue Exception
+            # try the next candidate root
+          end
+        end
+        raise "cannot open channel files" unless opened
+        @cmd_path, @res_path = opened
         @cmd_offset = 0
         @frames = 0
-        # Starting fresh: truncate both channels so stale ids cannot confuse us.
-        File.open(@cmd_path, "wb") { |f| f.write("") }
-        File.open(@res_path, "wb") { |f| f.write("") }
         @started = true
         # All game scripts are already evaluated at this point (the bridge is
         # appended just before Main), so every class is hookable now.
@@ -267,6 +284,15 @@ module RMCH
       return unless type
       args = parse_args(line)
       begin
+        # A command only gets this far while some hook is pumping; make sure
+        # the Graphics.update wrapper (Essentials modal coverage) is in place
+        # before the command possibly moves us into a modal loop.
+        if $rmch_graphics_wrapper
+          begin
+            rmch_hook_graphics_update
+          rescue Exception
+          end
+        end
         payload = dispatch(type, args, line)
         send_frame("result", { "id" => id_num, "ok" => true, "payload" => payload })
       rescue Exception => e
@@ -282,12 +308,19 @@ module RMCH
       end
     end
 
-    # Pull a top-level string/number field out of a flat JSON object.
+    # Pull a top-level string/number field out of a flat JSON object. Only the
+    # prefix before the nested args/locks body is scanned: a string key in
+    # there that collides with a top-level field ("id" in item.add's
+    # {"args":{"id":"POTION",...}}) would otherwise win the regex and the
+    # response would go out with id 0, timing the command out (宝可梦赤途实测).
     def json_field(line, key)
       return nil unless line.index('"t"')
-      m = Regexp.new('"' + Regexp.escape(key) + '"\\s*:\\s*"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)"').match(line)
+      head = line
+      am = /"(?:args|locks)"\s*:\s*\{/.match(line)
+      head = line[0, am.begin(0)] if am
+      m = Regexp.new('"' + Regexp.escape(key) + '"\\s*:\\s*"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)"').match(head)
       return unescape(m[1]) if m
-      m2 = Regexp.new('"' + Regexp.escape(key) + '"\\s*:\\s*(-?[0-9.eE+]+)').match(line)
+      m2 = Regexp.new('"' + Regexp.escape(key) + '"\\s*:\\s*(-?[0-9.eE+]+)').match(head)
       return m2[1] if m2
       nil
     end
@@ -425,6 +458,73 @@ module RMCH
       party
     end
 
+    # --- Pokemon Essentials ------------------------------------------------------
+    # Essentials (v19+) drops $game_party and the $data_* tables in favour of
+    # $player/$bag and the GameData::* registries, and its SaveData module may
+    # manage multiple named save slots (Auto Multi Save plugin: 存档N.rxdata /
+    # 自动保存N.rxdata under ./Save). Consumers below branch on this.
+    def essentials?
+      !!(defined?(SaveData) && defined?(GameData))
+    end
+
+    def ess_player!
+      player = $player
+      raise "no save loaded yet: start or continue a game first" unless player
+      player
+    end
+
+    def ess_bag!
+      bag = $bag
+      raise "no save loaded yet: start or continue a game first" unless bag
+      bag
+    end
+
+    def ess_storage!
+      storage = defined?($PokemonStorage) ? $PokemonStorage : nil
+      raise "this game has no Pokemon storage system" unless storage
+      storage
+    end
+
+    # Boxed Pokemon get synthetic toolbox ids so they can sit in the same
+    # roster as the 1..6 party ids: id = (box + 1) * 1000 + position.
+    ESS_BOX_BASE = 1000
+
+    def ess_box_loc(id)
+      box = id / ESS_BOX_BASE - 1
+      pos = id % ESS_BOX_BASE
+      [box, pos]
+    end
+
+    # Toolbox slot ids index this order: manual slots first, autos last.
+    def ess_slots
+      if SaveData.respond_to?(:each_slot)
+        slots = SaveData.enum_for(:each_slot).to_a
+        autos = SaveData.const_defined?(:AUTO_SLOTS) ? SaveData::AUTO_SLOTS : []
+        return (slots - autos) + autos
+      end
+      ["Game"]
+    rescue Exception
+      ["Game"]
+    end
+
+    def ess_save_path(slot)
+      if SaveData.respond_to?(:get_full_path)
+        SaveData.get_full_path(slot)
+      elsif SaveData.const_defined?(:FILE_PATH)
+        SaveData::FILE_PATH
+      else
+        nil
+      end
+    end
+
+    def ess_slot_for(id)
+      raise "save id must be 1 or greater" if id < 1
+      slots = ess_slots
+      slot = slots[id - 1]
+      raise "save slot " + id.to_s + " is out of range (1-" + slots.length.to_s + ")" unless slot
+      slot
+    end
+
     def require_actor(id)
       actor = $game_actors ? $game_actors[id] : nil
       raise "actor #{id} is unavailable" unless actor
@@ -488,6 +588,7 @@ module RMCH
 
     # --- catalog ----------------------------------------------------------------
     def catalog_query(args)
+      return ess_catalog_query(args) if essentials?
       kind = args["kind"].to_s
       table = data_table(kind)
       raise "unsupported catalog kind: #{kind}" unless table
@@ -513,6 +614,72 @@ module RMCH
           # Graphics/Icons/, referenced by name.
           "iconName" => entry.respond_to?(:icon_name) ? entry.icon_name.to_s : nil,
           "note" => entry.respond_to?(:note) ? entry.note.to_s[0, 300] : ""
+        }
+      end
+      total = entries.length
+      { "total" => total, "entries" => entries[0, limit] }
+    end
+
+    # GameData registries stand in for the $data_* tables. Ids are the game's
+    # own symbols as strings; item icons are Graphics/Items/<id>.png files, so
+    # the catalog carries iconName (the host checks Graphics/Items after
+    # Graphics/Icons).
+    def ess_catalog_query(args)
+      kind = args["kind"].to_s
+      query = args["query"].to_s.downcase
+      limit = args["limit"] ? args["limit"].to_i : 500
+      limit = 500 if limit <= 0
+      qb = query.unpack("C*").pack("C*")
+      # "actor" is the party roster plus every boxed Pokemon (Essentials has no
+      # actor database); the full dex stays browsable under "enemy".
+      if kind == "actor"
+        entries = []
+        if $player
+          $player.party.each_with_index do |pkmn, i|
+            name = pkmn.name.to_s
+            nb = name.downcase.unpack("C*").pack("C*")
+            next unless qb.empty? || nb.include?(qb)
+            entries << { "id" => i + 1, "name" => name, "iconIndex" => nil,
+                         "iconName" => nil, "note" => "Lv." + pkmn.level.to_i.to_s }
+          end
+          storage = defined?($PokemonStorage) ? $PokemonStorage : nil
+          if storage
+            storage.maxBoxes.times do |box|
+              storage.maxPokemon(box).times do |pos|
+                pkmn = storage[box, pos]
+                next unless pkmn
+                name = pkmn.name.to_s
+                nb = name.downcase.unpack("C*").pack("C*")
+                next unless qb.empty? || nb.include?(qb)
+                entries << { "id" => (box + 1) * ESS_BOX_BASE + pos, "name" => name,
+                             "iconIndex" => nil, "iconName" => nil,
+                             "note" => "Lv." + pkmn.level.to_i.to_s, "box" => box + 1 }
+              end
+            end
+          end
+        end
+        return { "total" => entries.length, "entries" => entries[0, limit] }
+      end
+      mod = case kind
+            when "item" then GameData::Item
+            when "skill" then defined?(GameData::Move) ? GameData::Move : nil
+            when "state" then defined?(GameData::Status) ? GameData::Status : nil
+            when "enemy" then defined?(GameData::Species) ? GameData::Species : nil
+            else nil
+            end
+      raise "unsupported catalog kind: #{kind}" unless mod
+      entries = []
+      mod.each do |entry|
+        id = entry.id.to_s
+        name = entry.respond_to?(:name) ? entry.name.to_s : id
+        nb = name.downcase.unpack("C*").pack("C*")
+        next unless qb.empty? || nb.include?(qb) || id.downcase == query
+        entries << {
+          "id" => id,
+          "name" => name,
+          "iconIndex" => nil,
+          "iconName" => kind == "item" ? id : nil,
+          "note" => entry.respond_to?(:description) ? entry.description.to_s[0, 300] : ""
         }
       end
       total = entries.length
@@ -578,6 +745,62 @@ module RMCH
       delta = count - item_count(kind, id)
       gain_entry(kind, id, delta) if delta != 0
       { "kind" => kind, "id" => id, "count" => item_count(kind, id) }
+    end
+
+    # Essentials inventory: one bag of symbol-keyed pockets instead of the
+    # @items/@weapons/@armors hashes, so kind is always "item" and ids stay
+    # strings (e.g. "POTION").
+    def ess_item_data(id)
+      data = GameData::Item.try_get(id.to_sym)
+      raise "item " + id.to_s + " not found" unless data
+      data
+    end
+
+    def ess_item_add(args)
+      bag = ess_bag!
+      id = args["id"].to_s
+      amount = args["amount"].to_i
+      raise "amount must be a non-zero number" if amount == 0
+      data = ess_item_data(id)
+      if amount > 0
+        raise "the bag cannot hold any more " + id unless bag.can_add?(data)
+        bag.add(data, amount)
+      else
+        bag.remove(data, -amount)
+      end
+      { "kind" => "item", "id" => id, "amount" => amount, "count" => bag.quantity(data) }
+    end
+
+    def ess_item_set(args)
+      bag = ess_bag!
+      id = args["id"].to_s
+      data = ess_item_data(id)
+      count = args["count"].to_i
+      count = 0 if count < 0
+      delta = count - bag.quantity(data)
+      if delta > 0
+        bag.add(data, delta)
+      elsif delta < 0
+        bag.remove(data, -delta)
+      end
+      { "kind" => "item", "id" => id, "count" => bag.quantity(data) }
+    end
+
+    def ess_item_list
+      bag = ess_bag!
+      entries = []
+      bag.pockets.each do |pocket|
+        next unless pocket.is_a?(Array)
+        pocket.each do |slot|
+          next unless slot.is_a?(Array)
+          qty = slot[1].to_i
+          next if qty <= 0
+          data = GameData::Item.try_get(slot[0])
+          entries << { "kind" => "item", "id" => slot[0].to_s,
+                       "name" => data ? data.name.to_s : slot[0].to_s, "count" => qty }
+        end
+      end
+      { "entries" => entries }
     end
 
     # --- party / actors ---------------------------------------------------------
@@ -661,12 +884,141 @@ module RMCH
 
     def party_state
       out = []
+      if essentials?
+        return out unless $player
+        $player.party.each_with_index { |pkmn, i| out << pokemon_info(pkmn, i) }
+        return out
+      end
       party = $game_party
       return out unless party
       party_members(party).each do |actor|
         out << actor_info(actor)
       end
       out
+    end
+
+    # A Pokemon in the actor_info wire shape so the GUI's party panel renders
+    # unchanged. The toolbox id is the 1-based party index (Essentials has no
+    # actor database to index into); the species rides along separately.
+    def pokemon_info(pkmn, index)
+      moves = []
+      begin
+        pkmn.moves.each do |move|
+          moves << { "id" => move.id.to_s, "name" => move.name.to_s }
+        end if pkmn.respond_to?(:moves) && pkmn.moves
+      rescue Exception
+      end
+      states = []
+      begin
+        status = pkmn.status
+        if status && status != :NONE
+          label = begin
+            GameData::Status.get(status).name
+          rescue Exception
+            status.to_s
+          end
+          states << { "id" => status.to_s, "name" => label.to_s }
+        end
+      rescue Exception
+      end
+      equips = []
+      begin
+        item = pkmn.respond_to?(:item) ? pkmn.item : nil
+        equips << { "id" => item.id.to_s, "name" => item.name.to_s } if item
+      rescue Exception
+      end
+      species_name = begin
+        GameData::Species.get(pkmn.species).name.to_s
+      rescue Exception
+        nil
+      end
+      {
+        "id" => index + 1,
+        "species" => safe(pkmn, :species).to_s,
+        "name" => safe(pkmn, :name),
+        "nickname" => nil,
+        "classId" => nil,
+        "className" => species_name,
+        "level" => safe_int(pkmn, :level),
+        "maxLevel" => 100,
+        "exp" => safe_int(pkmn, :exp),
+        "nextLevelExp" => nil,
+        "hp" => safe_int(pkmn, :hp),
+        "mhp" => safe_int(pkmn, :totalhp),
+        "mp" => 0,
+        "mmp" => 0,
+        "tp" => nil,
+        "maxTp" => nil,
+        # GUI order: 最大HP 最大MP 攻击 防御 魔攻 魔防 敏捷 幸运
+        "params" => [safe_int(pkmn, :totalhp), 0, safe_int(pkmn, :attack),
+                     safe_int(pkmn, :defense), safe_int(pkmn, :spatk),
+                     safe_int(pkmn, :spdef), safe_int(pkmn, :speed), 0],
+        "paramPlus" => nil,
+        "skills" => moves,
+        "states" => states,
+        "equips" => equips
+      }
+    end
+
+    # Essentials Pokemon by 1-based toolbox id: 1..6 is the party, ids at or
+    # above ESS_BOX_BASE address a storage box slot (see ess_box_loc).
+    def ess_actor!(id)
+      raise "party slot must be 1 or greater" if id < 1
+      if id >= ESS_BOX_BASE
+        storage = ess_storage!
+        box, pos = ess_box_loc(id)
+        raise "storage slot #" + id.to_s + " is invalid (" + storage.maxBoxes.to_s + " boxes)" if box >= storage.maxBoxes
+        pkmn = pos < storage.maxPokemon(box) ? storage[box, pos] : nil
+        raise "storage box " + (box + 1).to_s + " slot " + (pos + 1).to_s + " is empty" unless pkmn
+        return pkmn
+      end
+      player = ess_player!
+      pkmn = player.party[id - 1]
+      raise "party slot " + id.to_s + " is empty (" + player.party.length.to_s + " Pokemon)" unless pkmn
+      pkmn
+    end
+
+    def ess_pokemon_payload(pkmn, index, extra = nil)
+      payload = { "actor" => pokemon_info(pkmn, index) }
+      payload.merge!(extra) if extra
+      payload
+    end
+
+    # The debug menu's own path (pbAddPokemonSilent): creates the Pokemon with
+    # pokedex registration and first moves, lands in the party or — when full —
+    # in storage. Reports where it landed so the GUI can select it.
+    def ess_create_pokemon(args)
+      player = ess_player!
+      storage = ess_storage!
+      species = args["species"].to_s
+      data = GameData::Species.try_get(species)
+      raise "未知物种 " + species + "（用图鉴里的内部名）" unless data
+      level = args["level"].to_i
+      level = 1 if level < 1
+      level = 100 if level > 100
+      seen = {}
+      storage.maxBoxes.times do |b|
+        storage.maxPokemon(b).times do |i|
+          p = storage[b, i]
+          seen[p.object_id] = true if p
+        end
+      end
+      before = player.party.length
+      raise "队伍和存储箱都满了，没地方放" unless pbAddPokemonSilent(data.id, level)
+      if player.party.length > before
+        index = player.party.length - 1
+        return { "where" => "party", "id" => index + 1,
+                 "actor" => pokemon_info(player.party[index], index) }
+      end
+      storage.maxBoxes.times do |b|
+        storage.maxPokemon(b).times do |i|
+          pkmn = storage[b, i]
+          next unless pkmn && !seen[pkmn.object_id]
+          id = (b + 1) * ESS_BOX_BASE + i
+          return { "where" => "box", "id" => id, "actor" => pokemon_info(pkmn, id - 1) }
+        end
+      end
+      { "where" => "box", "id" => nil, "actor" => nil }
     end
 
     def actor_set_level(actor, level)
@@ -791,11 +1143,18 @@ module RMCH
     def map_info_payload
       return nil unless $game_map
       id = try_send($game_map, :map_id)
-      infos = $data_mapinfos
       name = ""
-      begin
-        name = infos[id].name.to_s if infos && id && infos[id]
-      rescue Exception
+      if essentials?
+        begin
+          name = pbGetMapNameFromId(id).to_s if id
+        rescue Exception
+        end
+      else
+        infos = $data_mapinfos
+        begin
+          name = infos[id].name.to_s if infos && id && infos[id]
+        rescue Exception
+        end
       end
       {
         "mapId" => id,
@@ -810,6 +1169,7 @@ module RMCH
     end
 
     def map_list
+      return ess_map_list if essentials?
       infos = $data_mapinfos
       raise "$data_mapinfos is unavailable" unless infos
       entries = []
@@ -822,6 +1182,20 @@ module RMCH
           "parentId" => info.respond_to?(:parent_id) ? info.parent_id : nil,
           "order" => info.respond_to?(:order) ? info.order : nil
         }
+      end
+      { "total" => entries.length, "entries" => entries }
+    end
+
+    # Essentials keeps the map tree in Data/MapInfos.rxdata (RMXP MapInfo
+    # objects); load_data is the game's own cached reader.
+    def ess_map_list
+      infos = load_data("Data/MapInfos.rxdata")
+      entries = []
+      infos.keys.sort.each do |id|
+        info = infos[id]
+        next unless info
+        entries << { "id" => id, "name" => info.respond_to?(:name) ? info.name.to_s : "",
+                     "parentId" => nil, "order" => id }
       end
       { "total" => entries.length, "entries" => entries }
     end
@@ -881,6 +1255,12 @@ module RMCH
     # reported as saveDir so host-side backup/restore/delete work unchanged.
     def save_dir_real
       return nil if @real_dir.to_s.empty?
+      if essentials?
+        path = ess_save_path(ess_slots[0]) rescue nil
+        rel = path ? File.dirname(path.to_s.sub(%r{\A\.?/}, "")) : "Save"
+        return @real_dir if rel == "." || rel.empty?
+        return @real_dir + "/" + rel
+      end
       rel = File.dirname(save_rel_name(0))
       return @real_dir if rel == "." || rel.empty?
       @real_dir + "/" + rel
@@ -898,6 +1278,7 @@ module RMCH
     end
 
     def save_list
+      return ess_save_list if essentials?
       dir = save_dir_real
       entries = []
       if dir
@@ -924,6 +1305,7 @@ module RMCH
     end
 
     def save_save(id)
+      return ess_save_save(id) if essentials?
       raise "save id must be 1 or greater" if id < 1
       index = id - 1
       rel = save_rel_name(index)
@@ -942,6 +1324,7 @@ module RMCH
     end
 
     def save_load(id)
+      return ess_save_load(id) if essentials?
       raise "save id must be 1 or greater" if id < 1
       index = id - 1
       rel = save_rel_name(index)
@@ -970,6 +1353,100 @@ module RMCH
         after_load_legacy
       end
       { "id" => id, "loaded" => true }
+    end
+
+    # Essentials slot saves: named slots (存档N / 自动保存N) under ./Save,
+    # driven through the game's own Game.save/Game.load so multi-slot plugins
+    # (Auto Multi Save) and save conversions keep working. Entries carry an
+    # explicit "slot" because the GUI cannot parse a numeric id out of these
+    # file names.
+    def ess_save_list
+      entries = []
+      ess_slots.each_with_index do |slot, i|
+        path = ess_save_path(slot)
+        next if path.to_s.empty?
+        rel = path.to_s.sub(%r{\A\.?/}, "")
+        begin
+          next unless FileTest.file?(rel)
+          entries << {
+            "slot" => i + 1,
+            "name" => File.basename(rel),
+            "slotName" => slot.to_s,
+            "size" => File.size(rel),
+            "mtime" => File.mtime(rel).getgm.strftime("%Y-%m-%dT%H:%M:%SZ")
+          }
+        rescue Exception
+        end
+      end
+      { "dir" => save_dir_real, "entries" => entries }
+    end
+
+    def ess_save_save(id)
+      slot = ess_slot_for(id)
+      ess_player!
+      ok = Game.save(slot)
+      raise "Game.save returned false" unless ok
+      { "id" => id, "saved" => true }
+    end
+
+    def ess_save_load(id)
+      slot = ess_slot_for(id)
+      path = ess_save_path(slot)
+      raise "save file not found: " + slot.to_s if path.to_s.empty?
+      rel = path.to_s.sub(%r{\A\.?/}, "")
+      real = @real_dir.to_s.empty? ? nil : @real_dir + "/" + rel
+      if real && FileTest.file?(real)
+        # The real directory is authoritative; refresh the shadow copy.
+        safe_copy(real, rel)
+      elsif !FileTest.file?(rel)
+        raise "save file not found: " + File.basename(rel)
+      end
+      data = SaveData.read_from_file(rel)
+      old_scene = $scene
+      ess_dispose_title_scene(old_scene)
+      # load_all_values skips values already loaded, so an in-game second load
+      # would silently keep the old globals. Vanilla only re-loads after a
+      # title return, which runs mark_values_as_unloaded (032_Scene_Map.rb) —
+      # mirror that here (no-op on a fresh title load, everything unloaded).
+      SaveData.mark_values_as_unloaded if SaveData.respond_to?(:mark_values_as_unloaded)
+      Game.load(data)
+      { "id" => id, "loaded" => true }
+    end
+
+    # A title/intro scene's EventScene loop only exits once its scene is
+    # disposed (break if disposed?), and the vanilla load flow disposes the
+    # title BEFORE Game.load runs (close_title_screen -> fade -> load). The
+    # bridge must use the same order, otherwise the intro keeps spinning and
+    # Scene_Map#main never starts (实测: 宝可梦赤途 — the intro stayed on
+    # screen with $scene already saying Scene_Map). An in-game load needs
+    # nothing: Scene_Map#main exits on $scene != self.
+    def ess_dispose_title_scene(old_scene)
+      return if old_scene.nil?
+      # In-game load (Scene_Map#main exits on $scene != self) needs nothing.
+      return if defined?(Scene_Map) && old_scene.is_a?(Scene_Map)
+      es = begin
+        old_scene.instance_variable_get(:@eventscene)
+      rescue Exception
+        nil
+      end
+      es = old_scene if es.nil? && old_scene.respond_to?(:dispose) && old_scene.respond_to?(:disposed?)
+      if es.nil? && defined?(EventScene)
+        # 实测 宝可梦赤途: the title screen runs inside an IntroEventScene whose
+        # owning Scene_Intro never exposes it (@eventscene stays nil), so fall
+        # back to disposing every live EventScene to break its main loop.
+        es = []
+        ObjectSpace.each_object(EventScene) do |s|
+          es.push(s) unless s.respond_to?(:disposed?) && s.disposed?
+        end
+      end
+      return if es.nil?
+      Array(es).each do |s|
+        next unless s.respond_to?(:dispose)
+        begin
+          s.dispose unless s.respond_to?(:disposed?) && s.disposed?
+        rescue Exception
+        end
+      end
     end
 
     # Vanilla Scene_Save/Scene_File write sequence (XP 078_Scene_Save.rb,
@@ -1105,11 +1582,16 @@ module RMCH
     JDUMP_DEPTH_LIMIT = 500
 
     def save_contents_get(args)
-      party! # contents only exist once a game is running (XP title screen guard)
-      if rgss3? && defined?(DataManager) && DataManager.respond_to?(:make_save_contents)
-        contents = DataManager.make_save_contents
+      if essentials?
+        ess_player! # contents only exist once a game is running
+        contents = SaveData.compile_save_hash
       else
-        contents = legacy_contents
+        party! # contents only exist once a game is running (XP title screen guard)
+        if rgss3? && defined?(DataManager) && DataManager.respond_to?(:make_save_contents)
+          contents = DataManager.make_save_contents
+        else
+          contents = legacy_contents
+        end
       end
       # First pass: count references per object so the emit pass can tell
       # shared nodes (DAG aliasing or outright cycles — leg-x's custom
@@ -1167,6 +1649,15 @@ module RMCH
       contents = eval(code)
       raise "contents is not a Hash" unless contents.is_a?(Hash)
       skipped = []
+      if essentials?
+        # Game.load is the game's own "apply this save hash" path.
+        sym = {}
+        contents.each { |k, v| sym[k.to_s.to_sym] = v }
+        old_scene = $scene
+        ess_dispose_title_scene(old_scene)
+        Game.load(sym)
+        return { "applied" => true, "reloaded" => true, "bytes" => code.length, "skipped" => [] }
+      end
       if rgss3? && defined?(DataManager) && DataManager.respond_to?(:extract_save_contents)
         # extract_save_contents reads symbol keys; customs (hs adds :stats) keep
         # working because every key is converted, known or not.
@@ -1564,11 +2055,30 @@ module RMCH
       false
     end
 
+    # Money lives on $player in Essentials, on $game_party elsewhere.
+    def gold_current
+      if essentials?
+        return $player ? $player.money.to_i : nil
+      end
+      party = $game_party
+      party && party.respond_to?(:gold) ? party.gold.to_i : nil
+    end
+
+    def gold_change(amount)
+      if essentials?
+        player = ess_player!
+        player.money = player.money.to_i + amount
+        return player.money.to_i
+      end
+      party = party!
+      party.gain_gold(amount)
+      party.gold.to_i
+    end
+
     # Same wire shape as the MV/MZ bridge's collectState(), minus what RGSS
     # cannot know (hooks, profile).
     def state_payload
-      party = $game_party
-      gold = party && party.respond_to?(:gold) ? party.gold.to_i : nil
+      gold = gold_current
       {
         "bridgeVersion" => VERSION,
         "gameKey" => @game_key,
@@ -1577,6 +2087,7 @@ module RMCH
         "map" => map_info_payload,
         "party" => party_state,
         "saveDir" => save_dir_real,
+        "essentials" => essentials?,
         "inBattle" => in_battle?,
         "options" => options
       }
@@ -2093,8 +2604,12 @@ module RMCH
       locks = value_locks
       return if suppressed?
       party = $game_party
-      if locks["gold"] && party
-        party.instance_variable_set(:@gold, locks["gold"])
+      if locks["gold"]
+        if essentials?
+          $player.money = locks["gold"] if $player && $player.money.to_i != locks["gold"]
+        elsif party
+          party.instance_variable_set(:@gold, locks["gold"])
+        end
       end
       ITEM_BAG_IVARS.each_pair do |kind, ivar|
         table = locks[kind]
@@ -2130,6 +2645,9 @@ module RMCH
       end
       table = locks[kind]
       raise "unsupported lock kind: #{kind}" unless table.is_a?(Hash)
+      if essentials? && kind != "switch" && kind != "variable"
+        raise "unsupported on Pokemon Essentials: " + kind + " locks"
+      end
       id = args["id"].to_i
       unless enabled
         table.delete(id)
@@ -2281,73 +2799,171 @@ module RMCH
 
       # --- gold ---------------------------------------------------------------
       when "gold.add"
-        party = party!
-        party.gain_gold(args["amount"].to_i)
-        { "gold" => party.gold.to_i }
+        { "gold" => gold_change(args["amount"].to_i) }
       when "gold.set"
-        party = party!
         value = args["value"].to_i
         value = 0 if value < 0
-        party.gain_gold(value - party.gold.to_i)
-        { "gold" => party.gold.to_i }
+        { "gold" => gold_change(value - (gold_current || 0)) }
 
       # --- catalogs / inventory -------------------------------------------------
       when "catalog.query"
         catalog_query(args)
       when "item.list"
-        item_list
+        essentials? ? ess_item_list : item_list
       when "item.add"
-        kind = args["kind"].to_s
-        kind = "item" unless ITEM_BAG_IVARS[kind]
-        id = args["id"].to_i
-        amount = args["amount"].to_i
-        raise "amount must be a non-zero number" if amount == 0
-        gain_entry(kind, id, amount)
-        { "kind" => kind, "id" => id, "amount" => amount }
+        if essentials?
+          ess_item_add(args)
+        else
+          kind = args["kind"].to_s
+          kind = "item" unless ITEM_BAG_IVARS[kind]
+          id = args["id"].to_i
+          amount = args["amount"].to_i
+          raise "amount must be a non-zero number" if amount == 0
+          gain_entry(kind, id, amount)
+          { "kind" => kind, "id" => id, "amount" => amount }
+        end
       when "item.set"
-        item_set(args)
+        essentials? ? ess_item_set(args) : item_set(args)
 
       # --- party ------------------------------------------------------------------
       when "party.info"
-        party = party!
-        members = party_members(party).map { |a| actor_info(a) }
-        { "gold" => party.gold.to_i, "members" => members,
-          "battleMembers" => members, "maxBattleMembers" => nil }
+        if essentials?
+          player = ess_player!
+          members = player.party.each_with_index.map { |p, i| pokemon_info(p, i) }
+          { "gold" => player.money.to_i, "members" => members,
+            "battleMembers" => members, "maxBattleMembers" => 6 }
+        else
+          party = party!
+          members = party_members(party).map { |a| actor_info(a) }
+          { "gold" => party.gold.to_i, "members" => members,
+            "battleMembers" => members, "maxBattleMembers" => nil }
+        end
       when "party.recover"
-        party = party!
-        members = party_members(party)
-        members.each { |actor| actor.recover_all if actor.respond_to?(:recover_all) }
-        { "recovered" => members.length,
-          "members" => members.map { |a| actor_info(a) } }
+        if essentials?
+          player = ess_player!
+          player.party.each { |p| p.heal if p.respond_to?(:heal) }
+          { "recovered" => player.party.length,
+            "members" => player.party.each_with_index.map { |p, i| pokemon_info(p, i) } }
+        else
+          party = party!
+          members = party_members(party)
+          members.each { |actor| actor.recover_all if actor.respond_to?(:recover_all) }
+          { "recovered" => members.length,
+            "members" => members.map { |a| actor_info(a) } }
+        end
       when "party.addActor"
-        party = party!
-        id = args["id"].to_i
-        party.add_actor(id)
-        { "id" => id, "actor" => actor_info(require_actor(id)) }
+        if essentials?
+          # 入队 = 把存储箱里的宝可梦取回队伍（队伍只进存储来源，没有数据库角色可加）。
+          id = args["id"].to_i
+          raise "只有存储箱里的宝可梦可以入队" if id < ESS_BOX_BASE
+          player = ess_player!
+          storage = ess_storage!
+          max = (defined?(Settings::MAX_PARTY_SIZE) ? Settings::MAX_PARTY_SIZE : 6).to_i
+          raise "队伍已满（" + max.to_s + " 只）" if player.party.length >= max
+          box, pos = ess_box_loc(id)
+          pkmn = box < storage.maxBoxes && pos < storage.maxPokemon(box) ? storage[box, pos] : nil
+          raise "存储箱这个位置是空的（刷新列表再试）" unless pkmn
+          raise "队伍已满（" + max.to_s + " 只）" unless storage.pbMove(-1, -1, box, pos)
+          index = player.party.length - 1
+          { "id" => index + 1, "actor" => pokemon_info(pkmn, index) }
+        else
+          party = party!
+          id = args["id"].to_i
+          party.add_actor(id)
+          { "id" => id, "actor" => actor_info(require_actor(id)) }
+        end
       when "party.removeActor"
-        party = party!
-        id = args["id"].to_i
-        party.remove_actor(id)
-        { "id" => id }
+        if essentials?
+          # 离队 = 把队员存进当前存储箱（引擎会按设置自动治疗存入的宝可梦）。
+          id = args["id"].to_i
+          raise "存储箱里的宝可梦本来就不在队伍里" if id >= ESS_BOX_BASE
+          player = ess_player!
+          pkmn = id >= 1 ? player.party[id - 1] : nil
+          raise "party slot " + id.to_s + " is empty" unless pkmn
+          raise "队伍里至少要留 1 只宝可梦" if player.party.length <= 1
+          storage = ess_storage!
+          dst = storage.currentBox.to_i
+          dst = 0 if dst < 0
+          ok = storage.pbMove(dst, -1, -1, id - 1)
+          unless ok # current box is full — scan the rest like pbStoreCaught does
+            storage.maxBoxes.times do |b|
+              next if b == dst
+              ok = storage.pbMove(b, -1, -1, id - 1)
+              break if ok
+            end
+          end
+          raise "所有存储箱都满了，没地方放" unless ok
+          { "id" => id }
+        else
+          party = party!
+          id = args["id"].to_i
+          party.remove_actor(id)
+          { "id" => id }
+        end
+      when "party.createPokemon"
+        raise "只有宝可梦游戏支持凭空创建队员" unless essentials?
+        ess_create_pokemon(args)
 
-      # --- actors -----------------------------------------------------------------
+      # --- actors ------------------------------------------------------------------
       when "actor.info"
-        { "actor" => actor_info(require_actor(args["id"].to_i)) }
+        if essentials?
+          id = args["id"].to_i
+          ess_pokemon_payload(ess_actor!(id), id - 1)
+        else
+          { "actor" => actor_info(require_actor(args["id"].to_i)) }
+        end
       when "actor.recover"
-        actor = require_actor(args["id"].to_i)
-        actor.recover_all if actor.respond_to?(:recover_all)
-        { "actor" => actor_info(actor) }
+        if essentials?
+          id = args["id"].to_i
+          pkmn = ess_actor!(id)
+          pkmn.heal if pkmn.respond_to?(:heal)
+          ess_pokemon_payload(pkmn, id - 1)
+        else
+          actor = require_actor(args["id"].to_i)
+          actor.recover_all if actor.respond_to?(:recover_all)
+          { "actor" => actor_info(actor) }
+        end
       when "actor.level.set"
-        actor = require_actor(args["id"].to_i)
-        actor_set_level(actor, args["level"].to_i)
-        { "actor" => actor_info(actor) }
+        if essentials?
+          id = args["id"].to_i
+          pkmn = ess_actor!(id)
+          level = args["level"].to_i
+          level = 1 if level < 1
+          level = 100 if level > 100
+          with_suppression do
+            pkmn.level = level
+            pkmn.calc_stats if pkmn.respond_to?(:calc_stats) # level= alone leaves stale stats
+          end
+          ess_pokemon_payload(pkmn, id - 1)
+        else
+          actor = require_actor(args["id"].to_i)
+          actor_set_level(actor, args["level"].to_i)
+          { "actor" => actor_info(actor) }
+        end
       when "actor.exp.add"
-        actor = require_actor(args["id"].to_i)
-        amount = args["amount"].to_i
-        actor_add_exp(actor, amount)
-        { "actor" => actor_info(actor), "amount" => amount }
+        if essentials?
+          id = args["id"].to_i
+          pkmn = ess_actor!(id)
+          amount = args["amount"].to_i
+          with_suppression do
+            pkmn.exp = pkmn.exp.to_i + amount # exp= nils @level → lazy recompute
+            pkmn.calc_stats if pkmn.respond_to?(:calc_stats)
+          end
+          ess_pokemon_payload(pkmn, id - 1, "amount" => amount)
+        else
+          actor = require_actor(args["id"].to_i)
+          amount = args["amount"].to_i
+          actor_add_exp(actor, amount)
+          { "actor" => actor_info(actor), "amount" => amount }
+        end
       when "actor.vitals.set"
-        actor = require_actor(args["id"].to_i)
+        if essentials?
+          id = args["id"].to_i
+          pkmn = ess_actor!(id)
+          with_suppression { pkmn.hp = args["hp"].to_i } if present(args["hp"]) # hp= clamps 0..totalhp
+          ess_pokemon_payload(pkmn, id - 1)
+        else
+          actor = require_actor(args["id"].to_i)
         # Deliberate trainer writes must land even when a lock option is on.
         with_suppression do
           if present(args["hp"]) && actor.respond_to?(:hp=)
@@ -2375,17 +2991,34 @@ module RMCH
           end
         end
         { "actor" => actor_info(actor) }
+        end
       when "actor.name.set"
-        actor = require_actor(args["id"].to_i)
-        raise "name write is unavailable" unless actor.respond_to?(:name=)
-        actor.name = args["name"].to_s
-        { "actor" => actor_info(actor) }
+        if essentials?
+          # Pokemon#name IS the nickname; species_name stays untouched.
+          id = args["id"].to_i
+          pkmn = ess_actor!(id)
+          pkmn.name = args["name"].to_s
+          ess_pokemon_payload(pkmn, id - 1)
+        else
+          actor = require_actor(args["id"].to_i)
+          raise "name write is unavailable" unless actor.respond_to?(:name=)
+          actor.name = args["name"].to_s
+          { "actor" => actor_info(actor) }
+        end
       when "actor.nickname.set"
-        actor = require_actor(args["id"].to_i)
-        raise "unsupported on RGSS: nicknames need VX Ace" unless actor.respond_to?(:nickname=)
-        actor.nickname = args["nickname"].to_s
-        { "actor" => actor_info(actor) }
+        if essentials?
+          id = args["id"].to_i
+          pkmn = ess_actor!(id)
+          pkmn.name = args["nickname"].to_s
+          ess_pokemon_payload(pkmn, id - 1)
+        else
+          actor = require_actor(args["id"].to_i)
+          raise "unsupported on RGSS: nicknames need VX Ace" unless actor.respond_to?(:nickname=)
+          actor.nickname = args["nickname"].to_s
+          { "actor" => actor_info(actor) }
+        end
       when "actor.class.set"
+        raise "宝可梦不支持更换种类" if essentials?
         actor = require_actor(args["id"].to_i)
         class_id = args["classId"].to_i
         if actor.respond_to?(:change_class)
@@ -2397,28 +3030,71 @@ module RMCH
         end
         { "actor" => actor_info(actor) }
       when "actor.skill.learn"
-        actor = require_actor(args["id"].to_i)
-        skill_id = args["skillId"].to_i
-        raise "learn_skill is unavailable" unless actor.respond_to?(:learn_skill)
-        actor.learn_skill(skill_id)
-        { "actor" => actor_info(actor), "skillId" => skill_id }
+        if essentials?
+          id = args["id"].to_i
+          pkmn = ess_actor!(id)
+          move_id = args["skillId"].to_s
+          raise "unknown move: " + move_id unless GameData::Move.try_get(move_id)
+          # Pokemon#learn_move silently drops the FIRST move when the moveset
+          # is full; the debug menu instead asks which to replace. A toolbox
+          # cannot prompt mid-command, so refuse and let the user forget one.
+          max_moves = defined?(Pokemon::MAX_MOVES) ? Pokemon::MAX_MOVES : 4
+          known = pkmn.moves.any? { |m| m.id.to_s == move_id } rescue false
+          if !known && pkmn.moves && pkmn.moves.length >= max_moves
+            raise "技能位已满（" + max_moves.to_s + " 个），先忘记一个再学"
+          end
+          pkmn.learn_move(move_id)
+          ess_pokemon_payload(pkmn, id - 1, "skillId" => move_id)
+        else
+          actor = require_actor(args["id"].to_i)
+          skill_id = args["skillId"].to_i
+          raise "learn_skill is unavailable" unless actor.respond_to?(:learn_skill)
+          actor.learn_skill(skill_id)
+          { "actor" => actor_info(actor), "skillId" => skill_id }
+        end
       when "actor.skill.forget"
-        actor = require_actor(args["id"].to_i)
-        skill_id = args["skillId"].to_i
-        raise "forget_skill is unavailable" unless actor.respond_to?(:forget_skill)
-        actor.forget_skill(skill_id)
-        { "actor" => actor_info(actor), "skillId" => skill_id }
+        if essentials?
+          id = args["id"].to_i
+          pkmn = ess_actor!(id)
+          move_id = args["skillId"].to_s
+          pkmn.forget_move(move_id)
+          ess_pokemon_payload(pkmn, id - 1, "skillId" => move_id)
+        else
+          actor = require_actor(args["id"].to_i)
+          skill_id = args["skillId"].to_i
+          raise "forget_skill is unavailable" unless actor.respond_to?(:forget_skill)
+          actor.forget_skill(skill_id)
+          { "actor" => actor_info(actor), "skillId" => skill_id }
+        end
       when "actor.state.add"
-        actor = require_actor(args["id"].to_i)
-        state_id = args["stateId"].to_i
-        actor.add_state(state_id)
-        { "actor" => actor_info(actor) }
+        if essentials?
+          id = args["id"].to_i
+          pkmn = ess_actor!(id)
+          status = args["stateId"].to_s
+          raise "unknown status: " + status unless GameData::Status.try_get(status)
+          pkmn.status = status # no-op while fainted/egg (Pokemon#status= guard)
+          pkmn.statusCount = 2 if pkmn.status == :SLEEP && pkmn.statusCount.to_i == 0
+          ess_pokemon_payload(pkmn, id - 1)
+        else
+          actor = require_actor(args["id"].to_i)
+          state_id = args["stateId"].to_i
+          actor.add_state(state_id)
+          { "actor" => actor_info(actor) }
+        end
       when "actor.state.remove"
-        actor = require_actor(args["id"].to_i)
-        state_id = args["stateId"].to_i
-        actor.remove_state(state_id)
-        { "actor" => actor_info(actor) }
+        if essentials?
+          id = args["id"].to_i
+          pkmn = ess_actor!(id)
+          pkmn.heal_status
+          ess_pokemon_payload(pkmn, id - 1)
+        else
+          actor = require_actor(args["id"].to_i)
+          state_id = args["stateId"].to_i
+          actor.remove_state(state_id)
+          { "actor" => actor_info(actor) }
+        end
       when "actor.param.add"
+        raise "宝可梦没有属性加值（改等级会重算六维）" if essentials?
         actor = require_actor(args["id"].to_i)
         raise "unsupported on RGSS: add_param needs VX Ace" unless actor.respond_to?(:add_param)
         param_id = args["paramId"].to_i
@@ -2487,6 +3163,13 @@ module RMCH
       when "scene.info"
         { "available" => [] }
 
+      # --- diagnostics ------------------------------------------------------------------
+      when "debug.eval", "console.eval"
+        code = args["code"].to_s
+        raise "code is required" if code.empty?
+        result = eval(code, TOPLEVEL_BINDING, "rmch-eval")
+        { "result" => result.inspect, "class" => result.class.to_s }
+
       else
         raise "unsupported on RGSS: #{type}"
       end
@@ -2510,63 +3193,145 @@ Object.send(:define_method, :rmch_pump) do
     next
   end
   RMCH.pump
-end
-
-Object.send(:define_method, :rmch_hook_update) do |site|
-  site.class_eval do
-    unless instance_methods(false).map { |m| m.to_s }.include?("rmch_update_orig")
-      # Capture the current `update` as an UnboundMethod and have the wrapper
-      # call THAT — never the `rmch_update_orig` alias by name. When a hooked
-      # subclass's update calls `super`, the parent wrapper runs with self
-      # still being the subclass instance; a by-name alias call would then
-      # re-resolve to the SUBCLASS alias and bounce between the two wrappers
-      # until SystemStackError ("stack level too deep"). Star Stealing
-      # Prince's Paradog Scene_Title#update -> super hits exactly this. A
-      # captured UnboundMethod always runs the method body seen at hook time,
-      # which breaks the cycle. `rmch_update_orig` stays as a hooked-marker
-      # (and for debugging) but is never invoked.
-      rmch_orig = instance_method(:update)
-      alias_method :rmch_update_orig, :update
-      define_method(:update) do |*args|
-        begin
-          rmch_pump
-        rescue Exception
-        end
-        # A scene update that raises takes the whole RGSS main loop down with
-        # it (and the bridge with that). Report before re-raising so the host
-        # can see what actually broke.
-        begin
-          rmch_orig.bind(self).call(*args)
-        rescue Exception => e
-          RMCH.report_game_error(e)
-          raise
-        end
-      end
+  # Slow re-verification: plugins loaded after this bridge (Essentials
+  # PluginManager) can redefine a hooked `update`; the identity check inside
+  # rmch_hook_update then re-wraps the new body. Every 300 pumped frames.
+  $rmch_hook_frames = ($rmch_hook_frames || 0) + 1
+  if $rmch_hook_frames % 300 == 0
+    begin
+      rmch_rescan_hooks
+    rescue Exception
     end
   end
 end
 
-# Hook the per-frame pump into scene updates. Scene_Base alone is NOT enough:
-# custom engines (BLACK SOULS included) override `update` in subclasses and
-# never call super, which would bypass a base-class hook entirely — so hook
-# every Scene_Base descendant that defines its own update as well. A subclass
-# that does call super pumps twice per frame; connect/pump are idempotent and
-# offset-guarded, so that is harmless. Hooking both parent and child is safe
-# only because the wrapper calls a captured UnboundMethod (see above) — with
-# a plain alias-chain, child `super` + parent wrapper recurses forever.
-if defined?(Scene_Base)
-  rmch_hook_update(Scene_Base)
-  ObjectSpace.each_object(Class) do |klass|
-    next unless klass < Scene_Base
-    next unless klass.instance_methods(false).map { |m| m.to_s }.include?("update")
-    rmch_hook_update(klass)
+# mkxp-z/Essentials hooking notes (宝可梦赤途, measured):
+# - A singleton alias on Graphics.update DOES intercept calls there
+#   (counter probe increments), but scene-class `update` hooks are kept as
+#   the primary pump ride — they are equally reliable and already proven.
+# - Plugins load late (PluginManager.runPlugins inside the Main entry) and
+#   can redefine an already-hooked `update`, silently dropping the pump.
+#   Hooks are therefore re-verified by wrapper identity and re-installed on
+#   a slow rescan cadence (see rmch_pump).
+# - Modal loops that only spin Graphics.update/Input.update (the game's
+#   startup announcement runs its own Enter-paged loop from inside
+#   Game_Player#update) starve every scene-class hook, so on Essentials the
+#   pump rides Graphics.update as an additional safety net (installed at
+#   the bottom of this file).
+Object.send(:define_method, :rmch_hook_update) do |site, meth = :update|
+  site.class_eval do
+    wrapper_iv = "@rmch_#{meth}_wrapper"
+    orig_name = "rmch_#{meth}_orig"
+    current = begin
+      instance_method(meth)
+    rescue Exception
+      nil
+    end
+    next unless current
+    wrapped = instance_variable_defined?(wrapper_iv) ? instance_variable_get(wrapper_iv) : nil
+    next if wrapped && current == wrapped
+    # Capture the current `update` as an UnboundMethod and have the wrapper
+    # call THAT — never the `rmch_update_orig` alias by name. When a hooked
+    # subclass's update calls `super`, the parent wrapper runs with self
+    # still being the subclass instance; a by-name alias call would then
+    # re-resolve to the SUBCLASS alias and bounce between the two wrappers
+    # until SystemStackError ("stack level too deep"). Star Stealing
+    # Prince's Paradog Scene_Title#update -> super hits exactly this. A
+    # captured UnboundMethod always runs the method body seen at hook time,
+    # which breaks the cycle. `rmch_update_orig` stays as a hooked-marker
+    # (and for debugging) but is never invoked.
+    rmch_orig = current
+    unless instance_methods(false).map { |m| m.to_s }.include?(orig_name)
+      alias_method orig_name, meth
+    end
+    define_method(meth) do |*args|
+      begin
+        rmch_pump
+      rescue Exception
+      end
+      # A scene update that raises takes the whole RGSS main loop down with
+      # it (and the bridge with that). Report before re-raising so the host
+      # can see what actually broke.
+      begin
+        rmch_orig.bind(self).call(*args)
+      rescue Exception => e
+        RMCH.report_game_error(e)
+        raise
+      end
+    end
+    instance_variable_set(wrapper_iv, instance_method(meth))
   end
-else
-  # XP has no Scene_Base: hook every Scene_* class that defines its own
-  # update (inherited updates resolve to an already-hooked parent).
+end
+
+Object.send(:define_method, :rmch_hookable_scene?) do |klass|
+  if defined?(Scene_Base)
+    # VX/Ace: Scene_Base itself plus every descendant (custom engines such as
+    # BLACK SOULS override `update` without calling super, so the base class
+    # alone is not enough).
+    next true if klass == Scene_Base
+    next !!(klass < Scene_Base)
+  end
+  # XP-style games: no Scene_Base. Hook top-level scene classes — name filter
+  # widened from /^Scene_/ to /scene/i for Pokemon Essentials on mkxp-z
+  # (EventScene drives the title screen; PokemonLoad_Scene & friends use the
+  # _Scene suffix). Essentials nests helper classes (Battle::Scene::Animation)
+  # whose update fires many times per frame — skip nested names, but keep the
+  # battle scene itself.
+  next true if klass.to_s == "Battle::Scene"
+  next false if klass.to_s.include?("::")
+  next !!(klass.to_s =~ /scene/i)
+end
+
+Object.send(:define_method, :rmch_rescan_hooks) do
   ObjectSpace.each_object(Class) do |klass|
-    next unless klass.to_s =~ /^Scene_/
+    next unless rmch_hookable_scene?(klass)
     next unless klass.instance_methods(false).map { |m| m.to_s }.include?("update")
     rmch_hook_update(klass)
+    # Essentials: while a message window is open the pbMessage loop calls
+    # $scene.miniupdate (via pbUpdateSceneMap) instead of Scene_Map#update,
+    # so the pump stalls behind modal text. Ride miniupdate too.
+    if klass.to_s == "Scene_Map" &&
+       klass.instance_methods(false).map { |m| m.to_s }.include?("miniupdate")
+      rmch_hook_update(klass, :miniupdate)
+    end
+  end
+  # Late plugins may have replaced the Graphics.update wrapper; re-wrap.
+  if defined?(SaveData) && defined?(GameData) && $rmch_graphics_wrapper
+    begin
+      rmch_hook_graphics_update
+    rescue Exception
+    end
+  end
+end
+
+rmch_rescan_hooks
+
+# Essentials safety net: pump inside Graphics.update too, so modal loops that
+# never touch a scene class (startup announcements, custom minigame loops)
+# still process bridge commands. Like scene hooks, this wrapper is replaced
+# by late-loading plugins (宝可梦赤途's "Pokémon League Transitions" plugin
+# redefines Graphics.update unconditionally), so it is re-verified by wrapper
+# identity on the rescan cadence, same as rmch_hook_update.
+Object.send(:define_method, :rmch_hook_graphics_update) do
+  next unless defined?(Graphics) && Graphics.respond_to?(:update)
+  next unless Graphics.respond_to?(:define_singleton_method)
+  current = Graphics.method(:update)
+  wrapped = $rmch_graphics_wrapper
+  next if wrapped && current == wrapped
+  orig = current
+  Graphics.define_singleton_method(:update) do
+    begin
+      rmch_pump
+    rescue Exception
+    end
+    orig.call
+  end
+  $rmch_graphics_wrapper = Graphics.method(:update)
+end
+
+if defined?(SaveData) && defined?(GameData)
+  begin
+    rmch_hook_graphics_update
+  rescue Exception
   end
 end

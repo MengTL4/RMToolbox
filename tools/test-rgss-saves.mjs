@@ -32,7 +32,6 @@ if (!detect) {
 }
 const gen = detect.engine; // RGSS1 / RGSS2 / RGSS3
 console.log(`game    : ${detect.title} (${gen})`);
-
 let failures = 0;
 function check(label, ok, detail = "") {
   console.log(`  ${label.padEnd(30)} ${ok ? "ok" : "FAIL"} ${detail}`);
@@ -53,6 +52,14 @@ console.log(`bridge  : connected (${session.hello?.engine || "?"})`);
 
 const send = (type, args) => session.send(type, args || {});
 const evalRb = async (code) => (await send("console.eval", { code })).result;
+
+// Pokemon Essentials (mkxp-z) games have no Game_Actors / new-game globals;
+// the bridge's Essentials adapter covers them, and this test drives the same
+// round-trip starting from an existing save instead of a new game.
+const essentials = await evalRb('(defined?(SaveData) && defined?(GameData)) ? "ess-yes" : "ess-no"')
+  .then((r) => /ess-yes/.test(String(r)))
+  .catch(() => false);
+if (essentials) console.log("mode    : Pokemon Essentials (save-driven)");
 
 // console.eval code must not contain "{" or "}" (the request scanner counts
 // braces), so blocks below are all do/end.
@@ -79,6 +86,8 @@ const AC_ON = "module ::Input; class << self; unless method_defined?(:rmch_ac_tr
   "end; end; end; end; 'ac-on=' + $rmch_ac_method.to_s";
 
 const SLOT_RE = /^save(\d+)\.(rxdata|rvdata|rvdata2)$/i;
+// Essentials auto-multi-save names manual slots 存档N.rxdata.
+const SLOT_RE_ESS = /^存档(\d+)\.rxdata$/;
 const SLOT = 3;
 let createdFile = null; // real-dir save file this test created, removed at the end
 
@@ -90,14 +99,20 @@ try {
   const list0 = await send("save.list");
   check("save.list shape", typeof list0.dir === "string" && Array.isArray(list0.entries),
     list0.dir || "");
-  const occupied = list0.entries.some((e) => Number(SLOT_RE.exec(e.name)?.[1]) === SLOT);
+  const occupied = list0.entries.some((e) => Number((SLOT_RE.exec(e.name) ?? SLOT_RE_ESS.exec(e.name))?.[1]) === SLOT);
   if (occupied) {
     console.log(`  slot ${SLOT} already has a save in the real directory — refusing to clobber it`);
     throw new Error("slot occupied");
   }
 
   // --- start a new game through the engine's own path ---------------------------
-  if (gen === "RGSS3") {
+  if (essentials) {
+    // Essentials: no new-game globals — load the first existing manual save
+    // (ess_save_list only lists files that exist, so no exists flag to check).
+    const entry = list0.entries.find((e) => SLOT_RE_ESS.test(e.name)) || list0.entries[0];
+    if (!entry) throw new Error("Essentials game has no existing save to load");
+    await send("save.load", { id: entry.slot ?? entry.id });
+  } else if (gen === "RGSS3") {
     await evalRb("DataManager.setup_new_game; SceneManager.goto(Scene_Map); 'started'");
   } else if (gen === "RGSS2") {
     await evalRb("$game_party.setup_starting_members; $game_map.setup($data_system.start_map_id); " +
@@ -117,8 +132,10 @@ try {
     const p = await send("party.info", {}).catch(() => null);
     return p && p.members && p.members.length ? p : null;
   }, 8000);
-  if (!party) {
-    await evalRb("$game_party.add_actor(1) if $game_party.members.empty? && $data_actors[1]; 'add'").catch(() => null);
+  if (!party && !essentials) {
+    // XP's Game_Party has no `members` (only `actors`); VX+ have members.
+    const emptyTest = gen === "RGSS1" ? "$game_party.actors.empty?" : "$game_party.members.empty?";
+    await evalRb(`$game_party.add_actor(1) if ${emptyTest} && $data_actors[1]; 'add'`).catch(() => null);
     party = await poll(async () => {
       const p = await send("party.info", {}).catch(() => null);
       return p && p.members && p.members.length ? p : null;
@@ -132,11 +149,13 @@ try {
   const GOLD_A = 54321;
   const GOLD_B = 777;
   await send("gold.set", { value: GOLD_A });
+  // Deterministic baseline: a continued game may already have switch 1 on.
+  await send("switch.set", { id: 1, value: false });
   const saved = await send("save.save", { id: SLOT });
   check("save.save", saved.saved === true && saved.id === SLOT, JSON.stringify(saved));
 
   const list1 = await send("save.list");
-  const entry = list1.entries.find((e) => Number(SLOT_RE.exec(e.name)?.[1]) === SLOT);
+  const entry = list1.entries.find((e) => Number((SLOT_RE.exec(e.name) ?? SLOT_RE_ESS.exec(e.name))?.[1]) === SLOT);
   check("save.list shows slot", !!entry, entry ? `${entry.name} ${entry.size}B` : "not listed");
   if (entry) {
     const realPath = path.join(list1.dir, entry.name);
@@ -170,7 +189,7 @@ try {
 
   // --- error path ------------------------------------------------------------------
   const missing = await send("save.load", { id: 98 }).then(() => "", (e) => e.message);
-  check("load missing slot refuses", /not found/.test(missing), missing);
+  check("load missing slot refuses", /not found|out of range/.test(missing), missing);
 
   const alive = await send("ping", {}).then(() => true, () => false);
   check("bridge alive after load", alive, "");

@@ -21,6 +21,7 @@ export const MODULES = [
   "core/rgss-archive.mjs",
   "core/rgss.mjs",
   "core/rgss-savecode.mjs",
+  "core/evb-unpack.mjs",
   "core/scanner.mjs",
   "core/bridge-bundler.mjs",
   "core/cdp-client.mjs",

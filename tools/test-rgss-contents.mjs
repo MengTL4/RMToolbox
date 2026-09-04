@@ -53,6 +53,18 @@ console.log(`bridge  : connected (${session.hello?.engine || "?"})`);
 const send = (type, args) => session.send(type, args || {});
 const evalRb = async (code) => (await send("console.eval", { code })).result;
 
+// Pokemon Essentials (mkxp-z): the vanilla actor-tree contents contract does
+// not apply (no Game_Actors new-game globals). The Essentials contents path
+// is covered by tools/_probe-ess-cmds.mjs — skip cleanly here.
+const isEssentials = await evalRb('(defined?(SaveData) && defined?(GameData)) ? "ess-yes" : "ess-no"')
+  .then((r) => /ess-yes/.test(String(r)))
+  .catch(() => false);
+if (isEssentials) {
+  console.log("skip    : Pokemon Essentials game — covered by tools/_probe-ess-cmds.mjs");
+  handle.stop();
+  process.exit(0);
+}
+
 async function poll(fn, timeoutMs, stepMs = 250) {
   const deadline = Date.now() + timeoutMs;
   let last;

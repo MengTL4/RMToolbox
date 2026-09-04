@@ -15,6 +15,7 @@ import { buildBridge } from "./bridge-bundler.mjs";
 import { getToken } from "./token.mjs";
 import { launchShadowGame } from "./shadow-launcher.mjs";
 import { launchRgssGame, getRgssSession, listRgssSessions } from "./rgss-launcher.mjs";
+import { ensureEvbUnpacked } from "./evb-unpack.mjs";
 import { launchTauriGame, getTauriSession, listTauriSessions } from "./tauri-cdp.mjs";
 import { pickFreePort, runSeededSeeder, appendSeedLog } from "./sealed-seed.mjs";
 
@@ -75,6 +76,28 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
   }
   if (scan.engine.id === "RM2K") {
     throw new Error(`engine "${scan.engine.id}" is not supported by the M1 injectors (planned: ${injectionStrategy(scan).id})`);
+  }
+  if (scan.container === "evb") {
+    // Enigma Virtual Box: extract the embedded filesystem once (big images
+    // take tens of seconds — 宝可梦赤途's 2.9GB exe unpacks in ~30s), then
+    // hand the real directory to the standard RGSS path. The gameKey stays
+    // derived from the ORIGINAL folder so bridge state survives re-unpacks.
+    const unpacked = ensureEvbUnpacked(scan.evb.exePath);
+    const handle = await launchRgssGame({ gameRoot: unpacked.dir, projectRoot, gameKey: scan.gameKey });
+    return {
+      game: scan.title,
+      gameKey: scan.gameKey,
+      root: scan.root,
+      engine: scan.engine.id,
+      protection: scan.protection,
+      strategy: "evb-unpack-rgss-script",
+      strategyReason: `EVB extraction to ${unpacked.dir} (${unpacked.extracted ? "fresh" : "reused"}) + shadow copy + Scripts archive entry`,
+      pid: handle.child.pid,
+      shadowApp: handle.prepared.shadowRoot,
+      rgssSession: handle.session,
+      server: null,
+      port: null
+    };
   }
   if (/^RGSS/i.test(scan.engine.id)) {
     // RGSS games need no ws server and no extension build: the bridge is a
