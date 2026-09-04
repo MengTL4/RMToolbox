@@ -495,14 +495,23 @@ module RMCH
       limit = args["limit"] ? args["limit"].to_i : 500
       limit = 500 if limit <= 0
       entries = []
+      # Compare queries as raw bytes: modern editors tag database strings
+      # UTF-8 while the wire query arrives as untagged bytes, and
+      # String#include? across those encodings raises CompatibilityError on
+      # Ruby >= 1.9 (武界风云传 RGD/Ruby 3.1.2 实测).
+      qb = query.unpack("C*").pack("C*")
       table.each_with_index do |entry, id|
         next if entry.nil? || id == 0
         name = entry.respond_to?(:name) ? entry.name.to_s : ""
-        next unless query.empty? || name.downcase.include?(query) || id.to_s == query
+        next unless qb.empty? ||
+          name.downcase.unpack("C*").pack("C*").include?(qb) || id.to_s == query
         entries << {
           "id" => id,
           "name" => name,
           "iconIndex" => entry.respond_to?(:icon_index) ? entry.icon_index : nil,
+          # RGSS1 (XP) has no IconSet sheet — one file per icon under
+          # Graphics/Icons/, referenced by name.
+          "iconName" => entry.respond_to?(:icon_name) ? entry.icon_name.to_s : nil,
           "note" => entry.respond_to?(:note) ? entry.note.to_s[0, 300] : ""
         }
       end
@@ -1058,6 +1067,14 @@ module RMCH
     # post-steps are guarded because the load itself already succeeded.
     def after_load_legacy
       if rgss1?
+        # Vanilla Scene_Load#initialize recreates $game_temp before the scene
+        # even opens; scripts that alias Scene_Map#update (tips, quest trackers)
+        # call $game_temp on the very first frame, so skipping this kills the
+        # game one frame after the load (实测: 武界风云传 XdRs_PCTips).
+        begin
+          $game_temp = Game_Temp.new
+        rescue Exception
+        end
         begin
           $game_system.bgm_play($game_system.playing_bgm)
           $game_system.bgs_play($game_system.playing_bgs)
@@ -1631,13 +1648,19 @@ module RMCH
     # Wrap klass_name#method_name once; the wrapper calls
     # RMCH.run_hook(tag, receiver, original_method, args_array). Inherited
     # methods are fine: alias_method copies them into the class. The alias name
-    # carries the method name, so several methods can share one tag. Returns
+    # carries the class + method name, so several methods can share one tag and
+    # a subclass's super never re-enters its own alias. Returns
     # false when the class or method does not exist (generation differences).
     def wrap_method(klass_name, method_name, tag)
       klass = Object.const_get(klass_name)
       names = klass.instance_methods.map { |m| m.to_s }
       return false unless names.include?(method_name.to_s)
-      marker = "rmch_orig_#{method_name}"
+      # The marker must be unique per class: `method(marker)` on the receiver
+      # resolves the most-derived alias, so a shared name makes a subclass
+      # override that calls super bounce back into its own alias — infinite
+      # recursion (实测: 武界风云传 Game_Actor#skill_can_use? → super →
+      # Game_Battler wrapper → Game_Actor alias → SystemStackError).
+      marker = "rmch_orig_#{klass_name}_#{method_name}"
       own = klass.instance_methods(false).map { |m| m.to_s }
       return true if own.include?(marker)
       body = lambda do |*args|

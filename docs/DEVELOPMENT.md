@@ -17,7 +17,7 @@ core/            ESM 核心模块
   rgss.mjs           RGSS(XP/VX/Ace) 识别(Game.ini Library 字段) + shadow 构建 + 脚本注入
   rgss-launcher.mjs  RGSS 启动 + 文件轮询传输层 + 会话注册表 + 存档回同步
   rgss-marshal.mjs   最小 Ruby Marshal 读写（Scripts 归档条目字节级拼接）
-  rgss-archive.mjs   RGSSAD v1/v3 加密归档索引解析/提取/免重建打补丁
+  rgss-archive.mjs   RGSSAD v1/v3 加密归档索引解析/提取/打补丁（v3 免重建；v1 字节流重写；v2 拒绝）
   rgss-savecode.mjs  save.contents.apply 的 tagged JSON 树 → Ruby 源码 codegen
   attach.mjs         附加到已在运行的游戏（MTool 式 DLL 注入：MV/MZ 走 v8 符号 hook eval，
                      RGSS 走 SetWindowsHookEx + RGSSEval，旧 DLL 回退 rb_eval_string_protect）
@@ -62,6 +62,7 @@ tools/           CLI（rmch.mjs / send.mjs / serve.mjs）、setup/launch 脚本�
                  winshot.py（窗口截图，被遮挡的 NW.js 窗口也能截）、
                  bake-icon.mjs（零依赖图标烘焙：SDF 栅格化 → app/gui/icon.png）、
                  rgss-probe.mjs（RGSS 冒烟测试）、rgss-dump-scripts.mjs（脚本 dump）、
+                 _probe-shadow-cmd.mjs（对运行中的 RGSS shadow 实例发 bridge 命令）、
                  build-inject.mjs（MinGW 双架构构建 runtime/inject/）、
                  test-rgss-*.mjs（Marshal/归档/hook/存档/存档树编辑测试）、
                  test-attach.mjs（attach 单元：PE 解析/bootstrap 组装/管道分帧回环）、

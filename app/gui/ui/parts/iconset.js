@@ -43,7 +43,7 @@
   }
 
   // RGSS2/3 sheets use 24px cells (VX/Ace); everything else follows MV/MZ 32px.
-  // (RGSS1/XP has no sheet: one file per icon, and the catalog has no index.)
+  // (RGSS1/XP has no sheet — tileByName resolves Graphics/Icons/<name>.png.)
   function cellFor(gameKey) {
     var game = gameFor(gameKey);
     var id = game && game.engine && game.engine.id;
@@ -120,6 +120,30 @@
     return url;
   }
 
+  // RGSS1 (XP) has no sheet: every entry names its own Graphics/Icons/<name>.png.
+  // host.cjs reads the loose file or extracts it from the packed archive (v1
+  // included), so resolution is synchronous; cache per game + name.
+  var NAME_CACHE_CAP = 800;
+  var nameCaches = {};                 // gameKey -> { name: dataUrl|null, count }
+
+  function tileByName(gameKey, name) {
+    if (!name) return null;
+    var cache = nameCaches[gameKey];
+    if (!cache) cache = nameCaches[gameKey] = { icons: {}, count: 0 };
+    if (Object.prototype.hasOwnProperty.call(cache.icons, name)) return cache.icons[name];
+    if (cache.count >= NAME_CACHE_CAP) return null;
+    var url = null;
+    var root = rootFor(gameKey);
+    try {
+      if (root && RMCH.store && RMCH.store.server && RMCH.store.server.iconFileImage) {
+        url = RMCH.store.server.iconFileImage(root, name);
+      }
+    } catch (_) {}
+    cache.icons[name] = url;
+    cache.count += 1;
+    return url;
+  }
+
   RMCH.iconset = {
     ensure: ensure,
     tile: tile,
@@ -132,14 +156,16 @@
     }
   };
 
-  // <rm-game-icon game-key index size/> — renders the sliced tile, a dim
-  // placeholder while the sheet loads, and nothing at all when the sheet is
-  // unavailable (encrypted and no live bridge) or index is null.
+  // <rm-game-icon game-key index icon-name size/> — renders the sliced tile
+  // (index into IconSet) or, for RGSS1 games whose catalog entries carry
+  // icon_name instead, the per-icon file. A dim placeholder while the sheet
+  // loads; nothing at all when neither source is available.
   RMCH.parts.GameIcon = {
     name: "RmGameIcon",
     props: {
       gameKey: { type: String, required: true },
       index: { type: Number, default: null },
+      iconName: { type: String, default: null },
       size: { type: Number, default: 22 }
     },
     setup: function (props) {
@@ -155,19 +181,35 @@
       }, { immediate: true });
 
       var src = Vue.computed(function () {
-        if (props.index == null) return null;
-        version.value;               // depend
-        return tile(props.gameKey, props.index);
+        if (props.index != null) {
+          version.value;             // depend
+          return tile(props.gameKey, props.index);
+        }
+        if (props.iconName) return tileByName(props.gameKey, props.iconName);
+        return null;
       });
 
       return function () {
-        if (props.index == null || failed.value) return null;
-        if (!src.value) {
-          return Vue.h("span", {
-            class: "rm-gicon rm-gicon-ph",
-            style: { width: props.size + "px", height: props.size + "px" }
+        if (props.index != null) {
+          if (failed.value) return null;
+          if (!src.value) {
+            return Vue.h("span", {
+              class: "rm-gicon rm-gicon-ph",
+              style: { width: props.size + "px", height: props.size + "px" }
+            });
+          }
+          return Vue.h("img", {
+            class: "rm-gicon",
+            src: src.value,
+            width: props.size,
+            height: props.size,
+            draggable: false,
+            alt: ""
           });
         }
+        // Name lookup is synchronous — null means the icon is missing, not
+        // loading, so no placeholder.
+        if (!props.iconName || !src.value) return null;
         return Vue.h("img", {
           class: "rm-gicon",
           src: src.value,

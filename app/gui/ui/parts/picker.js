@@ -15,7 +15,7 @@
     props: {
       show: { type: Boolean, required: true },
       title: { type: String, default: "选择" },
-      entries: { type: Array, required: true },        // [{ id, name, note, iconIndex }]
+      entries: { type: Array, required: true },        // [{ id, name, note, iconIndex, iconName }]
       ownedIds: { type: Array, required: true },
       busy: { type: Boolean, default: false },
       // When set, entries with iconIndex show their in-game icon — only once
@@ -77,8 +77,8 @@
       '                      @update:checked="v => $emit(\'toggle\', item, v)">',
       '            <span class="rm-picker-item">',
       '              <span class="rm-picker-name">',
-      '                <rm-game-icon v-if="iconsReady && item.iconIndex != null" :game-key="gameKey"',
-      '                              :index="item.iconIndex" :size="20"/>',
+      '                <rm-game-icon v-if="item.iconIndex != null ? iconsReady : !!item.iconName" :game-key="gameKey"',
+      '                              :index="item.iconIndex" :icon-name="item.iconName" :size="20"/>',
       '                <n-text depth="3" style="font-variant-numeric: tabular-nums; flex: none">{{ item.id }}:</n-text>',
       '                <span class="rm-picker-label">{{ item.name || "(无名)" }}</span>',
       '              </span>',
