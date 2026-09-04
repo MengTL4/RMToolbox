@@ -15,18 +15,25 @@
 //   payload  XORed cyclically against fileKey's 4 bytes, rolling
 //            k = k*7+3 every four bytes
 //
-// v1 (from published format docs; no sample available to verify):
-//   key      0xDEADCAFE, rolling k = k*7+3 after every value and name byte
-//   entry    nameLen, name, size -- payload follows inline (no offset field)
+// v1 (verified against a real 27.6MB archive: 武界风云传, 570 entries, the
+//   extracted Scripts.rxdata parses as Marshal and its rgss_main entry is
+//   found — see tools/test-rgss-archive.mjs):
+//   key      0xDEADCAFE, rolling k = k*7+3 after every index value and name byte
+//   entry    nameLen, name, size -- inline, payload follows (no offset field)
+//   payload  per-4-byte rolling XOR starting from the chain key AT THE POINT
+//            JUST AFTER the size field (not a fresh 0xDEADCAFE as some
+//            published docs claim)
 //
-// v1/v2 support is read-index only: extractEntry() and patchEntry() refuse
-// non-v3 archives until a real encrypted XP/VX sample can verify the format.
+// v2 support is read-index only: extractEntry() and patchEntry() refuse v2
+// archives until a real encrypted VX sample can verify the derivation.
 //
-// Patching does not rebuild the archive: the new payload is appended at EOF and
-// the entry's offset/size/fileKey triple in the index is overwritten. The old
-// payload becomes dead bytes.
+// Patching v3 does not rebuild the archive: the new payload is appended at EOF
+// and the entry's offset/size/fileKey triple in the index is overwritten.
+// Patching v1 rewrites the byte stream instead: entries sit inline, but the
+// rolling index key advances by field (nameLen, name byte, size) regardless of
+// content, so every other entry is copied through verbatim.
 
-import { openSync, readSync, writeSync, closeSync, fstatSync, copyFileSync, appendFileSync } from "node:fs";
+import { openSync, readSync, writeSync, closeSync, fstatSync, copyFileSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 const MAGIC = Buffer.from("RGSSAD", "latin1");
 const V1_INITIAL_KEY = 0xdeadcafe;
@@ -117,16 +124,24 @@ export function readIndex(archivePath) {
         }
         const sizeRaw = Buffer.alloc(4);
         readSync(fd, sizeRaw, 0, 4, pos + 4 + nameLen);
+        // The chain key that decrypts the size field; patchEntry re-encrypts
+        // the replacement size with it.
+        const sizeKey = key;
         const size = xor32(u32(sizeRaw, 0), key);
         key = nextKey(key);
+        // v1 payloads roll per-4-bytes from the chain key at THIS point —
+        // verified against a real archive (see header comment).
+        const payloadKey = key;
         const offset = indexPos + 4 + nameLen + 4;
-        // v1 payloads: XOR with a fresh rolling key per file.
         entries.set(nameBytes.toString("utf8"), {
           offset,
           size,
           fileKey: null,
           indexPos,
-          inline: true
+          inline: true,
+          nameLen,
+          sizeKey,
+          payloadKey
         });
         pos = offset + size;
       }
@@ -144,10 +159,20 @@ export function extractEntry(archivePath, name, fileKey = DEFAULT_FILE_KEY) {
   const entry = index.entries.get(name);
   if (!entry) throw new ArchiveError(`entry not found: ${name}`);
   if (entry.fileKey === null) {
-    // v1/v2 payloads roll from a fresh per-file key whose derivation we have
-    // not been able to verify against a real archive yet. Refuse rather than
-    // return garbage.
-    throw new ArchiveError(`encrypted v${index.version} archives are not supported yet: ${archivePath}`);
+    // v1: payload rolls per-4-bytes from the chain key just after the size
+    // field (verified against a real sample). v2 is read-index only — its
+    // payload derivation is unverified, refuse rather than return garbage.
+    if (index.version !== 1) {
+      throw new ArchiveError(`encrypted v${index.version} archives are not supported yet: ${archivePath}`);
+    }
+    const fd = openSync(archivePath, "r");
+    try {
+      const buf = Buffer.allocUnsafe(entry.size);
+      readSync(fd, buf, 0, entry.size, entry.offset);
+      return rollingXor(buf, entry.payloadKey);
+    } finally {
+      closeSync(fd);
+    }
   }
   const fd = openSync(archivePath, "r");
   try {
@@ -159,19 +184,44 @@ export function extractEntry(archivePath, name, fileKey = DEFAULT_FILE_KEY) {
   }
 }
 
+// v1 entries are inline, so replacing one rewrites the byte stream. The
+// rolling index key advances by field (nameLen, name byte, size) regardless of
+// content, and each payload key is fixed by its chain position — so copying
+// every other entry verbatim keeps the whole archive consistent. Only the
+// target's size field and payload are re-emitted.
+function patchEntryV1({ src, dst, entry, data, index }) {
+  const target = index.entries.get(entry);
+  if (!target) throw new ArchiveError(`entry not found: ${entry}`);
+  const raw = readFileSync(src);
+  const sizeFieldPos = target.indexPos + 4 + target.nameLen;
+  const sizeField = Buffer.alloc(4);
+  sizeField.writeUInt32LE(xor32(data.length, target.sizeKey) >>> 0, 0);
+  const out = Buffer.concat([
+    raw.subarray(0, sizeFieldPos),
+    sizeField,
+    rollingXor(data, target.payloadKey),
+    raw.subarray(target.offset + target.size)
+  ]);
+  writeFileSync(dst, out);
+  const verify = extractEntry(dst, entry).equals(data);
+  return { offset: sizeFieldPos + 4, size: data.length, verify };
+}
+
 /**
- * Replace one entry without rebuilding the archive.
+ * Replace one entry. v3 patches in place (index triple rewrite + payload
+ * appended at EOF); v1 rewrites the stream (see patchEntryV1).
  *
- * The archive must be a copy, never a hard link into the real game: this
- * rewrites bytes in place.
+ * For the v3 path the archive must be a copy, never a hard link into the real
+ * game: it rewrites bytes in place. The v1 path reads src whole and writes dst
+ * fresh, so the two may not alias either.
  */
 export function patchEntry({ src, dst, entry, data, fileKey = DEFAULT_FILE_KEY }) {
   const index = readIndex(src);
+  if (index.version === 1) return patchEntryV1({ src, dst, entry, data, index });
   if (index.version !== 3) {
-    // v1/v2 index entries are inline (no offset field), so the 12-byte index
-    // rewrite below would corrupt the archive. Only v3 is verified against a
-    // real sample.
-    throw new ArchiveError(`patching is only supported for v3 archives: ${src}`);
+    // v2 index entries are inline like v1's, but without a verified payload
+    // derivation there is nothing safe to write.
+    throw new ArchiveError(`patching is only supported for v1 and v3 archives: ${src}`);
   }
   const target = index.entries.get(entry);
   if (!target) throw new ArchiveError(`entry not found: ${entry}`);

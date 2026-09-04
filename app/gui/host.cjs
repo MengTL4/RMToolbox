@@ -460,6 +460,7 @@ function readImageDataUrl(file, capBytes) {
   const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg"
     : ext === ".webp" ? "image/webp"
     : ext === ".gif" ? "image/gif"
+    : ext === ".bmp" ? "image/bmp"
     : "image/png";
   return `data:${mime};base64,` + fs.readFileSync(file).toString("base64");
 }
@@ -469,6 +470,37 @@ function gameIcon(root) {
   for (const rel of ["www/icon/icon.png", "icon/icon.png"]) {
     const file = path.join(root, rel);
     if (fs.existsSync(file)) return readImageDataUrl(file);
+  }
+  return null;
+}
+
+// RGSS1 (XP) icons are one file per icon (Graphics/Icons/<name>.png), and the
+// catalog exposes icon_name instead of a sheet index. Encrypted games keep the
+// icons inside the packed archive, so fall back to extracting the entry — v1
+// (rgssad) included.
+function iconFileImage(root, name) {
+  // Icon names never legitimately contain path characters or dots; stripping
+  // them keeps the lookup inside Graphics/Icons/.
+  const safe = String(name || "").replace(/[\\/:*?"<>|.]/g, "");
+  if (!safe) return null;
+  // Stock XP ships PNGs, custom engines (RGD) also load jpg & co — the FS is
+  // case-insensitive on Windows, so lowercase patterns cover .PNG too.
+  for (const ext of [".png", ".jpg", ".jpeg", ".webp", ".bmp"]) {
+    const file = path.join(root, "Graphics", "Icons", safe + ext);
+    if (fs.existsSync(file)) return readImageDataUrl(file);
+  }
+  const { rgssArchive } = state.modules || {};
+  if (rgssArchive) {
+    for (const rel of ["Game.rgss3a", "Game.rgss2a", "Game.rgssad"]) {
+      const archive = path.join(root, rel);
+      if (!fs.existsSync(archive)) continue;
+      for (const ext of [".png", ".PNG"]) {
+        try {
+          const bytes = rgssArchive.extractEntry(archive, `Graphics\\Icons\\${safe}${ext}`);
+          return "data:image/png;base64," + Buffer.from(bytes).toString("base64");
+        } catch (_) {}
+      }
+    }
   }
   return null;
 }
@@ -553,6 +585,7 @@ module.exports = {
   deleteSaveFile,
   gameIcon,
   iconSetImage,
+  iconFileImage,
   saveLocks,
   loadLocks,
   hasLocks,

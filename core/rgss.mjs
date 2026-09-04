@@ -24,10 +24,12 @@ import { extractEntry, patchEntry } from "./rgss-archive.mjs";
 export class RgssError extends Error {}
 
 // RGSS1 (XP) -> Ruby 1.8.1, RGSS2 (VX) -> Ruby 1.8.1, RGSS3 (VX Ace) -> 1.9.2.
+// The trailing letter is the DLL's region tag: stock English builds end in E,
+// Japanese/custom-engine builds in J (RGSS103J — 武界风云传's engine).
 const LIBRARY_PATTERNS = [
-  { version: "RGSS3", dll: /^rgss30\d+\.dll$/i, scripts: "Scripts.rvdata2", archive: "Game.rgss3a", ruby19: true },
-  { version: "RGSS2", dll: /^rgss20\d+e?\.dll$/i, scripts: "Scripts.rvdata", archive: "Game.rgss2a", ruby19: false },
-  { version: "RGSS1", dll: /^rgss10\d+e?\.dll$/i, scripts: "Scripts.rxdata", archive: "Game.rgssad", ruby19: false }
+  { version: "RGSS3", dll: /^rgss30\d+[ej]?\.dll$/i, scripts: "Scripts.rvdata2", archive: "Game.rgss3a", ruby19: true },
+  { version: "RGSS2", dll: /^rgss20\d+[ej]?\.dll$/i, scripts: "Scripts.rvdata", archive: "Game.rgss2a", ruby19: false },
+  { version: "RGSS1", dll: /^rgss10\d+[ej]?\.dll$/i, scripts: "Scripts.rxdata", archive: "Game.rgssad", ruby19: false }
 ];
 
 export function parseIni(text) {

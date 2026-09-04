@@ -34,7 +34,7 @@ Chrome 扩展，bridge 在游戏页面里 monkey-patch `$gameParty` 等全局对
 | 文件 | 职责 |
 |---|---|
 | `core/rgss-marshal.mjs` | 最小 Ruby Marshal 读写。追加条目用**字节拼接**而非重序列化 |
-| `core/rgss-archive.mjs` | RGSSAD v1/v3 归档的索引解析、提取、免重建打补丁（**仅 v3 可提取/打补丁**，v1/v2 抛错） |
+| `core/rgss-archive.mjs` | RGSSAD v1/v3 归档的索引解析、提取、打补丁（v3 免重建；v1 字节流重写，已实测；v2 抛错） |
 | `core/rgss-savecode.mjs` | tagged JSON 树 → Ruby 源码 codegen（`save.contents.apply` 用，bridge eval 重建对象） |
 | `core/rgss.mjs` | 引擎识别（读 `Game.ini` 的 `Library` 字段）、shadow 构建、注入 |
 | `core/rgss-launcher.mjs` | 文件轮询传输层 + 进程管理 + 会话注册表 + 存档回同步 |
@@ -88,6 +88,7 @@ Chrome 扩展，bridge 在游戏页面里 monkey-patch `$gameParty` 等全局对
 | RGSS3 VX Ace（Homework Salesman） | 1.9.2 | **加密归档 111MB** | PASS — 500 物品 / 5 角色 / 200 变量+开关 |
 | RGSS3 VX Ace（BLACK SOULS 1.1，ATB 战斗） | 1.9.2 | **加密归档 147MB** | PASS — 412 物品 / 35 角色 / 574 开关 / 147 地图 |
 | RGSS3 VX Ace（BLACK SOULS II，LNX ATB 战斗） | 1.9.2 | **加密归档 700MB** | PASS — 390 物品 / 200 角色 / 1020 变量 / 1100 开关 / 410 地图 |
+| 自制引擎 rgss1（武界风云传 1.63，RGSS103J） | **3.1.2** | **v1 归档 27.6MB（仅 Data/）+ loose 资源** | PASS — catalog/map/save/中文搜索；修复 super 递归钩子（§4.25）、save.load $game_temp（§4.26）、iconName 图标（§4.27）（2026-09-04 实机） |
 | host 集成（VX Ace，无 NW） | — | — | PASS — launch/listSessions/send/state 推送/停止 |
 | hook 包（三引擎逐一实测） | — | — | PASS — 每代 24 项检查全绿，详见 §5.1 |
 | 存档包（三引擎逐一实测） | — | — | PASS — 每代 12 项检查全绿，详见 §5.2 |
@@ -198,9 +199,10 @@ index 393；Legionwood 的 Main 在 index 136/138。
 
 JS 实现注意：位运算结果是有符号的，每步都要 `>>> 0` 归一化；乘法用 `Math.imul`。
 
-**v1/v2（加密 XP/VX）只有索引读取是按格式文档写的，未经真实样本验证**；
-`extractEntry`/`patchEntry` 对非 v3 直接抛错（v1/v2 索引是内联布局，没有 offset
-字段，套 v3 的 12 字节覆写会静默写坏归档）。要支持需先找加密 XP/VX 样本。
+**v1（加密 XP）已验证**（2026-09-04，武界风云传 27.6MB 样本）：索引链 key
+按字段滚动，载荷从 size 之后的链上 key 起按 4 字节滚动 XOR（§5.3）。
+**v2（加密 VX）只有索引读取是按格式文档写的，未经真实样本验证**；
+`extractEntry`/`patchEntry` 对 v2 直接抛错。要支持需先找加密 VX 样本。
 
 ### 4.5 Ruby 1.8.1 与 1.9.2 的 Marshal 差异
 
@@ -398,6 +400,40 @@ hardlink、hs 的 `SaveData/` 子目录是 junction，**源和目标可能是同
 9999——不是游戏 bug。测试侧按 `min(max(1, mhp-1), 9999)` 造期望值即可
 （`test-rgss-hooks.mjs` 的 lockHp 检查就是这么断言的）。
 
+### 4.25 `wrap_method` 别名标记必须带类名
+
+原实现别名是 `rmch_orig_<method>`：同一方法在父子类各包一层时（如 XP 的
+`Game_Battler#skill_can_use?` + `Game_Actor#skill_can_use?`），父类包装里的
+`method(marker)` 在 actor 实例上解析到**最派生**的别名——子类 override 若调
+`super`（武界风云传 `Game_Actor#扩展` 就是这么写的），就变成 子类别名 → super →
+父类包装 → 子类别名 的无限递归，`SystemStackError` 直接带走游戏（实测：游戏内
+打开技能菜单即闪退）。Knight Blade 没炸只是因为它的 override 不调 super。
+修复：标记改为 `rmch_orig_<ClassName>_<method>`（bridge.rb `wrap_method`）。
+教训：**凡在同一继承链上包两层的方法，都要用"会调 super 的 override"回归一遍**。
+
+### 4.26 自制/现代引擎（RGD，Ruby 3.1.2）的两个新坑
+
+武界风云传 1.63 是 RGD 自制引擎（rgss1 API + Ruby 3.1.2，D3D11 渲染）：
+
+- **`save.load` 必须重建 `$game_temp`**：vanilla `Scene_Load#initialize` 会
+  `$game_temp = Game_Temp.new`，bridge 的 `after_load_legacy` 漏了它——这个游戏
+  的 tips 系统（XdRs_PCTips）在 Scene_Map update 第一帧就 `$game_temp.has_tip`，
+  nil 直接 NoMethodError 弹窗退出。已在 rgss1 分支补上重建。
+- **目录搜索要按字节比**：现代编辑器写出的 `.rxdata` 字符串带 UTF-8 标记，而
+  文件通道读进来的查询串是 ASCII-8BIT 裸字节——`String#include?` 跨编码直接
+  `Encoding::CompatibilityError`（GUI 搜索框输中文必现）。`catalog_query` 改为
+  `unpack("C*").pack("C*")` 后比较（1.8.1 也安全，不引用 Encoding 常量）。
+
+### 4.27 图标：RGSS1 没有 IconSet，走 `icon_name` 单图管线
+
+XP 系条目（item/weapon/armor/skill）只有 `icon_name`，图标是
+`Graphics/Icons/<name>.png` 单图。管线：bridge `catalog.query` 带 `iconName`
+→ `host.cjs iconFileImage(root, name)` 依次试 `.png/.jpg/.jpeg/.webp/.bmp`
+（RGD 游戏实测有 jpg 图标；Windows 大小写不敏感覆盖 .PNG）→ 加密游戏再从
+归档提取（v1 已支持）→ GUI `iconset.js tileByName` 同步缓存，`rm-game-icon`
+加 `icon-name` prop（sheet 失败不影响按名渲染）。武界风云传图标是 loose 文件
+（归档只含 Data/），1101 个图标实机渲染验证。
+
 ---
 
 ## 5. 未完成的工作（按优先级）
@@ -504,10 +540,27 @@ hs（RGSS3）/ Legionwood（RGSS2）/ KN_E（RGSS1）全 PASS。
 BLACK SOULS（RGSS3）亦全 PASS（2026-08-29，contents.get 97KB / 11 个顶层键全认）。
 BLACK SOULS II（RGSS3）亦全 PASS（2026-08-29，contents.get 100KB / 11 个顶层键全认）。
 
-### 5.3 加密 v1/v2 归档
+### 5.3 ~~加密 v1/v2 归档~~（v1 已完成，2026-09-04 武界风云传实测）
 
-需要一个真实的加密 XP（.rgssad）或 VX（.rgss2a）游戏样本来验证格式文档，
-然后实现 v1/v2 的提取与打补丁（当前抛错）。明文 Data/ 的 XP/VX 不受影响。
+真实加密 XP 样本（武界风云传1.63，`Game.rgssad` 27.6MB / 570 条目，自制
+RGSS103J 引擎）到手后完成了格式验证与实现：
+
+- **v1 载荷密钥推导实测**（推翻部分网传文档）：索引链 key 按字段滚动
+  （nameLen → 名字每字节 → size），**载荷从 size 字段之后的链上 key 开始**
+  按 4 字节滚动 XOR——不是「每个文件重置为 0xDEADCAFE」。端到端验证：
+  提取的 Scripts.rxdata（568KB）能被 `parseScripts` 完整解析（164 条目），
+  `findMainEntryIndex` 找到 Main。
+- `extractEntry` v1 开放（`payloadKey` 随索引记录）；v2 仍拒绝（无样本）。
+- `patchEntry` v1 开放：条目内联布局没有 offset 表，替换 = **重写字节流**。
+  索引链只按字段序列滚动、与内容无关，所以其它条目原样字节拷贝，仅目标
+  条目的 size 字段与载荷重新加密写出。
+- `detectRgss` 的 DLL 模式补 `[ej]?` 后缀：日版/自制引擎的 RGSS103J 等
+  J 后缀 DLL 此前直接判 null（扫描器只剩 medium 兜底）。
+- `tools/test-rgss-archive.mjs` 的 v1 段改为真实方案合成夹具（两条目、
+  非 4 对齐长度），覆盖提取往返、异长替换、旁条目完好；v2 拒绝保留。
+
+遗留：v2（.rgss2a）提取/打补丁仍需真实加密 VX 样本验证。明文 Data/ 的
+XP/VX 不受影响。
 
 ### 5.4 ~~XP/VX 进游戏后的 hook 覆盖待实测~~（已随 §5.1 实测覆盖）
 
@@ -516,14 +569,13 @@ BLACK SOULS II（RGSS3）亦全 PASS（2026-08-29，contents.get 100KB / 11 个�
 
 ### 5.5 其他（低优先级）
 
-- 图标/美术：**RGSS2/3 的 IconSet sheet 已支持**（2026-08）——VX/Ace 都是
-  `Graphics/System/IconSet.png` 24px 格，bridge catalog 本来就把 `icon_index`
-  带成 `iconIndex`；`host.cjs iconSetImage()` 先读盘，加密游戏（hs）再从
-  `Game.rgss3a` 提取该条目；GUI `iconset.js` 按 `engine.id` 切 24/32px。
-  hs（加密 RGSS3）与 leg-x（明文 RGSS2）已实机截图验证。**未做**：XP 的
-  `Graphics/Icons/<name>.png` 单图图标（catalog 无 `icon_index`，需新管线带
-  `icon_name`）；游戏自身不带 IconSet 而依赖 RTP 时（crysalis-x）没有 RTP 路径
-  解析，图标列为空——两条都是优雅退化，不留空列
+- 图标/美术：**RGSS2/3 的 IconSet sheet 与 RGSS1 的单图图标均已支持**——VX/Ace 是
+  `Graphics/System/IconSet.png` 24px 格，bridge catalog 把 `icon_index`
+  带成 `iconIndex`；XP 由 catalog 带 `iconName`，`host.cjs iconFileImage()`
+  读 `Graphics/Icons/<name>.png`（含 jpg 等扩展名，加密游戏走归档提取，§4.27）。
+  hs（加密 RGSS3）、leg-x（明文 RGSS2）、武界风云传（RGD/RGSS1）均已实机验证。
+  **未做**：游戏自身不带图标资源而依赖 RTP 时（crysalis-x）没有 RTP 路径
+  解析，图标列为空——优雅退化，不留空列
 - `tools/rmch.mjs` CLI 加 `rgss` 子命令（目前只有 `rgss-probe.mjs` 独立脚本）
 - VX 标题画面 `$data_mapinfos` 为 nil（Legionwood 实测），`map.list` 在标题期不可用
 
