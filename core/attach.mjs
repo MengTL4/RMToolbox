@@ -50,6 +50,10 @@ const INJECT_RESULT_TIMEOUT_MS = 30000;
 // See launchNwInjectGame: how long after the renderer appears before the
 // first injection, so the shell's boot-time integrity checks are over.
 const LAUNCH_ATTACH_DELAY_MS = 30000;
+// grover-boot: the loader page self-reloads for ~10-26s (its ancestry probe
+// fails without wmic on Win11 — harmless, the game boots anyway) before the
+// payload boots; inject only after that window closes.
+const GROVER_SETTLE_MS = 60000;
 const RGSS_EVAL_TIMEOUT_MS = 75000;
 
 // --- process discovery -------------------------------------------------------
@@ -652,7 +656,7 @@ async function attachNwFile({ scan, projectRoot, port, retries = 1, retryDelayMs
 // Spawn-flag gotcha (measured): powershell spawned with BOTH windowsHide and
 // `-WindowStyle Hidden` silently never runs its command; windowsHide alone
 // (CREATE_NO_WINDOW) executes fine and shows no window.
-export function shellExecuteSpawn(exe, cwd, log) {
+export function shellExecuteSpawn(exe, cwd, log, extraEnv) {
   const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
   const enc = (s) => Buffer.from(s, "utf16le").toString("base64");
   const powershell = path.join(
@@ -677,7 +681,13 @@ export function shellExecuteSpawn(exe, cwd, log) {
     `(New-Object -ComObject Shell.Application).ShellExecute(${q(powershell)},` +
     `${q("-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " + enc(hop2))},'','open',0)`;
   const child = spawn(powershell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", enc(hop1)],
-    { stdio: "ignore", windowsHide: true });
+    {
+      stdio: "ignore",
+      windowsHide: true,
+      // ShellExecute launches from hop2's process, which inherits this env —
+      // so extraEnv (grover-boot's wmic-shim PATH prepend) reaches the game.
+      env: extraEnv ? { ...process.env, ...extraEnv } : undefined
+    });
   if (log) child.on("error", (error) => log("hop spawn error", { error: String(error) }));
   child.unref();
   return stamp;
@@ -692,11 +702,18 @@ export function shellExecuteSpawn(exe, cwd, log) {
 // issued from the GUI). Empirically: game appears in ~3s and survives the
 // boot checks. launchNwInjectGame tries this first and falls back to the hop
 // chain when no process shows up.
-export function cmdStartSpawn(exe, cwd, log) {
+export function cmdStartSpawn(exe, cwd, log, extraEnv) {
   // `start` treats its first quoted argument as a window TITLE — the leading
   // "" is mandatory, or the exe path becomes the title and nothing launches.
   const child = spawn("cmd.exe", ["/c", "start", "", "/d", cwd, exe],
-    { stdio: "ignore", windowsHide: true });
+    {
+      stdio: "ignore",
+      windowsHide: true,
+      // extraEnv rides on the inherited environment; `start` hands the whole
+      // thing down to the launched exe. grover-boot uses this to prepend the
+      // toolbox's runtime/bin (the wmic shim's directory) to PATH.
+      env: extraEnv ? { ...process.env, ...extraEnv } : undefined
+    });
   if (log) child.on("error", (error) => log("cmd start spawn error", { error: String(error) }));
   child.unref();
 }
@@ -896,12 +913,23 @@ export async function launchNwInjectGame({ scan, projectRoot, port = 47412 }) {
     return [];
   };
 
+  // grover-boot shells verify their ancestry by execing `wmic` from the game
+  // root; on Windows 11 that binary no longer exists. Measured trade-off on
+  // this family (docs/GROVER-FINDINGS.md): with the wmic shim the verification
+  // PASSES but the shell then arms its anti-inject defenses (V8 calls into the
+  // renderer time out); with the probe left failing, the suicide paths fail on
+  // their own and the game boots fully unprotected — data self-decrypts, title
+  // screen renders, and the DLL attach lands cleanly. So: plain launch, no
+  // shim, and a longer settle wait below (the loader page spends its first
+  // ~10-26s in a self-reload loop before giving up and booting the payload).
+  const grover = scan.protection && scan.protection.flags
+    && scan.protection.flags.includes("grover-boot");
   cmdStartSpawn(scan.paths.exe, scan.root, log);
   log("spawn issued (cmd /c start)");
   let appeared = await waitForProcess(25000);
   if (!appeared.length) {
     log("cmd start produced no process within 25s — falling back to ShellExecute hop chain");
-    shellExecuteSpawn(scan.paths.exe, scan.root, log);
+    shellExecuteSpawn(scan.paths.exe, scan.root, log, extraEnv);
     log("spawn issued (ShellExecute hop chain)");
     appeared = await waitForProcess(35000);
   }
@@ -937,8 +965,11 @@ export async function launchNwInjectGame({ scan, projectRoot, port = 47412 }) {
   // at splash/title or already in play) is always safe. There is no external
   // signal for "settled", so wait a fixed window — 30s is ~10x the measured
   // decrypt phase on a warm machine — then run the normal attach.
-  launchLog(projectRoot, scan.gameKey, "waiting for shell boot checks to settle", { delayMs: LAUNCH_ATTACH_DELAY_MS });
-  await new Promise((resolve) => setTimeout(resolve, LAUNCH_ATTACH_DELAY_MS));
+  launchLog(projectRoot, scan.gameKey, "waiting for shell boot checks to settle", {
+    delayMs: LAUNCH_ATTACH_DELAY_MS,
+    groverSettleMs: grover ? GROVER_SETTLE_MS : undefined
+  });
+  await new Promise((resolve) => setTimeout(resolve, grover ? GROVER_SETTLE_MS : LAUNCH_ATTACH_DELAY_MS));
   const alive = processesUnderRoot(await listProcessesByExeName(exeName), scan.root);
   if (!alive.length) {
     launchLog(projectRoot, scan.gameKey, "launch failed: game exited during settle wait", { t: elapsed() });

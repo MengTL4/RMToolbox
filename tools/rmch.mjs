@@ -92,12 +92,17 @@ async function main() {
       const gameRootArg = path.resolve(positional[0]);
       // NB evalNWBin shells and Enigma-NB boxes die on any launch flag; their
       // "launch" is plain spawn + DLL attach, which lives in the attach module.
+      // grover-boot shells take the same route: the plainly launched real game
+      // runs (its suicide paths fail on their own), while the toolbox-shadowed
+      // variant freezes the payload.
       const { scanGame } = await import("../core/scanner.mjs");
-      const container = scanGame(gameRootArg).container;
-      if (container === "nb-evalnwbin" || container === "enigma-nb") {
+      const probe = scanGame(gameRootArg);
+      const grover = probe.protection && probe.protection.flags
+        && probe.protection.flags.includes("grover-boot");
+      if (probe.container === "nb-evalnwbin" || probe.container === "enigma-nb" || grover) {
         const { launchNwInjectGame } = await import("../core/attach.mjs");
         const summary = await launchNwInjectGame({
-          scan: scanGame(gameRootArg), projectRoot, port: Number(options.port) || 47412
+          scan: probe, projectRoot, port: Number(options.port) || 47412
         });
         const printable = { ...summary };
         delete printable.session;

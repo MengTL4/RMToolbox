@@ -21,6 +21,11 @@
   var CELL_MVMZ = 32;
   var CELL_RGSS = 24;
   var TILE_CACHE_CAP = 800;
+  // A failed sheet load is usually transient: the bridge lands while the game
+  // is still booting (or mid shell-reload), so assets.iconset times out even
+  // though the game becomes fully responsive seconds later. Retry after a
+  // cooldown instead of pinning "no icons" for the whole GUI session.
+  var FAILED_RETRY_MS = 15000;
 
   // gameKey -> { state: "loading"|"ready"|"failed", image, cols, cell, tiles, promise }
   var sheets = {};
@@ -62,6 +67,10 @@
   function ensure(gameKey) {
     if (!gameKey) return Promise.resolve(false);
     var sheet = sheets[gameKey];
+    if (sheet && sheet.state === "failed" && sheet.retryAt && Date.now() >= sheet.retryAt) {
+      delete sheets[gameKey];
+      sheet = null;
+    }
     if (sheet) return sheet.promise;
     sheet = sheets[gameKey] = { state: "loading", image: null, cols: 0, cell: cellFor(gameKey), tiles: {}, tileCount: 0 };
     sheet.promise = new Promise(function (resolve) {
@@ -74,7 +83,11 @@
       }
       function fail() {
         sheet.state = "failed";
+        sheet.retryAt = Date.now() + FAILED_RETRY_MS;
         sheetVersion.value += 1;
+        // Re-render the lists after the cooldown so ensure() runs again even
+        // without user interaction.
+        setTimeout(function () { sheetVersion.value += 1; }, FAILED_RETRY_MS + 250);
         resolve(false);
       }
       // The sheet on disk is often unreadable (MV .rpgmvp, custom asset

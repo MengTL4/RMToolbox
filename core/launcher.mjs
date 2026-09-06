@@ -94,6 +94,16 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
       'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
     );
   }
+  if (scan.protection && scan.protection.flags && scan.protection.flags.includes("grover-boot")) {
+    // The Grover shell's toolbox-shadowed launch freezes the payload after its
+    // (shim-assisted) verification, while the plainly launched real game runs
+    // fine — its suicide paths fail on their own. Route like enigma-nb:
+    // plain spawn + DLL attach lives in attach.mjs.
+    throw new Error(
+      "grover-boot shell game: the shadow launch freezes after the shell's verification — " +
+      'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
+    );
+  }
   if (scan.engine.id === "RM2K") {
     throw new Error(`engine "${scan.engine.id}" is not supported by the M1 injectors (planned: ${injectionStrategy(scan).id})`);
   }
