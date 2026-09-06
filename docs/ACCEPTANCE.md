@@ -1,5 +1,27 @@
 # RMCH 验收记录
 
+## v0.7.5：技能/开关目录 2000 条截断修复——再刷一把2：金色传说实测（2026-09-06）
+
+用户反馈《再刷一把2：金色传说》（MZ，jsc.pak 字节码 + data.pak 加密数据）
+技能只能读出 2000 个。定位为 bridge 硬上限：GUI 全量请求
+`catalog.query { limit: 20000 }`，但处理器 `clampNumber(args.limit, 1,
+2000, 500)` 把上限钳到 2000，`catalogEntries` 的 `slice(0, limit)` 于是
+只回前 2000 条——该游戏技能表实有 **4700** 条（id>2000 的全部丢失）。
+同模式隐患一并修：`switch.list`/`variable.list` 的 `listSystemEntries`
+也有同样的 2000 钳制。
+
+### 产品行为（本次改动）
+
+- `30-catalogs.js` 新增 `LIST_LIMIT_MAX = 20000`（即 GUI 一直在请求的
+  值），`catalog.query` 与 `switch/variable.list` 两处钳制统一改用它；
+  上限语义从「最多 2000 条」变为「最多 20000 条」。RGSS(Ruby) 侧 bridge
+  本无上限，不受影响。传输无瓶颈：WS 帧上限 64MB，2 万条目录约数 MB；
+  GUI 列表为虚拟滚动（RmVirtual）。
+- 实机复验（`_probe-zsyb2-skills.mjs`，走真实注入路径 +
+  commands/events JSONL 文件通道）：`catalog.query skill limit=20000`
+  返回 **total=4700 / entries=4700 全量**；npm test 全绿（gui-check 确认
+  生成物与源码同步）。
+
 ## v0.7.4：Enigma-NB 变体（Enigma 壳 + nb_data 散列资源）适配——三国修仙传 V1.91 实测（2026-09-06）
 
 《三国修仙传 V1.91 PC端》（MV 1.6.1，NW.js Chromium 91）主程序是

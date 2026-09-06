@@ -75,7 +75,7 @@
     "catalog.query": (args) => {
       const kind = String(args.kind || "");
       if (!CATALOG_KINDS.includes(kind)) throw new Error(`unsupported catalog kind: ${kind}`);
-      return catalogEntries(kind, { query: args.query, limit: clampNumber(args.limit, 1, 2000, 500) });
+      return catalogEntries(kind, { query: args.query, limit: clampNumber(args.limit, 1, LIST_LIMIT_MAX, 500) });
     },
 
     // --- inventory ------------------------------------------------------------
