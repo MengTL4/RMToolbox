@@ -33,9 +33,11 @@ static bool parseArgs(int argc, char** argv) {
     else if (strcmp(a, "--pid") == 0 && i + 1 < argc) g_pid = (DWORD)strtoul(argv[++i], NULL, 10);
     else if (strcmp(a, "--dll") == 0 && i + 1 < argc) {
       const char* p = argv[++i];
-      size_t n = strlen(p);
-      if (n >= MAX_PATH) return false;
-      for (size_t k = 0; k <= n; k++) g_dll[k] = (WCHAR)(unsigned char)p[k]; // ASCII widen
+      // argv arrives in the ANSI codepage (MinGW CRT startup); widen with the
+      // real conversion so non-ASCII project paths (Chinese, etc.) survive.
+      int wn = MultiByteToWideChar(CP_ACP, 0, p, -1, NULL, 0);
+      if (wn <= 0 || wn > MAX_PATH) return false;
+      MultiByteToWideChar(CP_ACP, 0, p, -1, g_dll, wn);
     }
   }
   return g_pid != 0 && g_dll[0] != 0;

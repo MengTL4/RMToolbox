@@ -85,6 +85,15 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
       'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
     );
   }
+  if (scan.container === "enigma-nb") {
+    // Same shape as nb-evalnwbin: the Enigma box exits within 10-25s when ANY
+    // launch flag is present (measured on 三国修仙传 V1.91), so the extension
+    // path is fatal. Plain spawn + DLL attach lives in attach.mjs.
+    throw new Error(
+      "enigma-nb boxed game: any launch flag makes the Enigma box exit, so the extension launch path would kill it — " +
+      'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
+    );
+  }
   if (scan.engine.id === "RM2K") {
     throw new Error(`engine "${scan.engine.id}" is not supported by the M1 injectors (planned: ${injectionStrategy(scan).id})`);
   }

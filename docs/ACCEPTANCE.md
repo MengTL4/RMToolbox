@@ -1,5 +1,50 @@
 # RMCH 验收记录
 
+## v0.7.4：Enigma-NB 变体（Enigma 壳 + nb_data 散列资源）适配——三国修仙传 V1.91 实测（2026-09-06）
+
+《三国修仙传 V1.91 PC端》（MV 1.6.1，NW.js Chromium 91）主程序是
+**Enigma Protector 魔改箱**（17 节区 16 个无名全 RWX，尾部 TAGG taggant
+含 "Enigma Protector CA" 证书串，~456MB 文件箱嵌在 exe 里），全部资源
+改名 md5 无扩展名 + XOR 加密，引擎 JS 在箱内。实测过的链路（逐条有对照）：
+
+- **参数黑名单**：任何命令行参数（--remote-debugging-port /
+  --user-data-dir / --load-extension）→ 10–25s 内 exit 0 自杀；
+  裸启动（无参数）正常。因此 launch = 裸拉起 + DLL attach，extension
+  路径对本游戏是致命的。
+- **壳不拦** CreateRemoteThread / LoadLibraryW / V8 eval 注入（比
+  nb-shell Themida 温和得多）；游戏页面本体是 chrome-extension 页
+  （hello href 为 chrome-extension://…/index.html）。
+- **injected → WS 桥直连可用**（与 evalNWBin 的 in-page socket 即死
+  不同）：runtime.info / party.info / console.eval / gold.set(88888
+  写读回环） / catalog.query(700 物品真名+注释） 全通。
+
+### 产品行为（本次改动）
+
+- scanner 新增 `enigma-nb` 容器识别：nb_data/ 全是 md5 无扩展名文件
+  （且无 nbtool.node、无 md5 命名 .node——那分别是 nb-shell 与
+  nb-evalnwbin 两家）+ exe 尾部 TAGG/"Enigma Protector" taggant +
+  PE 节区大量无名 RWX。引擎标 MV/MZ(low confidence，hello 里有真值），
+  保护级别 L4，flag `enigma-nb-shell`。
+- launch 复用 `launchNwInjectGame`（cmd start 拉起 → 等 renderer →
+  30s 稳定窗口 → attach），但对 enigma-nb 改走 **WS 传输** +
+  `RMCH_SEALED=1`（引擎单例在壳的校验页之后才出现，hook 安装需要
+  永久重试），attach 带 8 次重试；strategy 名 `nw-launch-inject`。
+  「附加到运行中」同样走该 WS 变体（5 次重试）。
+- CLI(`rmch.mjs launch`)/GUI(host.cjs `launch`)都识别 enigma-nb 并
+  路由到裸启动+注入；`launchGame` 对该容器明确报错指向 attach。
+- **injector.cpp 中文路径修复入库**：`--dll` 参数原用逐字节 ASCII 展宽，
+  中文路径下目标进程 LoadLibraryW 拿到乱码路径必败（表象
+  injector-exit-5）；改 `MultiByteToWideChar(CP_ACP)`，两架构重编译，
+  注入自测 14/14。
+- `tools/send.mjs` 放宽 game root 判断：目录下存在任一非垃圾名 .exe 即
+  视为游戏根（原来只认 Game.exe，本游戏 exe 是「三国修仙传 V1.91.exe」）。
+
+### 已知限制
+
+- 资源（图标等）在箱内/加密，img/system/IconSet.png 不可直接读，数据页
+  图标列优雅退化为空。
+- nb_data 与 img/audio 的离线解密不属于工具箱范围（见用户解包笔记）。
+
 ## v0.7.3：bundled 引擎（合体单脚本）适配——影子补丁发布引擎对象（命运II离线版V4.6.3 实测）（2026-09-06）
 
 《命运II离线版V4.6.3》（Metal Max II Restored，重装机兵同人，MV 1.6.1，

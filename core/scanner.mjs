@@ -1,7 +1,7 @@
 // RMCH game scanner: identify RPG Maker engine family, layout and protection level
 // for a local single-player game directory. Pure Node, zero dependencies.
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import { detectRgss } from "./rgss.mjs";
@@ -167,6 +167,71 @@ function detectNbEvalNwBin(root) {
     if (hashedNode && hashedBlob) return true;
   }
   return false;
+}
+
+// Enigma-NB variant (三国修仙传 family): same nb_data/ hashed-resource layout
+// as the other NB shells, but the EXE itself is an Enigma Protector box
+// (~460MB file box embedded, engine JS inside). Measured on 三国修仙传 V1.91:
+// ANY command-line flag (debug port / user-data-dir / load-extension) makes
+// the box exit 0 within 10–25s, so "launch" is a flag-free spawn + DLL attach.
+// Fingerprint: nb_data/ full of md5-named extensionless files (no nbtool.node,
+// no hashed .node — those are the other two NB families) PLUS an exe whose
+// tail carries the Enigma taggant (TAGG + "Enigma Protector" cert string) and
+// whose PE sections are mostly unnamed and RWX.
+function hasEnigmaTaggant(exePath) {
+  let fd;
+  try {
+    fd = openSync(exePath, "r");
+  } catch (_) {
+    return false;
+  }
+  try {
+    const head = Buffer.alloc(4096);
+    if (readSync(fd, head, 0, 4096, 0) < 4096) return false;
+    if (head.toString("latin1", 0, 2) !== "MZ") return false;
+    const pe = head.readUInt32LE(0x3c);
+    if (head.toString("latin1", pe, pe + 4) !== "PE\0\0") return false;
+    const numSec = head.readUInt16LE(pe + 6);
+    const optSize = head.readUInt16LE(pe + 20);
+    let off = pe + 24 + optSize;
+    if (numSec < 5 || off + numSec * 40 > 4096) return false;
+    let unnamedRwx = 0;
+    for (let i = 0; i < numSec; i += 1) {
+      const name = head.toString("latin1", off + i * 40, off + i * 40 + 8).replace(/\0+$/, "");
+      const chars = head.readUInt32LE(off + i * 40 + 36);
+      const rwx = (chars & 0x80000000) && (chars & 0x40000000) && (chars & 0x20000000);
+      if (!name && rwx) unnamedRwx += 1;
+    }
+    if (unnamedRwx < 3) return false;
+    // The taggant is a PKCS#7 blob appended near EOF: "TAGG\0" plus the
+    // "Enigma Protector CA" certificate string. 16MB covers boxes whose
+    // embedded file box ends well before the signature.
+    const size = statSync(exePath).size;
+    const tailLen = Math.min(size, 16 * 1024 * 1024);
+    const tail = Buffer.alloc(tailLen);
+    if (readSync(fd, tail, 0, tailLen, size - tailLen) < tailLen) return false;
+    return tail.includes(Buffer.from("TAGG")) && tail.includes(Buffer.from("Enigma Protector"));
+  } catch (_) {
+    return false;
+  } finally {
+    try { if (fd !== undefined) closeSync(fd); } catch (_) {}
+  }
+}
+
+function detectEnigmaNb(root, manifest) {
+  const nbDir = path.join(root, "nb_data");
+  let entries;
+  try {
+    entries = readdirSync(nbDir);
+  } catch (_) {
+    return false;
+  }
+  if (entries.includes("nbtool.node")) return false; // nb-shell family
+  if (entries.some((name) => /^[0-9a-f]{32}\.node$/i.test(name))) return false; // nb-evalnwbin
+  const hashed = entries.filter((name) => /^[0-9a-f]{32}$/i.test(name));
+  if (hashed.length < 2) return false;
+  const exe = resolveNwExe(root, manifest);
+  return !!(exe && hasEnigmaTaggant(exe));
 }
 
 // The exe behind an NW.js game is not always Game.exe: sealed launchers name it
@@ -376,7 +441,9 @@ export function scanGame(root) {
   const sealed = !engine && detectSealedLauncher(resolvedRoot);
   const nbShell = !engine && !sealed && detectNbShell(resolvedRoot);
   const nbEvalNwBin = !engine && !sealed && !nbShell && detectNbEvalNwBin(resolvedRoot);
-  const bundled = !engine && !sealed && !nbShell && !nbEvalNwBin
+  const enigmaNb = !engine && !sealed && !nbShell && !nbEvalNwBin
+    && detectEnigmaNb(resolvedRoot, manifest);
+  const bundled = !engine && !sealed && !nbShell && !nbEvalNwBin && !enigmaNb
     ? detectBundledEngine(
         firstExisting([path.join(wwwDir, "index.html"), path.join(resolvedRoot, "index.html")]),
         wwwDir
@@ -398,6 +465,12 @@ export function scanGame(root) {
     result.engine = { id: "MV/MZ", bytecode: false, confidence: "low" };
     result.container = "nb-evalnwbin";
     addFlag("nb-evalnwbin-shell");
+  } else if (enigmaNb) {
+    // MV or MZ is undecidable from the outside (everything is inside the box);
+    // the bridge reports Utils.RPGMAKER_NAME in its hello once the game boots.
+    result.engine = { id: "MV/MZ", bytecode: false, confidence: "low" };
+    result.container = "enigma-nb";
+    addFlag("enigma-nb-shell");
   } else if (bundled) {
     result.engine = { id: bundled.id, bytecode: bundled.bytecode, confidence: bundled.confidence };
     result.container = "nwjs-bundled";
@@ -470,6 +543,8 @@ function computeProtectionLevel(flags) {
   let level = 0;
   for (const flag of flags) {
     if (flag === "nb-shell-protected") {
+      level = Math.max(level, 4);
+    } else if (flag === "enigma-nb-shell") {
       level = Math.max(level, 4);
     } else if (flag === "nb-evalnwbin-shell") {
       level = Math.max(level, 3);
@@ -564,6 +639,9 @@ export function injectionStrategy(scan) {
   }
   if (scan.container === "nb-evalnwbin") {
     return { id: "inject-file-transport", reason: "NB evalNWBin shell: refuses every launch flag and any in-page WebSocket kills the app, but tolerates DLL attach — plain spawn + rmch-mvhook inject + JSONL file channel (万族穿越-源启崛起 v1.2.2, see ACCEPTANCE v0.6.7)" };
+  }
+  if (scan.container === "enigma-nb") {
+    return { id: "launch-inject", reason: "Enigma-packed NB variant (三国修仙传 family): any launch flag makes the box exit within seconds, so launch is a flag-free spawn + rmch-mvhook DLL attach on the standard WebSocket bridge" };
   }
   if (scan.manifest && scan.manifest.nodeMain) return { id: "extension", reason: "node-main guard tolerates --load-extension; verify game does not self-close" };
   if (scan.manifest && scan.manifest.bgScript) return { id: "extension-then-shadow", reason: "bg-script startup chain may detect extensions; fall back to shadow-dir bg-script patch" };

@@ -378,7 +378,7 @@ export function buildNwBootstrap({ gameRoot, projectRoot, gameKey, port, token, 
 
 // --- MV/MZ attach -----------------------------------------------------------------
 
-async function attachNw({ scan, projectRoot, port }) {
+async function attachNw({ scan, projectRoot, port, extraEnv }) {
   if (!scan.paths.exe) throw new AttachError("Game.exe not found in game root");
   const token = getToken(projectRoot);
   buildBridge(projectRoot);
@@ -402,7 +402,8 @@ async function attachNw({ scan, projectRoot, port }) {
 
   const arch = readPeArch(scan.paths.exe);
   const bootstrap = buildNwBootstrap({
-    gameRoot: scan.root, projectRoot, gameKey: scan.gameKey, port, token
+    gameRoot: scan.root, projectRoot, gameKey: scan.gameKey, port, token,
+    ...(extraEnv ? { extraEnv } : {})
   });
 
   const results = [];
@@ -435,6 +436,34 @@ async function attachNw({ scan, projectRoot, port }) {
     results,
     port
   };
+}
+
+// attachNw with RMCH_SEALED=1 + retries, for the Enigma-NB box family
+// (三国修仙传). Measured on V1.91: unlike the evalNWBin shell, this box
+// tolerates the in-page WebSocket, so the standard WS bridge works — but the
+// box keeps the game on its own validation page for a while (engine singletons
+// appear late), so hook installation needs the sealed retry mode, and the
+// attach itself needs retries while the renderer's page context is still
+// booting (the canvas gate throws until then and every target misses).
+async function attachNwSealed({ scan, projectRoot, port, retries = 1, retryDelayMs = 4000 }) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      return await attachNw({
+        scan, projectRoot, port,
+        extraEnv: { RMCH_SEALED: "1" }
+      });
+    } catch (error) {
+      lastError = error;
+      launchLog(projectRoot, scan.gameKey, "ws attach attempt failed", {
+        attempt, error: String(error && error.message || error)
+      });
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      }
+    }
+  }
+  throw lastError;
 }
 
 // Reads the file channel directly for the bridge's hello — the same liveness
@@ -917,16 +946,29 @@ export async function launchNwInjectGame({ scan, projectRoot, port = 47412 }) {
   }
   // bootTap is pointless this late (the boot-time db parse is long done) and
   // its JSON.parse pre-swap is exactly the kind of residue the shell's checks
-  // notice — plain file-channel attach only.
-  const summary = await attachNwFile({ scan, projectRoot, port, retries: 8, retryDelayMs: 4000 });
+  // notice — plain attach only. Transport by family: the evalNWBin shell kills
+  // the page on any in-page socket construct (JSONL file channel), while the
+  // Enigma-NB box tolerates the standard WebSocket bridge (measured on
+  // 三国修仙传 V1.91).
+  const enigmaNb = scan.container === "enigma-nb";
+  const summary = enigmaNb
+    ? await attachNwSealed({ scan, projectRoot, port, retries: 8, retryDelayMs: 4000 })
+    : await attachNwFile({ scan, projectRoot, port, retries: 8, retryDelayMs: 4000 });
   launchLog(projectRoot, scan.gameKey, "launch complete", { t: elapsed(), pid: summary.pid });
   // Best-effort: prime catalog-cache.json (the $data* tables the data page
   // lists) when this game has none yet. Never fails the launch — the game is
-  // running and bridged either way.
-  try {
-    await ensureSealedCatalog({ scan, projectRoot, port });
-  } catch (_) {}
-  return { ...summary, strategy: "nw-launch-inject-file", launchedPid: summary.pid };
+  // running and bridged either way. File-transport channels only: the WS
+  // bridge drives its own capture.
+  if (!enigmaNb) {
+    try {
+      await ensureSealedCatalog({ scan, projectRoot, port });
+    } catch (_) {}
+  }
+  return {
+    ...summary,
+    strategy: enigmaNb ? "nw-launch-inject" : "nw-launch-inject-file",
+    launchedPid: summary.pid
+  };
 }
 
 // --- RGSS attach ------------------------------------------------------------------
@@ -1071,6 +1113,12 @@ export async function attachGame({ gameRoot, projectRoot, port = 47412 }) {
     // The bridge must not open its WebSocket (the shell kills the app on any
     // in-page socket construct) — attach with the JSONL file channel instead.
     return attachNwFile({ scan, projectRoot, port });
+  }
+  if (scan.container === "enigma-nb") {
+    // This box tolerates the WebSocket bridge (measured on 三国修仙传 V1.91),
+    // but engine singletons appear late behind its validation page — sealed
+    // retry mode, and retry the attach while the page context boots.
+    return attachNwSealed({ scan, projectRoot, port, retries: 5, retryDelayMs: 4000 });
   }
   if (/^RGSS/i.test(scan.engine.id)) {
     return attachRgss({ scan, projectRoot });
