@@ -1,5 +1,52 @@
 # RMCH 验收记录
 
+## v0.7.3：bundled 引擎（合体单脚本）适配——影子补丁发布引擎对象（命运II离线版V4.6.3 实测）（2026-09-06）
+
+《命运II离线版V4.6.3》（Metal Max II Restored，重装机兵同人，MV 1.6.1，
+NW.js 0.29）整体打包成单个合体脚本：www/js 下没有 rpg_core.js，
+index.html 只引 main_deobfuscated.js 等四个脚本，扫描器原判
+unknown-nwjs。实测定性（每条都有对照）：
+
+- **整个引擎在一个 `(function(){...}.call(this))` 包装闭包里**：
+  window 上没有任何引擎名字——`typeof $dataItems/$gameParty` 全是
+  undefined，管理器/类（DataManager、SceneManager、Game_Player…）是
+  闭包内 `function` 声明。此前数据页能用完全是 08-capture 的 JSON tap
+  在兜（启动期数据库解析被捕获），game.newGame 直接报
+  「DataManager is unavailable」。
+- **这个 NW.js 二进制没有任何 CDP**：`--remote-debugging-port` 命令行
+  传参到达 browser 进程 cmdline 但端口不听、DevToolsActivePort 不落盘；
+  走 manifest `chromium-args` 也一样（chromium-args 本身生效——
+  `--user-agent=RMCHTEST` 实测进了 navigator.userAgent——唯独调试端口
+  不起，非常态 devtools HTTP server）。sealed 家族的堆扫描路整体不适用。
+- **入口在打包者自己留的尾巴**：bundle 尾部闭包内暴露了
+  `window.__nbTrainerAPI`（给自带 trainer.js 用），证明包装作用域里
+  所有引擎名字都可见。
+
+### 产品行为（本次改动）
+
+- scanner 新增 `nwjs-bundled` 容器识别：unknown-nwjs 时读 index.html
+  引用的脚本找 `RPGMAKER_NAME="MV"/"MZ"` 指纹，引擎定 MV/MZ、记录
+  `bundled.scriptRel`（引擎脚本相对路径），标题取 HTML `<title>`。
+- launcher 新增 `shadow-engine-publish` 策略：影子目录（硬链接+junction，
+  不动游戏原文件）里把引擎脚本换成本地补丁副本——在包装闭包收尾
+  `}.call(this);` 前插入发布片段（锚点缺失则退 `__nbTrainerAPI=`，再缺
+  则明确报错）：管理器/类静态发布到 window，`$data*/$game*` 用
+  getter 访问器发布（值在开局/读档时整体替换，静态发布会立刻过期；
+  getter 内直接 eval 读活闭包变量）。之后标准 extension 桥看到的就是一
+  个普通 MV 游戏，无 seeder、无 CDP、无 RMCH_SEALED。
+- attach 对该容器走接管式（`bundled-relaunch`）：运行中的实例拿不到
+  影子补丁，停掉本目录进程后经同一路径拉起。
+- 验收 `tools/m2-acceptance.mjs` 18/18 全绿：bridge 连接、引擎信息
+  （maker=MV 1.6.1、游戏标题）、目录（物品 999 条真名/地图 297）、
+  开新游戏（#31 休 Lv1 入队）、gold.set/item.add/actor.vitals.set/
+  switch.set 实时生效、退出清扫。npm test 全绿，gui-bundle/bridge 重建。
+
+### 已知限制
+
+- 影子目录每次启动重建（补丁从原始脚本重新生成，bridge 更新自动跟随）。
+- 游戏自带 trainer.js（F1 悬浮面板）与工具箱 bridge 并存互不影响。
+- 该游戏 Nb_Online 联网插件在此离线版中不阻塞启动（标题页正常到达）。
+
 ## v0.7.2：RUNASADMIN 兼容标志根治「拉起后一直转圈」（2026-09-06）
 
 用户在旧游戏包损坏后重新解压，随后「启动并注入」能拉起游戏但**一直转圈**

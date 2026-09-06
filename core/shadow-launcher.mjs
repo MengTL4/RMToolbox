@@ -268,3 +268,158 @@ export function launchShadowGame({ projectRoot, scan, gameKey, port, token }) {
   child.unref();
   return { appDir, gameExe, profileDir, pid: child.pid };
 }
+
+// --- bundled-engine shadow (命运II离线版 / Metal Max II Restored family) --------
+//
+// Bundled-engine games (container "nwjs-bundled") pack the whole RPG Maker
+// runtime into one combined classic script wrapped in a single
+// `(function(){...}.call(this))` closure. EVERY engine name is closure-local
+// in this family (measured on 命运II离线版: no $data*/$game*/manager ever
+// reaches window — the bridge's catalog tap was what carried the data tabs),
+// and the old NW.js builds these games ship on expose no CDP either
+// (measured on NW.js 0.29 / MV 1.6.1: --remote-debugging-port ignored on the
+// command line AND via chromium-args — no devtools HTTP server in this
+// binary), so neither the plain extension resolvers nor the sealed-family
+// heap scan can reach anything.
+//
+// The way in costs one appended snippet: the bundle's own tail already
+// publishes a helper (window.__nbTrainerAPI) from inside that closure,
+// proving the wrapper scope sees every engine name. The shadow copy of the
+// engine script gets a publish snippet inserted just before the wrapper's
+// closing brace — static publishes for the managers/classes, accessor getters
+// for the $data*/$game* variables (their values are replaced wholesale on
+// new game / save load, so a static publish would go stale immediately) —
+// after which the standard extension bridge sees a completely normal MV/MZ
+// game. Everything else is hardlinks + junctions; original files untouched,
+// and the www junction routes www/save straight back to the real tree.
+
+// Published under their stock names so every bridge resolver/hook works
+// unmodified. eval() resolves each name in the bundle's own scope chain; a
+// name the family variant lacks throws and is skipped.
+const BUNDLED_PUBLISH_NAMES = [
+  "Utils", "JsonEx",
+  "DataManager", "SceneManager", "BattleManager", "ConfigManager",
+  "StorageManager", "ImageManager", "AudioManager", "TextManager",
+  "Scene_Map",
+  "Game_BattlerBase", "Game_Battler", "Game_Actor", "Game_Actors",
+  "Game_Party", "Game_Player", "Game_Enemy", "Game_Troop", "Game_Map",
+  "Game_System", "Game_Screen", "Game_Temp", "Game_Switches",
+  "Game_Variables", "Game_SelfSwitches", "Game_Follower", "Game_Followers",
+  "Game_Event", "Game_CommonEvent", "Game_Interpreter"
+];
+
+// $data*/$game* are closure VARIABLES too (measured on 命运II离线版: nothing
+// dollar-named ever reaches window — the bridge's catalog tap carried it).
+// Their VALUES are replaced wholesale on new game / save load, so a static
+// publish goes stale immediately: publish accessors instead, each getter
+// re-reading the live closure variable via direct eval.
+const BUNDLED_PUBLISH_VARS = [
+  "$dataSystem", "$dataItems", "$dataWeapons", "$dataArmors", "$dataSkills",
+  "$dataStates", "$dataActors", "$dataEnemies", "$dataTroops", "$dataMapInfos",
+  "$dataCommonEvents", "$dataMap", "$dataClasses", "$dataAnimations",
+  "$dataTilesets",
+  "$gameParty", "$gameSystem", "$gameSwitches", "$gameVariables",
+  "$gameSelfSwitches", "$gameActors", "$gameTroop", "$gameTemp", "$gameMap",
+  "$gamePlayer", "$gameScreen", "$gameMessage"
+];
+
+function bundledPublishSnippet() {
+  return ";try{var __rmchPub=" + JSON.stringify(BUNDLED_PUBLISH_NAMES) + ";"
+    + "for(var __rmchI=0;__rmchI<__rmchPub.length;__rmchI++){var __rmchN=__rmchPub[__rmchI];"
+    + "try{if(window[__rmchN]==null){var __rmchV=eval(__rmchN);if(__rmchV!=null)window[__rmchN]=__rmchV}}catch(e){}}"
+    + "var __rmchVars=" + JSON.stringify(BUNDLED_PUBLISH_VARS) + ";"
+    + "for(var __rmchJ=0;__rmchJ<__rmchVars.length;__rmchJ++){var __rmchV2=__rmchVars[__rmchJ];"
+    + "try{if(window[__rmchV2]==null){(function(n){"
+    + "try{eval(n);}catch(e){return;}"
+    + "Object.defineProperty(window,n,{configurable:true,enumerable:true,get:function(){try{return eval(n)}catch(e){return null}}});"
+    + "})(__rmchV2)}}catch(e){}}}catch(e){}\n";
+}
+
+// Patch the engine script text: insert the publish snippet INSIDE the
+// bundle's closing wrapper so it can see the closure-local declarations.
+// Primary anchor is the wrapper's own final `}.call(this);` (it must sit at
+// the very end of the file, or the guess would land in some nested closure);
+// the repacker's `__nbTrainerAPI=` tail block is the fallback anchor.
+export function patchBundledEngineScript(source) {
+  const snippet = bundledPublishSnippet();
+  const wrapperTail = source.lastIndexOf("}.call(this)");
+  if (wrapperTail !== -1 && source.length - (wrapperTail + "}.call(this);".length) < 8) {
+    return source.slice(0, wrapperTail) + snippet + source.slice(wrapperTail);
+  }
+  const trainerAnchor = source.lastIndexOf("__nbTrainerAPI=");
+  if (trainerAnchor !== -1) {
+    return source.slice(0, trainerAnchor) + snippet + source.slice(trainerAnchor);
+  }
+  throw new Error("bundled engine script anchor not found (no trailing }.call(this); and no __nbTrainerAPI= marker)");
+}
+
+export function setupBundledShadowApp({ projectRoot, scan, gameKey }) {
+  const appDir = path.join(projectRoot, SHADOW_ROOT, gameKey);
+  mkdirSync(appDir, { recursive: true });
+  const scriptRel = scan.bundled && scan.bundled.scriptRel;
+  if (!scriptRel) throw new Error("bundled engine script not recorded in scan (scan.bundled.scriptRel)");
+  const scriptRelNorm = scriptRel.split(/[\\/]+/).filter(Boolean).join("/");
+  const originalScriptPath = path.join(scan.root, scriptRelNorm);
+  if (!existsSync(originalScriptPath)) throw new Error(`bundled engine script not found: ${originalScriptPath}`);
+
+  // Root-layout games save in <root>/save: make sure the real dir exists
+  // BEFORE the linking pass so it is junctioned (not shadow-forked) — same
+  // contract as the bg-script shadow above. www layout is covered by the
+  // www junction itself.
+  const isWwwLayout = scan.layout ? scan.layout === "www" : existsSync(path.join(scan.root, "www"));
+  if (!isWwwLayout) {
+    const realSaveDir = path.join(scan.root, "save");
+    const shadowSaveDir = path.join(appDir, "save");
+    const shadowStat = lstatSync(shadowSaveDir, { throwIfNoEntry: false });
+    if (shadowStat && !shadowStat.isSymbolicLink() && shadowStat.isDirectory()) {
+      mergeSaveFiles(shadowSaveDir, realSaveDir);
+      rmSync(shadowSaveDir, { recursive: true, force: true });
+    }
+    mkdirSync(realSaveDir, { recursive: true });
+  }
+
+  // Link pass: the engine script's path is carved out (real directories,
+  // everything else junctioned/hardlinked) so the patched copy written below
+  // never lands in the real game tree.
+  for (const entry of readdirSync(scan.root)) {
+    if (entry === "package.json") continue;
+    if (SKIP_FILES.has(entry.toLowerCase())) continue;
+    if (entry === scriptRelNorm) continue; // root-level script: patched copy written below
+    const source = path.join(scan.root, entry);
+    const dest = path.join(appDir, entry);
+    const relSkip = scriptRelNorm.startsWith(entry + "/") ? scriptRelNorm.slice(entry.length + 1) : null;
+    linkShadowEntry(source, dest, relSkip);
+  }
+  // package.json ships unmodified (a copy, not a hardlink — never write
+  // through into the real tree if a later tweak starts editing it).
+  copyFileSync(path.join(scan.root, "package.json"), path.join(appDir, "package.json"));
+
+  // Regenerate the patched engine script on every launch: the patch follows
+  // bridge updates and never accumulates on the original.
+  const patched = patchBundledEngineScript(readFileSync(originalScriptPath, "utf8"));
+  const patchedPath = path.join(appDir, scriptRelNorm);
+  mkdirSync(path.dirname(patchedPath), { recursive: true });
+  writeFileSync(patchedPath, patched, "utf8");
+
+  const gameExe = path.join(appDir, "Game.exe");
+  if (!existsSync(gameExe)) throw new Error(`shadow Game.exe missing: ${gameExe}`);
+  return { appDir, gameExe, patchedScript: patchedPath };
+}
+
+export function launchBundledShadowGame({ projectRoot, scan, gameKey, profileDir, extraEnv }) {
+  const { appDir, gameExe } = setupBundledShadowApp({ projectRoot, scan, gameKey });
+  const child = spawn(gameExe, [
+    `--user-data-dir=${profileDir}`,
+    `--load-extension=${path.join(projectRoot, "runtime", "bridge")}`
+  ], {
+    cwd: appDir,
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, ...extraEnv },
+    // No windowsHide (see launcher.mjs): SW_HIDE in STARTUPINFO makes old
+    // NW.js builds create the game window invisible.
+    windowsHide: false
+  });
+  child.unref();
+  return { appDir, gameExe, pid: child.pid };
+}

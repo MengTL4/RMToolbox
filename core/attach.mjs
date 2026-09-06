@@ -999,15 +999,17 @@ async function attachRgss({ scan, projectRoot }) {
   };
 }
 
-// --- sealed takeover ----------------------------------------------------------
+// --- sealed / bundled takeover ------------------------------------------------
 
-// Sealed games cannot be hooked post-launch: the engine never reaches window,
-// and publishing it needs a CDP heap scan whose port only a toolbox launch
-// adds. So "attach" means TAKEOVER: stop the running (manually started)
-// instance, then go through the normal sealed launch path — the seeder
-// publishes the engine objects and the game auto-resumes its last save.
+// Sealed and bundled-engine games cannot be hooked post-launch: the sealed
+// engine never reaches window, and a bundled engine's managers stay
+// closure-sealed — sealed needs a CDP heap scan whose port only a toolbox
+// launch adds, bundled needs the engine-script publish patch only the shadow
+// copy carries. So "attach" means TAKEOVER: stop the running (manually
+// started) instance, then go through the normal launch path for the family.
 // Only processes running from THIS game directory are stopped.
 async function attachSealed({ scan, projectRoot, port }) {
+  const bundled = scan.container === "nwjs-bundled";
   const exeName = path.basename(scan.paths.exe);
   let stopped = 0;
   const processes = await listProcessesByExeName(exeName); // throws = no takeover, fail loudly
@@ -1027,10 +1029,14 @@ async function attachSealed({ scan, projectRoot, port }) {
   const summary = await launchGame({ gameRoot: scan.root, projectRoot, port });
   return {
     ...summary,
-    strategy: "sealed-relaunch",
+    strategy: bundled ? "bundled-relaunch" : "sealed-relaunch",
     strategyReason: stopped
-      ? `sealed engine cannot be hooked post-launch: stopped ${stopped} game process(es) and relaunched via the toolbox (debug port + engine publish; the game auto-resumes its last save)`
-      : "no running game process found; launched via the toolbox (debug port + engine publish)"
+      ? bundled
+        ? `bundled engine keeps its managers closure-sealed and cannot be hooked post-launch: stopped ${stopped} game process(es) and relaunched via the toolbox (shadow copy + engine publish)`
+        : `sealed engine cannot be hooked post-launch: stopped ${stopped} game process(es) and relaunched via the toolbox (debug port + engine publish; the game auto-resumes its last save)`
+      : bundled
+        ? "no running game process found; launched via the toolbox (shadow copy + engine publish)"
+        : "no running game process found; launched via the toolbox (debug port + engine publish)"
   };
 }
 
@@ -1058,7 +1064,7 @@ export async function attachGame({ gameRoot, projectRoot, port = 47412 }) {
       'Tauri-shelled games cannot be attached post-launch; use "launch" instead (a patched exe copy opens the debug port)'
     );
   }
-  if (scan.container === "nwjs-sealed") {
+  if (scan.container === "nwjs-sealed" || scan.container === "nwjs-bundled") {
     return attachSealed({ scan, projectRoot, port });
   }
   if (scan.container === "nb-evalnwbin") {
