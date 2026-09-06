@@ -108,6 +108,41 @@ function detectNbShell(root) {
   }
 }
 
+// Bundled-engine games (命运II离线版 / Metal Max II Restored family): the whole
+// RPG Maker runtime is packed into one combined classic script wrapped in a
+// single `(function(){...}.call(this))` closure, so NOTHING engine-named —
+// no $data*, no $game*, no managers — ever reaches window (measured on
+// 命运II离线版: even $dataItems is undefined on window; the bridge's catalog
+// tap is what carried the data tabs). Detect by the engine fingerprint inside
+// the scripts index.html loads; the launcher then runs the game from a shadow
+// copy whose engine script carries a manager/global-publish patch
+// (core/shadow-launcher.mjs, setupBundledShadowApp).
+function detectBundledEngine(indexHtmlPath, wwwDir) {
+  if (!indexHtmlPath) return null;
+  let html;
+  try {
+    html = readFileSync(indexHtmlPath, "utf8");
+  } catch (_) {
+    return null;
+  }
+  const marker = /RPGMAKER_NAME\s*[:=]\s*"(MV|MZ)"/;
+  const scripts = [];
+  const srcRe = /<script[^>]+src\s*=\s*"([^"]+\.js)"/gi;
+  let match;
+  while ((match = srcRe.exec(html)) && scripts.length < 12) {
+    const file = path.join(wwwDir, match[1]);
+    if (existsSync(file)) scripts.push(file);
+  }
+  for (const file of scripts) {
+    try {
+      const text = readFileSync(file, "utf8");
+      const found = text.match(marker);
+      if (found) return { id: found[1], bytecode: false, confidence: "medium", scriptFile: file };
+    } catch (_) {}
+  }
+  return null;
+}
+
 // NB-shell evalNWBin variant (万族穿越-源启崛起 family): same nb_data/ layout
 // as the Themida variant above, but the engine is a V8 bytecode blob (hashed,
 // extensionless) loaded via nw.Window.get().evalNWBin() from an OBFUSCATED
@@ -341,6 +376,12 @@ export function scanGame(root) {
   const sealed = !engine && detectSealedLauncher(resolvedRoot);
   const nbShell = !engine && !sealed && detectNbShell(resolvedRoot);
   const nbEvalNwBin = !engine && !sealed && !nbShell && detectNbEvalNwBin(resolvedRoot);
+  const bundled = !engine && !sealed && !nbShell && !nbEvalNwBin
+    ? detectBundledEngine(
+        firstExisting([path.join(wwwDir, "index.html"), path.join(resolvedRoot, "index.html")]),
+        wwwDir
+      )
+    : null;
   if (engine) {
     result.engine = engine;
   } else if (sealed) {
@@ -357,6 +398,19 @@ export function scanGame(root) {
     result.engine = { id: "MV/MZ", bytecode: false, confidence: "low" };
     result.container = "nb-evalnwbin";
     addFlag("nb-evalnwbin-shell");
+  } else if (bundled) {
+    result.engine = { id: bundled.id, bytecode: bundled.bytecode, confidence: bundled.confidence };
+    result.container = "nwjs-bundled";
+    addFlag("bundled-engine");
+    // The launcher needs to know WHICH script carries the engine: the shadow
+    // copy gets the manager-publish patch, everything else is linked as-is.
+    result.bundled = { scriptRel: path.relative(resolvedRoot, bundled.scriptFile).split(path.sep).join("/") };
+    try {
+      const indexPath = firstExisting([path.join(wwwDir, "index.html"), path.join(resolvedRoot, "index.html")]);
+      const html = indexPath ? readFileSync(indexPath, "utf8") : "";
+      const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+      if (titleMatch && titleMatch[1].trim()) result.title = titleMatch[1].trim();
+    } catch (_) {}
   } else if (manifest || existsSync(path.join(resolvedRoot, "Game.exe"))) {
     result.engine = { id: "unknown-nwjs", bytecode: false, confidence: "low" };
   }
@@ -501,6 +555,9 @@ export function injectionStrategy(scan) {
   }
   if (scan.container === "nwjs-sealed") {
     return { id: "extension-cdp-seed", reason: "sealed MZ engine (obfuscated game.js, no window globals): extension bridge + a CDP heap scan publishes the engine objects once the game boots" };
+  }
+  if (scan.container === "nwjs-bundled") {
+    return { id: "shadow-engine-publish", reason: "bundled engine (one combined script, every engine name closure-sealed — 命运II离线版 family): shadow copy appends a publish snippet inside the bundle wrapper (static for managers/classes, live getters for $data*/$game*), then the standard extension bridge sees a normal MV/MZ game" };
   }
   if (scan.container === "nb-shell") {
     return { id: "unsupported-nb-shell", reason: "NB shell (nbtool.node/Themida) hash-verifies its boot files, refuses every launch flag and kills injected code — no toolbox injection vector survives; measured on 重装机兵-宿敌 v3.5.3, see ACCEPTANCE v0.6.3" };

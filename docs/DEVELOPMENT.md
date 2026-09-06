@@ -8,7 +8,8 @@
 
 ```
 core/            ESM 核心模块
-  scanner.mjs        引擎(MV/MZ/XP/VX/Ace/RM2k) + 保护等级(L0-L4) + 布局识别（L4=nb-shell，只识别不注入）
+  scanner.mjs        引擎(MV/MZ/XP/VX/Ace/RM2k) + 保护等级(L0-L4) + 布局识别（L4=nb-shell，只识别不注入；
+                     bundled-engine 合体单脚本游戏识别为 container=nwjs-bundled）
   launcher.mjs       注入启动（策略自动选择，RGSS 分发到 rgss-launcher）
   tauri-cdp.mjs      Tauri(WebView2) 壳 MZ：exe 副本打 CDP 补丁 + 启动 + 会话（evaluate 轮询传输）
   sealed-seed.mjs    sealed 启动器 MZ：CDP 堆扫描(Runtime.queryObjects)发布引擎对象 + initialize 保鲜补丁 + reload 看门狗
@@ -265,6 +266,16 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   `runtime/bridge-state/<gameKey>/seed.log`。attach 对这类游戏是**接管式**（`attachSealed`）：
   停掉该游戏目录下的运行进程（手工启动的实例没有调试端口，无法事后播种），再走标准
   sealed 启动路径，游戏自动续上最后存档。
+- **bundled 引擎（shadow-engine-publish）**：整个 RPG Maker 运行时合体成单个经典
+  脚本、裹在一个 `(function(){...}.call(this))` 包装闭包里的 MV/MZ 游戏（命运II
+  离线版家族）——window 上没有任何引擎名字（$data*/$game*/管理器全部闭包内私有），
+  且这类老 NW.js（实测 0.29）二进制里根本没有 devtools HTTP server（命令行与
+  chromium-args 的 --remote-debugging-port 都无效），sealed 堆扫描路不适用。
+  影子目录里把引擎脚本换成补丁副本：在包装闭包收尾 `}.call(this);` 前插入发布
+  片段（锚点缺失退 `__nbTrainerAPI=`，再缺明确报错）——管理器/类静态发布，
+  $data*/$game* 用 getter 访问器发布（开局/读档整体替换，静态发布会立刻过期），
+  之后就是普通 MV/MZ。附加=接管重启（影子补丁只能经启动生效）。实测见
+  ACCEPTANCE v0.7.3。
 - **附加（attach，不改文件也不启动游戏）**：游戏已在运行时注入。MV/MZ：`rmch-mvhook.dll`
   经 CreateRemoteThread 进渲染进程，MinHook detour 住 nw.dll 导出的 `v8::Function::Call`
   （Blink 每帧 rAF 必经；`NewFromUtf8` 留作后备），在自然的 V8 调用点里

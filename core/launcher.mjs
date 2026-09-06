@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { scanGame, injectionStrategy } from "./scanner.mjs";
 import { buildBridge } from "./bridge-bundler.mjs";
 import { getToken } from "./token.mjs";
-import { launchShadowGame } from "./shadow-launcher.mjs";
+import { launchShadowGame, launchBundledShadowGame } from "./shadow-launcher.mjs";
 import { launchRgssGame, getRgssSession, listRgssSessions } from "./rgss-launcher.mjs";
 import { ensureEvbUnpacked } from "./evb-unpack.mjs";
 import { launchTauriGame, getTauriSession, listTauriSessions } from "./tauri-cdp.mjs";
@@ -137,6 +137,9 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
   if (scan.container === "nwjs-sealed") {
     return launchSealedGame({ scan, projectRoot, port });
   }
+  if (scan.container === "nwjs-bundled") {
+    return launchBundledGame({ scan, projectRoot, port });
+  }
   if (!scan.paths.exe) throw new Error("Game.exe not found in game root");
 
   const plan = injectionStrategy(scan);
@@ -256,6 +259,60 @@ export function startSealedSeeder({ projectRoot, gameKey, gameRoot, seedPort }) 
   seeder.unref();
 }
 
+// Bundled-engine games (命运II离线版 family): the whole RPG Maker runtime is one
+// combined classic script inside a single wrapper closure — no $data*/$game*/
+// manager name ever reaches window — and this family's old NW.js builds expose
+// no CDP at all (measured on NW.js 0.29: --remote-debugging-port ignored on
+// the command line AND in chromium-args — the devtools HTTP server is not in
+// this binary), so neither plain extension resolvers nor the sealed heap scan
+// can reach anything. The way in: a shadow copy where the engine script gets
+// a publish snippet appended INSIDE the wrapper closure (static publishes for
+// managers/classes, live getters for $data*/$game*), after which the standard
+// extension bridge sees a completely normal MV/MZ game. No seeder, no CDP.
+async function launchBundledGame({ scan, projectRoot, port }) {
+  if (!scan.paths.exe) {
+    throw new Error(`game exe not found in ${scan.root} (looked for Game.exe, <manifest name>.exe, or a single root exe)`);
+  }
+  const token = getToken(projectRoot);
+  buildBridge(projectRoot);
+  const extensionDir = path.join(projectRoot, "runtime", "bridge");
+  if (!existsSync(path.join(extensionDir, "manifest.json"))) throw new Error(`bridge extension missing: ${extensionDir}`);
+
+  const server = await ensureServer({ projectRoot, port, token });
+
+  const profileDir = path.join(projectRoot, "runtime", "profiles", scan.gameKey);
+  mkdirSync(profileDir, { recursive: true });
+  const info = launchBundledShadowGame({
+    projectRoot,
+    scan,
+    gameKey: scan.gameKey,
+    profileDir,
+    extraEnv: {
+      RMCH_GAME_ROOT: scan.root,
+      RMCH_PROJECT_ROOT: projectRoot,
+      RMCH_GAME_KEY: scan.gameKey,
+      RMCH_WS_PORT: String(port),
+      RMCH_WS_TOKEN: token
+    }
+  });
+
+  return {
+    game: scan.title,
+    gameKey: scan.gameKey,
+    root: scan.root,
+    engine: scan.engine.id,
+    protection: scan.protection,
+    strategy: "shadow-engine-publish",
+    strategyReason: injectionStrategy(scan).reason,
+    pid: info.pid,
+    shadowApp: info.appDir,
+    profileDir,
+    server,
+    port,
+    extensionDir
+  };
+}
+
 async function launchSealedGame({ scan, projectRoot, port }) {
   if (!scan.paths.exe) {
     throw new Error(`game exe not found in ${scan.root} (looked for Game.exe, <manifest name>.exe, or a single root exe)`);
@@ -294,7 +351,8 @@ async function launchSealedGame({ scan, projectRoot, port }) {
   });
   child.unref();
 
-  startSealedSeeder({ projectRoot, gameKey: scan.gameKey, gameRoot: scan.root, seedPort });
+  const family = scan.container === "nwjs-bundled" ? "bundled" : "sealed";
+  startSealedSeeder({ projectRoot, gameKey: scan.gameKey, gameRoot: scan.root, seedPort, family });
 
   return {
     game: scan.title,
