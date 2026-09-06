@@ -226,11 +226,11 @@ function wireExternalSession(session, gameKey, channel) {
 }
 
 async function launch(gameRoot) {
-  // NB evalNWBin shells refuse every launch flag, so the extension launch is
-  // fatal to them; "launch" for these games is plain spawn + DLL attach (the
-  // inject machinery lives in the attach module).
+  // NB evalNWBin shells and Enigma-NB boxes refuse every launch flag, so the
+  // extension launch is fatal to them; "launch" for these games is plain
+  // spawn + DLL attach (the inject machinery lives in the attach module).
   const probe = state.modules.scanner.scanGame(gameRoot);
-  if (probe.container === "nb-evalnwbin") {
+  if (probe.container === "nb-evalnwbin" || probe.container === "enigma-nb") {
     const summary = await state.modules.attach.launchNwInjectGame({
       scan: probe,
       projectRoot: state.projectRoot,

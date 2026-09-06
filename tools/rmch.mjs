@@ -90,10 +90,11 @@ async function main() {
       const { positional, options } = parseArgs(rest);
       if (!positional[0]) usage(1);
       const gameRootArg = path.resolve(positional[0]);
-      // NB evalNWBin shells die on any launch flag; their "launch" is plain
-      // spawn + DLL attach, which lives in the attach module.
+      // NB evalNWBin shells and Enigma-NB boxes die on any launch flag; their
+      // "launch" is plain spawn + DLL attach, which lives in the attach module.
       const { scanGame } = await import("../core/scanner.mjs");
-      if (scanGame(gameRootArg).container === "nb-evalnwbin") {
+      const container = scanGame(gameRootArg).container;
+      if (container === "nb-evalnwbin" || container === "enigma-nb") {
         const { launchNwInjectGame } = await import("../core/attach.mjs");
         const summary = await launchNwInjectGame({
           scan: scanGame(gameRootArg), projectRoot, port: Number(options.port) || 47412

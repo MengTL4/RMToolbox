@@ -4,7 +4,7 @@
 // when no server is running, because the bridge polls the file too).
 
 import net from "node:net";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { scanGame } from "../core/scanner.mjs";
@@ -76,11 +76,20 @@ function sendViaFile({ projectRoot, gameKey, type, args }) {
 export async function sendCommand({ projectRoot, target, type, args, port = 47412, timeoutMs = 15000 }) {
   let gameKey = null;
   let gameRoot = null;
-  if (existsSync(target) && existsSync(path.join(target, "Game.exe"))) {
-    const scan = scanGame(target);
-    gameKey = scan.gameKey;
-    gameRoot = scan.root;
-  } else {
+  // A game root isn't always "has Game.exe": non-standard exes (三国修仙传
+  // V1.91.exe, sealed launchers named after the manifest, …) are just as
+  // valid. Treat any directory holding a non-junk exe as a root to scan.
+  if (existsSync(target) && statSync(target).isDirectory()) {
+    const hasExe = existsSync(path.join(target, "Game.exe")) ||
+      readdirSync(target).some((name) =>
+        /\.exe$/i.test(name) && !/unins|setup|install|crash|redist|vc_redist|dxsetup|dotnet|launch|update|patch/i.test(name));
+    if (hasExe) {
+      const scan = scanGame(target);
+      gameKey = scan.gameKey;
+      gameRoot = scan.root;
+    }
+  }
+  if (!gameKey) {
     gameKey = target;
   }
 
