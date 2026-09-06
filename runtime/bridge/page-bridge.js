@@ -2297,6 +2297,28 @@
     return ownedItemData(party, kind, id);
   }
 
+  // Custom engines sometimes replace gainGold with a shell that throws or
+  // silently no-ops outside their own UI flow (傲世修仙录定制版: the override
+  // dies on "Cannot read property 'constructor' of null"). Run the engine path
+  // first so clamping/notification still work, but verify the landing value
+  // and fall back to a direct container write — same contract as item.set's
+  // gainItem verification. A partial move means the engine clamped (kept).
+  function applyGoldDelta(party, delta, absolute) {
+    const fallback = absolute != null ? absolute : Math.max(0, Number(party._gold || 0) + delta);
+    if (typeof party.gainGold !== "function") {
+      party._gold = fallback;
+      return;
+    }
+    const before = safeGold(party) || 0;
+    try {
+      withRatesSuppressed(() => party.gainGold(delta));
+    } catch (_) {
+      party._gold = fallback;
+      return;
+    }
+    if (delta !== 0 && (safeGold(party) || 0) === before) party._gold = fallback;
+  }
+
   Object.assign(commandHandlers, {
 
     // --- gold -----------------------------------------------------------------
@@ -2304,8 +2326,7 @@
     "gold.add": (args) => {
       const party = requireParty();
       const amount = Math.floor(requireNumber(args.amount, "amount"));
-      if (typeof party.gainGold === "function") withRatesSuppressed(() => party.gainGold(amount));
-      else party._gold = Math.max(0, Number(party._gold || 0) + amount);
+      applyGoldDelta(party, amount);
       return { gold: safeGold(party) };
     },
 
@@ -2314,8 +2335,7 @@
       const value = Math.max(0, Math.floor(requireNumber(args.value, "value")));
       const current = safeGold(party) || 0;
       // Expressed as a delta so the engine's own clamping/notification runs.
-      if (typeof party.gainGold === "function") withRatesSuppressed(() => party.gainGold(value - current));
-      else party._gold = value;
+      applyGoldDelta(party, value - current, value);
       return { gold: safeGold(party) };
     },
 
@@ -2860,9 +2880,6 @@
     "save.load": (args) => {
       const id = requireId(args.id, "save id");
       const dataManager = requireDataManager("loadGame");
-      // MV returns a boolean synchronously; MZ returns a promise. Either way the
-      // game's own (possibly patched) StorageManager handles the file format.
-      const loaded = dataManager.loadGame(id);
       const enterMap = (ok) => {
         if (!ok) throw new Error(`loadGame(${id}) failed`);
         try {
@@ -2874,7 +2891,33 @@
         if (sceneManager && typeof sceneManager.goto === "function" && sceneMap) sceneManager.goto(sceneMap);
         return { id, loaded: true };
       };
-      return loaded && typeof loaded.then === "function" ? loaded.then(enterMap) : enterMap(loaded);
+      // MV returns a boolean synchronously; MZ returns a promise.
+      const attempt = () => {
+        const loaded = dataManager.loadGame(id);
+        return loaded && typeof loaded.then === "function" ? loaded : Promise.resolve(loaded);
+      };
+      // Some custom engines (傲世修仙录定制版 family) sit at the title with the
+      // database NOT resident — window.$dataSystem is null until their own
+      // chain loads it — and vanilla loadGame then dies inside Game_Vehicle on
+      // the null. When the first attempt fails into exactly that shape, run the
+      // game's own loadDatabase (its overrides handle any decryption), wait for
+      // the system table to materialise, then retry once. Vanilla games never
+      // reach this: their loadGame works, or fails for unrelated reasons.
+      return attempt().then((ok) => {
+        if (ok || window.$dataSystem || typeof dataManager.loadDatabase !== "function") {
+          return enterMap(ok);
+        }
+        try { dataManager.loadDatabase(); } catch (_) {}
+        const deadline = Date.now() + 15000;
+        const poll = () => new Promise((resolve) => {
+          const tick = () => {
+            if (window.$dataSystem || Date.now() > deadline) return resolve();
+            setTimeout(tick, 200);
+          };
+          tick();
+        });
+        return poll().then(() => attempt()).then(enterMap);
+      });
     },
 
     // --- save-data tree (数据修改) --------------------------------------------

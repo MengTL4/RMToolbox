@@ -16,6 +16,13 @@
 // lives in a subdirectory (e.g. "bg_script/boot.js"), that path is carved out
 // of the linked tree and recreated inside the shadow — writing the patched
 // script through a junction would overwrite the game's real startup file.
+//
+// Games whose entire startup chain is an ancestry-verified kill-switch shell
+// (scanner flag "grover-boot") keep their own chain but get two implants: a
+// working `wmic` (the shell's probe fails closed on Windows 11, where
+// Microsoft removed wmic.exe) and in-process kill-path guards — see
+// buildGroverBootstrap for the strategy, the measured findings, and the open
+// blocker.
 
 import { spawn } from "node:child_process";
 import {
@@ -177,6 +184,109 @@ function linkShadowEntry(source, dest, relSkip) {
   linkOrCopyFile(source, dest);
 }
 
+// Grover bootstrap (scanner flag "grover-boot", 傲世修仙录完结定制版 family).
+// That family's whole startup chain — obfuscated bg-script `loading`, nwjc
+// bg_script, loader page www/loading.html — is one ancestry-verified kill
+// switch: it execs `wmic` from its cwd to walk the parent chain, and on
+// Windows 11 wmic.exe no longer exists, so the check fails CLOSED — the shell
+// writes 崩溃日志.log and quits/crashes the process tree ~15s after boot, even
+// for a stock double-clicked launch.
+//
+// Strategy, from live reverse-engineering (runtime/_scratch/GROVER-FINDINGS.md):
+//  1. Run the shell's OWN chain in the shadow (patched bg-script = prelude +
+//     guards bootstrap + original `loading`), but hand the ancestry probe a
+//     working `wmic`: runtime/bin/wmic.exe is copied next to Game.exe and the
+//     game's PATH is prepended with the shadow dir at launch. The shim answers
+//     the ParentProcessId/Name queries in real wmic's exact byte format
+//     (CRCRLF lines, "Node=<hostname>" preamble), roots a dead launcher-stub
+//     chain at a live explorer.exe, and always reports real image names — the
+//     shell cross-checks known pids (PID 4 must answer "system") and spins
+//     forever when a check returns an empty string.
+//  2. Neutralize the kill paths from inside: the bootstrap registers a window
+//     "loaded" listener BEFORE the original chain's own (our code runs first
+//     in the bg-script file), and on every page load installs toString-safe
+//     getter guards over nw.App.{quit,crashBrowser,crashRenderer,
+//     closeAllWindows} + process.{exit,abort,crash,reallyExit,kill} + window
+//     close, then evals the page bridge. The guards must be in place before
+//     bg_script arms its 1.2s/15s kill timers in that context.
+//  3. Keep the shadow manifest byte-identical to the game's: Some.js (the
+//     payload's DRM plugin) validates the app manifest and core files.
+//
+// KNOWN LIMITATION (2026-09-06): with the shim the chain reaches the payload
+// (loading.html → index.html, engine + all plugins load), but the boot still
+// stalls in the shell's post-verification state machine on this machine; see
+// GROVER-FINDINGS.md for the precise open questions.
+function buildGroverBootstrap({ bridgePath, logPath }) {
+  // Page-side guard source, eval'd into every page load. Our bootstrap
+  // registers its "loaded" listener before the original chain's own (our code
+  // runs first in the bg-script file), so the guards are in place before
+  // bg_script arms its kill timers in that context. All wrappers are
+  // toString-masked as natives: the shell's self-defend compares function
+  // sources, and visible tampering feeds its anti-tamper checks.
+  const pageGuards = `;(function () {
+  if (window.__rmchGroverGuards) return;
+  window.__rmchGroverGuards = 1;
+  var LOGP = ${jsString(logPath)};
+  function wlog(m) {
+    try { require("fs").appendFileSync(LOGP, "[" + new Date().toISOString() + "] " + m + "\\n", "utf8"); } catch (_) {}
+  }
+  function nt(f) {
+    try {
+      var nat = function () { return "function () { [native code] }"; };
+      Object.defineProperty(f, "toString", { configurable: true, value: nat });
+    } catch (_) {}
+    return f;
+  }
+  function block(obj, prop, label) {
+    try {
+      var d = Object.getOwnPropertyDescriptor(obj, prop);
+      if (!d || !d.configurable) return;
+      if (typeof d.value !== "function") return;
+      var blocker = nt(function () {
+        wlog("BLOCKED " + label);
+        return undefined;
+      });
+      Object.defineProperty(obj, prop, {
+        configurable: true,
+        get: function () { return blocker; },
+        set: function () {}
+      });
+    } catch (e) {}
+  }
+  try {
+    var App = (window.nw && nw.App) || {};
+    ["quit", "crashBrowser", "crashRenderer", "closeAllWindows"].forEach(function (p) { block(App, p, "nw.App." + p); });
+    ["exit", "abort", "crash", "reallyExit", "kill"].forEach(function (p) { block(process, p, "process." + p); });
+    try { block(window, "close", "window.close"); } catch (_) {}
+    try { var W = window.nw && nw.Window.get(); if (W) block(W, "close", "nw.Window.close"); } catch (_) {}
+  } catch (e) {}
+} ());
+`;
+  return `;(function () {
+  var LOG = ${jsString(logPath)};
+  function log(m) {
+    try {
+      require("fs").mkdirSync(require("path").dirname(LOG), { recursive: true });
+      require("fs").appendFileSync(LOG, "[" + new Date().toISOString() + "] " + m + "\\n", "utf8");
+    } catch (_) {}
+  }
+  try {
+    log("grover boot href=" + String(location && location.href));
+    var bridgeSrc = require("fs").readFileSync(${jsString(bridgePath)}, "utf8");
+    var win = nw.Window.get();
+    win.on("loaded", function () {
+      try { win.eval(null, ${jsString(pageGuards)}); } catch (_) {}
+      try {
+        win.eval(null, bridgeSrc + "\\n//# sourceURL=rmch-page-bridge.js");
+        log("bridge evaled, page href=" + String(win.window && win.window.location && win.window.location.href));
+      } catch (e) { log("bridge eval failed " + e); }
+    });
+    try { win.show(); } catch (_) {}
+  } catch (e) { log("grover bootstrap failed " + (e && e.stack || e)); }
+}());
+`;
+}
+
 export function setupShadowApp({ projectRoot, scan, gameKey }) {
   const appDir = path.join(projectRoot, SHADOW_ROOT, gameKey);
   mkdirSync(appDir, { recursive: true });
@@ -217,16 +327,34 @@ export function setupShadowApp({ projectRoot, scan, gameKey }) {
   }
   copyFileSync(path.join(scan.root, "package.json"), path.join(appDir, "package.json"));
 
+  const grover = scan.protection && scan.protection.flags && scan.protection.flags.includes("grover-boot");
+  if (grover) {
+    // grover-boot: keep the shadow manifest byte-identical to the game's —
+    // the payload's DRM plugin (Some.js) validates the app manifest and core
+    // files — and instead give the shell's ancestry probe a working `wmic`
+    // (see buildGroverBootstrap). The shim is deployed INTO the shadow dir and
+    // the game's PATH is prepended with it at launch, so cmd.exe (the shell
+    // execs `wmic ...` which resolves cwd-then-PATH) finds our shim and never
+    // the missing system wmic.
+    const shimSource = path.join(projectRoot, "runtime", "bin", "wmic.exe");
+    if (!existsSync(shimSource)) {
+      throw new Error(`grover-boot needs the wmic shim: build it with tools/build-wmic-shim.mjs (${shimSource} missing)`);
+    }
+    copyFileSync(shimSource, path.join(appDir, "wmic.exe"));
+  }
+
   // Regenerate the patched bg-script on every launch so bridge updates apply.
   const bridgePath = path.join(projectRoot, "runtime", "bridge", "page-bridge.js");
   const bridgeStateDir = path.join(projectRoot, "runtime", "bridge-state", gameKey);
   mkdirSync(bridgeStateDir, { recursive: true });
-  const original = readFileSync(originalBgScriptPath, "utf8");
-  const patched = buildPrelude(scan.root) + original + buildSuffix({
-    bridgePath,
-    logPath: path.join(bridgeStateDir, "bg-bridge.log"),
-    gameKey
-  });
+  const logPath = path.join(bridgeStateDir, "bg-bridge.log");
+  const suffix = buildSuffix({ bridgePath, logPath, gameKey });
+  const patched = grover
+    // The shell's own chain runs, but our bootstrap registers the window
+    // "loaded" listener first: guards + page bridge land in every page load
+    // before bg_script arms its kill timers there.
+    ? buildPrelude(scan.root) + buildGroverBootstrap({ bridgePath, logPath }) + readFileSync(originalBgScriptPath, "utf8") + suffix
+    : buildPrelude(scan.root) + readFileSync(originalBgScriptPath, "utf8") + suffix;
   const patchedPath = path.join(appDir, bgScriptName);
   // bg-script may live in a subdirectory (e.g. "bg_script/boot.js"); the
   // linking pass carved its path out of the shadow, so create it fresh here.
@@ -238,6 +366,12 @@ export function setupShadowApp({ projectRoot, scan, gameKey }) {
   return { appDir, gameExe, bgScriptPath: path.join(appDir, bgScriptName) };
 }
 
+// grover-boot games launch through the ordinary direct spawn below, with one
+// addition: the shadow dir is prepended to the game's PATH so the shell's
+// `wmic` exec resolves the deployed shim (cmd.exe searches cwd, then PATH;
+// the exec's cwd is the prelude-spoofed real game root, so PATH is what makes
+// the shim reachable). See buildGroverBootstrap for the full strategy and the
+// known limitation.
 export function launchShadowGame({ projectRoot, scan, gameKey, port, token }) {
   const { appDir, gameExe } = setupShadowApp({ projectRoot, scan, gameKey });
 
@@ -246,6 +380,19 @@ export function launchShadowGame({ projectRoot, scan, gameKey, port, token }) {
   rmSync(profileDir, { recursive: true, force: true });
   mkdirSync(profileDir, { recursive: true });
 
+  const grover = scan.protection && scan.protection.flags && scan.protection.flags.includes("grover-boot");
+  const env = {
+    ...process.env,
+    RMCH_GAME_ROOT: scan.root,
+    RMCH_PROJECT_ROOT: projectRoot,
+    RMCH_GAME_KEY: gameKey,
+    RMCH_WS_PORT: String(port),
+    RMCH_WS_TOKEN: token,
+    ...(grover && process.env.PATH !== undefined
+      ? { PATH: appDir + path.delimiter + process.env.PATH }
+      : {})
+  };
+
   const child = spawn(gameExe, [
     `--user-data-dir=${profileDir}`,
     "--force-color-profile=srgb"
@@ -253,14 +400,7 @@ export function launchShadowGame({ projectRoot, scan, gameKey, port, token }) {
     cwd: appDir,
     detached: true,
     stdio: "ignore",
-    env: {
-      ...process.env,
-      RMCH_GAME_ROOT: scan.root,
-      RMCH_PROJECT_ROOT: projectRoot,
-      RMCH_GAME_KEY: gameKey,
-      RMCH_WS_PORT: String(port),
-      RMCH_WS_TOKEN: token
-    },
+    env,
     // No windowsHide (see launcher.mjs): SW_HIDE in STARTUPINFO makes old
     // NW.js builds create the game window invisible.
     windowsHide: false

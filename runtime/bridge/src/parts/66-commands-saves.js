@@ -41,9 +41,6 @@
     "save.load": (args) => {
       const id = requireId(args.id, "save id");
       const dataManager = requireDataManager("loadGame");
-      // MV returns a boolean synchronously; MZ returns a promise. Either way the
-      // game's own (possibly patched) StorageManager handles the file format.
-      const loaded = dataManager.loadGame(id);
       const enterMap = (ok) => {
         if (!ok) throw new Error(`loadGame(${id}) failed`);
         try {
@@ -55,7 +52,33 @@
         if (sceneManager && typeof sceneManager.goto === "function" && sceneMap) sceneManager.goto(sceneMap);
         return { id, loaded: true };
       };
-      return loaded && typeof loaded.then === "function" ? loaded.then(enterMap) : enterMap(loaded);
+      // MV returns a boolean synchronously; MZ returns a promise.
+      const attempt = () => {
+        const loaded = dataManager.loadGame(id);
+        return loaded && typeof loaded.then === "function" ? loaded : Promise.resolve(loaded);
+      };
+      // Some custom engines (傲世修仙录定制版 family) sit at the title with the
+      // database NOT resident — window.$dataSystem is null until their own
+      // chain loads it — and vanilla loadGame then dies inside Game_Vehicle on
+      // the null. When the first attempt fails into exactly that shape, run the
+      // game's own loadDatabase (its overrides handle any decryption), wait for
+      // the system table to materialise, then retry once. Vanilla games never
+      // reach this: their loadGame works, or fails for unrelated reasons.
+      return attempt().then((ok) => {
+        if (ok || window.$dataSystem || typeof dataManager.loadDatabase !== "function") {
+          return enterMap(ok);
+        }
+        try { dataManager.loadDatabase(); } catch (_) {}
+        const deadline = Date.now() + 15000;
+        const poll = () => new Promise((resolve) => {
+          const tick = () => {
+            if (window.$dataSystem || Date.now() > deadline) return resolve();
+            setTimeout(tick, 200);
+          };
+          tick();
+        });
+        return poll().then(() => attempt()).then(enterMap);
+      });
     },
 
     // --- save-data tree (数据修改) --------------------------------------------

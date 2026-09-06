@@ -1,5 +1,63 @@
 # RMCH 验收记录
 
+## v0.7.6：Grover 壳家族识别（grover-boot）+ wmic shim 接力——傲世修仙录完结定制版实测（适配进行中）（2026-09-06）
+
+《傲世修仙录完结定制版》（MV 1.6.1，NW.js Chromium 91）全 www/js 载荷是
+nwjc V8 字节码（魔数 03 04 DE C0），根目录混淆 JS `loading` 作 bg-script、
+每次窗口 loaded 把 nwjc 字节码 `bg_script` evalNWBin 进**当时的页面上下文**
+（多实例竞态的根源），data/*.json 是 hex 文本密文（Some.js 插件的
+decipherData 解密，依赖壳验证产物）。壳的祖先链校验 `exec("wmic …")` 在
+**Win11 必然失败**（Microsoft 移除了 wmic.exe）→ fail-closed → 写崩溃日志 +
+自杀——**原生双击在本机同样 15s 死，游戏原样就玩不了**。逆向全程记录见
+`docs/GROVER-FINDINGS.md`（v0.7.6 起为该家族权威文档）。
+
+### 产品行为（本次改动）
+
+- scanner 新增 `grover-boot` 指纹（flag + L3）：manifest 带 bg-script、
+  引擎 MV/MZ、核心 js 为 nwjc 字节码（`isNwjcBytecode()` 读前 4 字节
+  `03 04 DE C0`）。实测输出 flags 含 grover-boot。
+- shadow-launcher grover 分支改为「**stock 链 + wmic shim + 守卫**」：
+  - shadow 清单副本保持与游戏逐字节一致（载荷侧 DRM 插件 Some.js 校验
+    AppManifest 与核心文件哈希）；
+  - `runtime/bin/wmic.exe`（`runtime/src/wmic-shim.c`，
+    `tools/build-wmic-shim.mjs` 构建）部署进 shadow 目录，启动时把
+    shadow 目录前插到游戏 PATH（壳 exec 的 cwd 被 prelude 欺骗到真实
+    游戏根，cmd 按 cwd→PATH 解析，PATH 是唯一可靠入口）。shim 以真 wmic
+    字节格式应答祖先链查询：每行 `\r\r\n` 结尾、`Node=<计算机名>` 头行、
+    PPID 用快照真值（死 stub 的链根植到真实存活的 explorer.exe）、
+    Name 恒答快照真实映像名（壳对已知 pid 做反伪抽检：PID 4 必须答
+    "system"）；nanosecond 级应答（PowerShell 版 200-400ms 冷启动赶不上
+    壳的 ~200ms 重载循环，回调永远丢失）。
+  - bg-script 补丁 = prelude + 守卫 bootstrap + **原版 loading** + suffix。
+    bootstrap 在原壳之前注册窗口 loaded 监听（文件顺序保证），每次页面
+    加载先装 toString 伪装的杀路径守卫（nw.App.{quit,crashBrowser,
+    crashRenderer,closeAllWindows} + process.{exit,abort,crash,reallyExit,
+    kill} + window/nw.Window close——crashRenderer 是此前 0xC0000005
+    「第二杀路」的真身）再 eval 页面桥。
+- bridge 两处游戏无关修复（v0.6.x 已实测该游戏）：
+  - `62-commands-party.js` 新增 `applyGoldDelta`：gainGold 抛错或静默失效
+    （本游戏定制 gainGold 在控制台路径抛 "constructor of null"）时校验
+    落点值并回退直写 `_gold`，gold.add/gold.set 改用它；
+  - `66-commands-saves.js` `save.load`：首次失败且 `$dataSystem` 为空时先
+    调游戏自己的 `DataManager.loadDatabase()` 并轮询最多 15s 重试（本游戏
+    标题画面隐匿 $data*，vanilla loadGame 直接炸）。实测 load id=2 成功
+    （林霄/姜婉儿/gold 502141）。
+- 测试：`test-shadow-launcher` 加 grover 用例（清单逐字节不变、wmic.exe
+  部署、守卫 bootstrap 含 crashRenderer、原文件不动）；`test-bridge-harness`
+  加 gold 回退两组用例（gainGold 抛错 / 静默 no-op）；npm test 全绿
+  （gui-check 确认生成物同步）。
+
+### 已知限制（重要）
+
+实测最远链：shim 让壳验证链全部应答 → loading.html 导航 index.html →
+引擎 + 全部插件加载 → 桥注入两页 + 目录捕获 → 进程存活 15s+（壳的 quit
+均被守卫吸收）。**但载荷仍在验证后状态机冻结**（黑屏、ping 超时、0 心跳；
+崩溃日志失败摘要跨运行恒定），游戏尚未可玩。打开「启动并注入」会得到
+存活但黑屏的进程，属预期。下一步候选见 GROVER-FINDINGS.md（真 wmic 输出
+比对 / nwjc 深挖 / Win10 环境验证）。attach 对本家族预期不可用
+（Some.js 的 process.report sharedObjects / WinMM 注入检测）。
+
+
 ## v0.7.5：技能/开关目录 2000 条截断修复——再刷一把2：金色传说实测（2026-09-06）
 
 用户反馈《再刷一把2：金色传说》（MZ，jsc.pak 字节码 + data.pak 加密数据）
