@@ -28,18 +28,22 @@
   }
 
   // --- $game* singletons ------------------------------------------------------
+  //
+  // capturedEngine() is the closure-sealed fallback: save-contents capture
+  // (08-capture.js) holds live singletons for sealed games once the player
+  // has saved or loaded once.
 
-  function resolveParty() { return callAlias("gameParty") || window.$gameParty || null; }
-  function resolveSystem() { return callAlias("gameSystem") || window.$gameSystem || null; }
-  function resolveVariables() { return callAlias("gameVariables") || window.$gameVariables || null; }
-  function resolveSwitches() { return callAlias("gameSwitches") || window.$gameSwitches || null; }
-  function resolveSelfSwitches() { return callAlias("gameSelfSwitches") || window.$gameSelfSwitches || null; }
-  function resolveActors() { return callAlias("gameActors") || window.$gameActors || null; }
+  function resolveParty() { return callAlias("gameParty") || window.$gameParty || capturedEngine("party"); }
+  function resolveSystem() { return callAlias("gameSystem") || window.$gameSystem || capturedEngine("system"); }
+  function resolveVariables() { return callAlias("gameVariables") || window.$gameVariables || capturedEngine("variables"); }
+  function resolveSwitches() { return callAlias("gameSwitches") || window.$gameSwitches || capturedEngine("switches"); }
+  function resolveSelfSwitches() { return callAlias("gameSelfSwitches") || window.$gameSelfSwitches || capturedEngine("selfSwitches"); }
+  function resolveActors() { return callAlias("gameActors") || window.$gameActors || capturedEngine("actors"); }
   function resolveTroop() { return callAlias("gameTroop") || window.$gameTroop || null; }
   function resolveTemp() { return callAlias("gameTemp") || window.$gameTemp || null; }
-  function resolveMap() { return callAlias("gameMap") || window.$gameMap || null; }
-  function resolvePlayer() { return callAlias("gamePlayer") || window.$gamePlayer || null; }
-  function resolveScreen() { return callAlias("gameScreen") || window.$gameScreen || null; }
+  function resolveMap() { return callAlias("gameMap") || window.$gameMap || capturedEngine("map"); }
+  function resolvePlayer() { return callAlias("gamePlayer") || window.$gamePlayer || capturedEngine("player"); }
+  function resolveScreen() { return callAlias("gameScreen") || window.$gameScreen || capturedEngine("screen"); }
 
   function resolveFollowers() {
     const player = resolvePlayer();
@@ -101,7 +105,9 @@
   function resolveData(kind) {
     const names = DATA_TABLES[kind];
     if (!names) return null;
-    return callAlias(names[0]) || window[names[1]] || null;
+    // capturedDataTable (08-capture.js): closure-sealed shells keep the $data*
+    // tables inside their blob, so the boot-time JSON tap is the only source.
+    return callAlias(names[0]) || window[names[1]] || capturedDataTable(kind);
   }
 
   function runtimeDataTable(kind) {

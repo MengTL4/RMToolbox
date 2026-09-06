@@ -51,8 +51,17 @@
   // Commands used to repeat `const p = resolveParty(); if (!p) throw ...` a
   // couple of dozen times, with the message drifting between copies.
 
+  function sealedCaptureHint() {
+    // Closure-sealed shells: the live singletons only reach the bridge when a
+    // save/load flows through the JSON tap (08-capture.js). Until then a bare
+    // "is unavailable" reads like a bug; say what actually unblocks it.
+    return (envVar("RMCH_SEALED") === "1" && !window.__rmchCapture)
+      ? "（闭包壳游戏：先在游戏里读档或存档一次，修改器才能拿到实时数据）"
+      : "";
+  }
+
   function requireEngineObject(object, label, method) {
-    if (!object) throw new Error(`${label} is unavailable`);
+    if (!object) throw new Error(`${label} is unavailable${sealedCaptureHint()}`);
     if (method && typeof object[method] !== "function") {
       throw new Error(`${label}.${method} is unavailable`);
     }

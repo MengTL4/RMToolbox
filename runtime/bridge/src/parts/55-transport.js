@@ -28,6 +28,14 @@
   // The transport mode arrives via the env shim (05-node-io reads
   // window.__rmchEnv), so its value doubles as the CDP selector.
   const cdpTransport = transportMode === "cdp";
+  // "file": the NB evalNWBin shell family (万族穿越-源启崛起) kills the whole
+  // app the moment the page constructs ANY WebSocket — measured: the native
+  // constructor hangs the renderer and a watchdog exits the process tree
+  // seconds later. The JSONL channel below (commands.jsonl in, events.jsonl
+  // out, state.json once a second) carries everything instead; no socket is
+  // ever created. Injection still works because the bridge is eval'd by the
+  // attach DLL, not loaded as an extension.
+  const fileTransport = transportMode === "file";
 
   function wsUrl() {
     return `ws://127.0.0.1:${wsPort}/bridge/${encodeURIComponent(gameKey)}?token=${encodeURIComponent(wsToken)}`;
@@ -125,6 +133,23 @@
   // --- WebSocket --------------------------------------------------------------
 
   function connectWs() {
+    if (fileTransport) {
+      // No socket at all (see the transportMode note above): hello goes to
+      // events.jsonl, commands arrive via pollCommands(), state via state.json.
+      wsConnected = true;
+      if (eventPath) {
+        append(eventPath, {
+          t: "hello",
+          ts: Date.now(),
+          bridgeVersion: bridge.version,
+          engine: engineInfo(),
+          gameKey,
+          profile: bridge.profile || null
+        });
+      }
+      writeState();
+      return;
+    }
     if (cdpTransport) {
       // No socket at all: outbound piles into window.__rmchOutbox (drained by
       // the launcher's polling), inbound arrives via window.__rmchDispatch

@@ -89,8 +89,22 @@ async function main() {
       const { launchGame } = await import("../core/launcher.mjs");
       const { positional, options } = parseArgs(rest);
       if (!positional[0]) usage(1);
+      const gameRootArg = path.resolve(positional[0]);
+      // NB evalNWBin shells die on any launch flag; their "launch" is plain
+      // spawn + DLL attach, which lives in the attach module.
+      const { scanGame } = await import("../core/scanner.mjs");
+      if (scanGame(gameRootArg).container === "nb-evalnwbin") {
+        const { launchNwInjectGame } = await import("../core/attach.mjs");
+        const summary = await launchNwInjectGame({
+          scan: scanGame(gameRootArg), projectRoot, port: Number(options.port) || 47412
+        });
+        const printable = { ...summary };
+        delete printable.session;
+        console.log(JSON.stringify(printable, null, 2));
+        break;
+      }
       const summary = await launchGame({
-        gameRoot: path.resolve(positional[0]),
+        gameRoot: gameRootArg,
         projectRoot,
         port: Number(options.port) || 47412,
         strategy: options.strategy || "auto"

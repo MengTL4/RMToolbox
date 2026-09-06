@@ -108,6 +108,32 @@ function detectNbShell(root) {
   }
 }
 
+// NB-shell evalNWBin variant (万族穿越-源启崛起 family): same nb_data/ layout
+// as the Themida variant above, but the engine is a V8 bytecode blob (hashed,
+// extensionless) loaded via nw.Window.get().evalNWBin() from an OBFUSCATED
+// index.html — the string "evalNWBin"/"bootEncryptedBin" never appears in
+// plaintext, so detection keys on the layout instead: a hashed-name native
+// addon (md5-style .node, NOT nbtool.node) plus a hashed extensionless blob.
+// Measured on v1.2.2 (see ACCEPTANCE v0.6.7): no Themida, no boot-file hash
+// check, no LoadLibrary reaction — but ANY extra launch flag dies at boot and
+// ANY in-page WebSocket construct hangs the renderer, so the toolbox uses
+// plain spawn + DLL attach + the bridge's JSONL file channel for this variant.
+function detectNbEvalNwBin(root) {
+  const nbDir = path.join(root, "nb_data");
+  if (!existsSync(path.join(nbDir, "nbtool.node"))) {
+    let entries;
+    try {
+      entries = readdirSync(nbDir);
+    } catch (_) {
+      return false;
+    }
+    const hashedNode = entries.some((name) => /^[0-9a-f]{32}\.node$/i.test(name));
+    const hashedBlob = entries.some((name) => /^[0-9a-f]{32}$/i.test(name));
+    if (hashedNode && hashedBlob) return true;
+  }
+  return false;
+}
+
 // The exe behind an NW.js game is not always Game.exe: sealed launchers name it
 // after the manifest (停不下来的轮回.exe), and some titles ship exactly one
 // other exe. Junk filter keeps installers/uninstallers out of the fallback.
@@ -314,6 +340,7 @@ export function scanGame(root) {
   const engine = detectEngineFromJs(jsFiles);
   const sealed = !engine && detectSealedLauncher(resolvedRoot);
   const nbShell = !engine && !sealed && detectNbShell(resolvedRoot);
+  const nbEvalNwBin = !engine && !sealed && !nbShell && detectNbEvalNwBin(resolvedRoot);
   if (engine) {
     result.engine = engine;
   } else if (sealed) {
@@ -324,6 +351,12 @@ export function scanGame(root) {
     result.engine = { id: "MZ", bytecode: false, confidence: "low" };
     result.container = "nb-shell";
     addFlag("nb-shell-protected");
+  } else if (nbEvalNwBin) {
+    // MV or MZ is undecidable from the outside (data/ is all ciphertext); the
+    // bridge reports Utils.RPGMAKER_NAME in its hello once the game boots.
+    result.engine = { id: "MV/MZ", bytecode: false, confidence: "low" };
+    result.container = "nb-evalnwbin";
+    addFlag("nb-evalnwbin-shell");
   } else if (manifest || existsSync(path.join(resolvedRoot, "Game.exe"))) {
     result.engine = { id: "unknown-nwjs", bytecode: false, confidence: "low" };
   }
@@ -384,6 +417,8 @@ function computeProtectionLevel(flags) {
   for (const flag of flags) {
     if (flag === "nb-shell-protected") {
       level = Math.max(level, 4);
+    } else if (flag === "nb-evalnwbin-shell") {
+      level = Math.max(level, 3);
     } else if (flag === "node-main-guard" || flag === "bg-script-startup") {
       level = Math.max(level, 3);
     } else if (flag === "bytecode-js" || flag === "index-obfuscated") {
@@ -469,6 +504,9 @@ export function injectionStrategy(scan) {
   }
   if (scan.container === "nb-shell") {
     return { id: "unsupported-nb-shell", reason: "NB shell (nbtool.node/Themida) hash-verifies its boot files, refuses every launch flag and kills injected code — no toolbox injection vector survives; measured on 重装机兵-宿敌 v3.5.3, see ACCEPTANCE v0.6.3" };
+  }
+  if (scan.container === "nb-evalnwbin") {
+    return { id: "inject-file-transport", reason: "NB evalNWBin shell: refuses every launch flag and any in-page WebSocket kills the app, but tolerates DLL attach — plain spawn + rmch-mvhook inject + JSONL file channel (万族穿越-源启崛起 v1.2.2, see ACCEPTANCE v0.6.7)" };
   }
   if (scan.manifest && scan.manifest.nodeMain) return { id: "extension", reason: "node-main guard tolerates --load-extension; verify game does not self-close" };
   if (scan.manifest && scan.manifest.bgScript) return { id: "extension-then-shadow", reason: "bg-script startup chain may detect extensions; fall back to shadow-dir bg-script patch" };

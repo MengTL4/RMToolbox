@@ -129,5 +129,20 @@
       dataManager.setupNewGame();
       sceneManager.goto(sceneMap);
       return { started: true };
+    },
+
+    // Closure-sealed shells only: the launch flow's catalog dance (attach.mjs
+    // ensureSealedCatalog) asks the bridge to reload the page so the boot-time
+    // database load flows through the JSON tap with the bridge guaranteed
+    // present. The attach layer re-injects into the new context — without it
+    // this command would simply kill the bridge, so it is never exposed to the
+    // GUI directly.
+    "system.rebootCapture": () => {
+      log("reboot capture requested");
+      try { flushDataTables(); } catch (_) {}
+      setTimeout(() => {
+        try { location.reload(); } catch (error) { noteError(error); }
+      }, 50);
+      return { reloading: true };
     }
   });

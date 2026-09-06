@@ -150,7 +150,9 @@ function listSessions() {
     state: session.state
   }));
   // RGSS (file channel) and Tauri (CDP tunnel) sessions live outside the
-  // WebSocket server but must look identical to the page.
+  // WebSocket server but must look identical to the page. The nb-evalnwbin
+  // file channel needs no such concat: the server adopts it as a FileSession
+  // itself (stateDir scan), so it already appears in described.
   const { launcher } = state.modules || {};
   let all = described;
   if (launcher && launcher.listRgssSessions) all = all.concat(launcher.listRgssSessions());
@@ -224,6 +226,21 @@ function wireExternalSession(session, gameKey, channel) {
 }
 
 async function launch(gameRoot) {
+  // NB evalNWBin shells refuse every launch flag, so the extension launch is
+  // fatal to them; "launch" for these games is plain spawn + DLL attach (the
+  // inject machinery lives in the attach module).
+  const probe = state.modules.scanner.scanGame(gameRoot);
+  if (probe.container === "nb-evalnwbin") {
+    const summary = await state.modules.attach.launchNwInjectGame({
+      scan: probe,
+      projectRoot: state.projectRoot,
+      port: 47412
+    });
+    guiLog("game launched", { gameKey: summary.gameKey, strategy: summary.strategy, pid: summary.pid });
+    // No session to wire: the bridge server adopts the file channel itself
+    // (FileSession) and announces it through "session-open".
+    return summary;
+  }
   const summary = await state.modules.launcher.launchGame({
     gameRoot,
     projectRoot: state.projectRoot,
@@ -255,17 +272,12 @@ async function attach(gameRoot) {
     pid: summary.pid || null,
     injected: summary.injected || null
   });
-  const rgssSession = summary.session;
-  if (rgssSession) {
-    guiLog("bridge connected", { gameKey: summary.gameKey, channel: "file" });
-    rgssSession.on("state", (gameState) => {
-      if (state.onState) state.onState(summary.gameKey, gameState);
-    });
-    rgssSession.on("close", () => {
-      guiLog("bridge disconnected", { gameKey: summary.gameKey });
-      notifySessions();
-    });
-    notifySessions();
+  const fileSession = summary.session;
+  if (fileSession) {
+    // Only RGSS attach still returns an out-of-band session (nb-evalnwbin
+    // file channels are adopted by the bridge server itself and arrive via
+    // the normal "session-open" event). wireExternalSession dedupes.
+    wireExternalSession(fileSession, summary.gameKey, "file");
   }
   return summary;
 }
@@ -284,7 +296,8 @@ function stop(pid) {
 
 function send(gameKey, type, args) {
   // RGSS (file channel) and Tauri (CDP tunnel) sessions sit outside the
-  // WebSocket server; route by gameKey first.
+  // WebSocket server; route by gameKey first. nb-evalnwbin file channels are
+  // adopted BY the server (FileSession), so they fall through to sendCommand.
   const launcher = state.modules && state.modules.launcher;
   if (launcher && launcher.getRgssSession) {
     const rgss = launcher.getRgssSession(gameKey);
@@ -509,14 +522,21 @@ function iconFileImage(root, name) {
 }
 
 // The shared icon sheet items/weapons/armors/skills/states index into.
-// MV/MZ: www/img/system/IconSet.png (32px cells). RGSS2/3 (VX/Ace): the same
-// sheet concept at Graphics/System/IconSet.png (24px cells) — encrypted games
-// keep it inside the packed archive, so fall back to extracting the entry.
+// MV/MZ: www/img/system/IconSet.png (32px cells) — shells that flatten the
+// package (nb-evalnwbin) drop the www level, so img/system/... at the root is
+// checked too. RGSS2/3 (VX/Ace): the same sheet concept at
+// Graphics/System/IconSet.png (24px cells) — encrypted games keep it inside
+// the packed archive, so fall back to extracting the entry.
 // RGSS1 (XP) uses one file per icon (Graphics/Icons/<name>.png) and does not
 // expose icon_index through the bridge catalog, so no sheet applies there.
 function iconSetImage(root) {
-  const file = path.join(root, "www", "img", "system", "IconSet.png");
-  if (fs.existsSync(file)) return readImageDataUrl(file);
+  for (const rel of [
+    path.join("www", "img", "system", "IconSet.png"),
+    path.join("img", "system", "IconSet.png")
+  ]) {
+    const file = path.join(root, rel);
+    if (fs.existsSync(file)) return readImageDataUrl(file);
+  }
   const rgssFile = path.join(root, "Graphics", "System", "IconSet.png");
   if (fs.existsSync(rgssFile)) return readImageDataUrl(rgssFile);
   const { rgssArchive } = state.modules || {};

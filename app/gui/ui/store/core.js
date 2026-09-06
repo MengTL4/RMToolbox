@@ -127,6 +127,22 @@
       });
     },
 
+    // For user-initiated edits (数据页增删改): same lenient null contract as
+    // cmd, but the failure also pops a warning — a silent null there reads
+    // exactly like "点了没反应".
+    cmdWarn: function (type, args) {
+      var gameKey = store.trainer && store.trainer.gameKey;
+      if (!gameKey) {
+        store.warn("请先选择一个已连接的游戏");
+        return Promise.resolve(null);
+      }
+      return server.send(gameKey, type, args || {}).catch(function (error) {
+        log("[命令失败] " + gameKey + " " + type + ": " + error.message);
+        store.warn(type + " 失败：" + error.message);
+        return null;
+      });
+    },
+
     readBridgeLog: server.readBridgeLog
   };
 

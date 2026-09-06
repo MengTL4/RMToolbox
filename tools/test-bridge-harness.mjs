@@ -85,6 +85,11 @@ function makeMockGame(sandbox) {
     gainItem(item, amount) {
       this._items[item.id] = (this._items[item.id] || 0) + amount;
     },
+    // Closure-sealed games hide $dataItems but these still return the data
+    // objects themselves — the item.* fallback path leans on them.
+    items() { return [{ id: 1, name: "Potion", iconIndex: 176 }, { id: 2, name: "Ether", iconIndex: 200 }]; },
+    weapons() { return [{ id: 1, name: "Sword", iconIndex: 1 }]; },
+    armors() { return [{ id: 1, name: "Shield", iconIndex: 2 }]; },
     allMembers() { return actors; },
     members() { return actors; },
     battleMembers() { return actors.slice(0, 4); },
@@ -614,9 +619,257 @@ async function main() {
   assert.deepEqual(infoAgain, [], "missing-file path must now serve [] without drama");
   assert.equal(sandbox.DataManager._globalCalls, 3);
 
+  // 34. Closure-sealed shell (nb-evalnwbin): no engine globals on window at
+  // all. The save-contents capture (08-capture.js) must pick the live
+  // singletons out of the next save/load and every resolver falls back to it.
+  const savedGlobals = {};
+  for (const name of [
+    "$gameParty", "$gameSwitches", "$gameVariables", "$gameSelfSwitches",
+    "$gameActors", "$gameMap", "$gamePlayer", "$gameScreen", "$gameSystem",
+    "$gameTroop", "$gameTemp",
+    "$dataSystem", "$dataItems", "$dataWeapons", "$dataArmors", "$dataSkills",
+    "$dataActors", "$dataMapInfos", "$dataCommonEvents", "$dataEnemies",
+    "SceneManager"
+  ]) {
+    savedGlobals[name] = sandbox[name];
+    delete sandbox[name];
+  }
+  const sealedParty = await sendCommand("party.info");
+  assert.equal(sealedParty.payload.gold, null, "without a capture the party is gone");
+  const sealedGold = await sendCommand("gold.set", { value: 100 });
+  assert.equal(sealedGold.ok, false, "gold.set must fail while nothing resolves");
+  const sealedSwitches = await sendCommand("switch.list", {});
+  assert.equal(sealedSwitches.ok, false, "switch.list must fail while $dataSystem and the store are both gone");
+
+  // Simulate the game saving: saveContents holds the LIVE singletons and goes
+  // through the realm's JSON.stringify, which the tap patched at startup.
+  const sealedContents = {
+    system: savedGlobals.$gameSystem,
+    screen: savedGlobals.$gameScreen,
+    timer: {},
+    switches: mock.switches,
+    variables: mock.variables,
+    selfSwitches: savedGlobals.$gameSelfSwitches,
+    actors: savedGlobals.$gameActors,
+    party: mock.party,
+    map: savedGlobals.$gameMap,
+    player: savedGlobals.$gamePlayer
+  };
+  sandbox.__testContents = sealedContents;
+  vm.runInContext("JSON.stringify(window.__testContents)", context);
+  assert.ok(sandbox.__rmchCapture, "tap must capture saveContents on stringify");
+  assert.equal(sandbox.__rmchCapture.party, mock.party, "capture must hold the live party object");
+
+  const capturedGold = await sendCommand("gold.set", { value: 4321 });
+  assert.equal(capturedGold.ok, true, `gold.set via capture failed: ${JSON.stringify(capturedGold)}`);
+  assert.equal(mock.party._gold, 4321, "capture-backed party must be the live object");
+  const info34 = await sendCommand("party.info");
+  assert.equal(info34.payload.gold, 4321);
+  assert.equal(info34.payload.members.length, 2);
+
+  // Switches/variables: no $dataSystem → numbered, unnamed entries driven by
+  // the captured store's own size. Group 3 left switch 1 = true.
+  const swList34 = await sendCommand("switch.list", {});
+  assert.equal(swList34.ok, true, `switch.list via capture failed: ${JSON.stringify(swList34)}`);
+  assert.equal(swList34.payload.namesUnavailable, true);
+  const sw1 = swList34.payload.entries.find((e) => e.id === 1);
+  assert.equal(sw1 && sw1.value, true);
+  assert.equal(sw1 && sw1.name, "", "no names without $dataSystem");
+  assert.equal((await sendCommand("switch.set", { id: 2, value: true })).payload.value, true);
+  assert.equal(mock.switches.value(2), true, "capture-backed switches must be the live store");
+  assert.equal((await sendCommand("variable.set", { id: 3, value: 555 })).payload.value, 555);
+  assert.equal(mock.variables.value(3), 555);
+
+  // Items: $dataItems is gone, but the party's own items() returns the data
+  // objects — owned items keep their names and stay editable. Group 4 left
+  // item 1 at count 9.
+  const inv34 = await sendCommand("item.list");
+  const potion34 = inv34.payload.entries.find((e) => e.kind === "item" && e.id === 1);
+  assert.equal(potion34 && potion34.name, "Potion", "owned item name comes from party.items()");
+  assert.equal(potion34 && potion34.count, mock.party._items[1]);
+  assert.equal((await sendCommand("item.set", { kind: "item", id: 1, count: 30 })).payload.count, 30);
+  assert.equal(mock.party._items[1], 30);
+  const unowned = await sendCommand("item.set", { kind: "item", id: 99, count: 1 });
+  assert.equal(unowned.ok, false, "unowned item without a catalog must fail cleanly");
+
+  // Map/player resolve through the capture too.
+  const loc = await sendCommand("player.location");
+  assert.equal(loc.payload.x, savedGlobals.$gamePlayer._x);
+  assert.equal(loc.payload.y, savedGlobals.$gamePlayer._y);
+  const mapInfo = await sendCommand("map.info");
+  assert.equal(mapInfo.payload.mapId, 1);
+
+  // A load REPLACES the singletons; the tap must refresh the capture (latest
+  // save wins) rather than pin the pre-load objects.
+  const replacementParty = { _gold: 77, _items: {}, gold() { return this._gold; }, gainGold(v) { this._gold += v; }, gainItem() {}, allMembers() { return []; }, members() { return []; }, battleMembers() { return []; }, inBattle() { return false; } };
+  const contents2 = { ...sealedContents, party: replacementParty };
+  sandbox.__testContents2 = contents2;
+  vm.runInContext("JSON.stringify(window.__testContents2)", context);
+  assert.equal(sandbox.__rmchCapture.party, replacementParty, "capture must refresh on the next save");
+  assert.equal((await sendCommand("party.info")).payload.gold, 77);
+
+  // 35. Boot-time database capture. Sealed shells decrypt the $data* tables
+  // inside their blob and parse them through the tapped JSON.parse; shape
+  // classification fills __rmchDataTables, a debounced flush persists them to
+  // catalog-cache.json, and catalog/system-name queries fall back to them.
+  sandbox.__db = {
+    items: JSON.stringify([null,
+      { id: 1, name: "Elixir", iconIndex: 176, price: 50, itypeId: 1, consumable: true },
+      { id: 2, name: "凤凰尾巴", iconIndex: 177, price: 100, itypeId: 2, consumable: true }
+    ]),
+    system: JSON.stringify({
+      gameTitle: "sealed", currencyUnit: "G",
+      switches: ["", "主线开关", "机关B"], variables: ["", "计数器"],
+      terms: { basic: ["等级"] }
+    }),
+    maps: JSON.stringify([null,
+      { id: 1, name: "起始之村", parentId: 0, order: 1 },
+      { id: 2, name: "地下室", parentId: 1, order: 2 }
+    ])
+  };
+  vm.runInContext("JSON.parse(window.__db.items); JSON.parse(window.__db.system); JSON.parse(window.__db.maps);", context);
+  assert.ok(sandbox.__rmchDataTables, "db parse must fill __rmchDataTables");
+  assert.equal(sandbox.__rmchDataTables.item[2].name, "凤凰尾巴");
+  assert.equal(sandbox.__rmchDataTables.system.switches[1], "主线开关");
+  assert.equal(sandbox.__rmchDataTables.mapInfo[2].name, "地下室");
+
+  // Non-db shapes must not be classified: no null hole at [0], and mixed
+  // element shapes are rejected even with the hole.
+  vm.runInContext("JSON.parse('[{\"wtypeId\":1,\"params\":[]},{\"wtypeId\":2,\"params\":[]}]')", context);
+  assert.ok(!sandbox.__rmchDataTables.weapon, "0-based array must not classify");
+  vm.runInContext("JSON.parse('[null,{\"wtypeId\":1,\"params\":[]},{\"itypeId\":1,\"price\":3}]')", context);
+  assert.ok(!sandbox.__rmchDataTables.weapon, "mixed-shape array must not classify");
+
+  // Catalog/system-name/map queries fall back to the captured tables (the
+  // window globals were deleted in group 34).
+  const cat35 = await sendCommand("catalog.query", { kind: "item", limit: 20000 });
+  assert.equal(cat35.payload.total, 2, `captured item catalog failed: ${JSON.stringify(cat35)}`);
+  const sw35 = await sendCommand("switch.list", {});
+  assert.equal(sw35.payload.namesUnavailable, false, "captured $dataSystem must restore names");
+  assert.equal(sw35.payload.entries.find((e) => e.id === 1).name, "主线开关");
+  const map35 = await sendCommand("map.list", {});
+  assert.equal(map35.payload.total, 2, `captured mapInfo catalog failed: ${JSON.stringify(map35)}`);
+
+  // The debounced flush persists the tables next to the state channel.
+  await sleep(1500);
+  const cachePath35 = path.join(bridgeDir, "catalog-cache.json");
+  assert.ok(existsSync(cachePath35), "catalog-cache.json must be written");
+  const cache35 = JSON.parse(readFileSync(cachePath35, "utf8"));
+  assert.equal(cache35.tables.item[1].name, "Elixir");
+  assert.equal(cache35.tables.system.variables[1], "计数器");
+
+  // Flush merges over the existing cache (this boot's captures win) — a
+  // mid-boot reload round must never shrink an earlier round's tables.
+  writeFileSync(cachePath35, JSON.stringify({
+    version: 1, capturedAt: "2026-01-01T00:00:00.000Z",
+    tables: { weapon: [null, { id: 1, name: "OldBlade", wtypeId: 1, params: [0, 0, 0, 0, 0, 0, 0, 0] }] }
+  }));
+  vm.runInContext("JSON.parse('[null,{\"id\":1,\"name\":\"重甲\",\"atypeId\":1,\"etypeId\":2,\"price\":30}]')", context);
+  await sleep(1500);
+  const cache35b = JSON.parse(readFileSync(cachePath35, "utf8"));
+  assert.equal(cache35b.tables.weapon[1].name, "OldBlade", "flush must keep disk-only kinds");
+  assert.equal(cache35b.tables.armor[1].name, "重甲", "flush must add newly captured kinds");
+  assert.equal(cache35b.tables.item[1].name, "Elixir", "flush must keep in-memory kinds");
+
+  // A fresh bridge (no in-memory tables) lazy-loads the cache from disk on
+  // the first catalog miss. The delete must run INSIDE the vm: properties the
+  // bridge assigned live on the context global, invisible to an outside delete.
+  vm.runInContext("delete window.__rmchDataTables; delete window.__rmchDataTablesLoaded;", context);
+  const cat35b = await sendCommand("catalog.query", { kind: "item", limit: 20000 });
+  assert.equal(cat35b.payload.total, 2, "catalog must come back from the disk cache");
+  assert.ok(sandbox.__rmchDataTables, "lazy load must repopulate __rmchDataTables");
+
+  // Live-preference: a DEAD JsonEx-encoded save copy (stringify side) must not
+  // evict the live capture; a load-side parse always replaces.
+  sandbox.__deadSave = JSON.parse(JSON.stringify({
+    system: {}, screen: {}, timer: {}, switches: {}, variables: {},
+    selfSwitches: {}, actors: {}, party: { _gold: 999 }, map: {}, player: {}
+  }));
+  vm.runInContext("JSON.stringify(window.__deadSave)", context);
+  assert.equal(sandbox.__rmchCapture.party, replacementParty,
+    "encoded save copy must not evict the live capture");
+  vm.runInContext("JSON.parse(JSON.stringify(window.__deadSave))", context);
+  assert.equal(sandbox.__rmchCapture.party._gold, 999,
+    "load-side parse always replaces the capture");
+
+  // 36. bootTap replay: the launch/dance bootstrap's holding tap piles
+  // boot-time db parses into window.__rmchBootParsed before the canvas gate
+  // lets the full bridge eval. A fresh bridge on that context must replay the
+  // pile through the real classifier and flush it to catalog-cache.json.
+  const tempGameRoot2 = mkdtempSync(path.join(tmpdir(), "rmch-game2-"));
+  const tempProjectRoot2 = mkdtempSync(path.join(tmpdir(), "rmch-project2-"));
+  const bridgeDir2 = path.join(tempProjectRoot2, "runtime", "bridge-state", "mock-game-2");
+  const sandbox2 = {};
+  sandbox2.window = sandbox2;
+  sandbox2.location = { href: "file:///game/www/index.html" };
+  sandbox2.console = console;
+  sandbox2.setTimeout = setTimeout;
+  sandbox2.setInterval = setInterval;
+  sandbox2.clearInterval = clearInterval;
+  sandbox2.clearTimeout = clearTimeout;
+  sandbox2.addEventListener = () => {};
+  sandbox2.require = require;
+  sandbox2.process = {
+    ...process,
+    env: {
+      ...process.env,
+      RMCH_GAME_ROOT: tempGameRoot2,
+      RMCH_PROJECT_ROOT: tempProjectRoot2,
+      RMCH_GAME_KEY: "mock-game-2",
+      RMCH_WS_PORT: "59998",
+      RMCH_WS_TOKEN: "unused"
+    },
+    cwd: () => tempGameRoot2
+  };
+  sandbox2.WebSocket = class {
+    constructor() { setTimeout(() => { if (this.onclose) this.onclose(); }, 0); }
+    send() { return true; }
+  };
+  sandbox2.XMLHttpRequest = undefined;
+  sandbox2.document = {
+    createElement: () => ({ set textContent(v) {}, get textContent() { return ""; } }),
+    documentElement: null,
+    visibilityState: "visible"
+  };
+  sandbox2.nw = { Window: { get: () => ({ show() {} }) } };
+  sandbox2.eval = eval;
+  // The pile as the holding tap would have left it: two db tables, one
+  // save-shaped object, and one hole-array that is NOT a db table.
+  sandbox2.__rmchBootParsed = [
+    [null,
+      { id: 1, name: "回城卷轴", iconIndex: 176, price: 50, itypeId: 1, consumable: false },
+      { id: 2, name: "龙血丹", iconIndex: 177, price: 300, itypeId: 2, consumable: true }
+    ],
+    {
+      gameTitle: "sealed2", currencyUnit: "灵石",
+      switches: ["", "剧情开关"], variables: ["", "境界"],
+      terms: { basic: ["境界"] }
+    },
+    { system: {}, party: { _gold: 5 }, map: {}, player: {} },
+    [null, { foo: 1 }, { bar: 2 }]
+  ];
+  const context2 = vm.createContext(sandbox2);
+  vm.runInContext(bridgeSource, context2, { filename: "page-bridge.js" });
+  assert.ok(sandbox2.__rmchBridge, "sandbox2 bridge must attach");
+  assert.equal(sandbox2.__rmchBootParsed, null, "replay must release the pile");
+  assert.ok(sandbox2.__rmchDataTables, "replay must fill __rmchDataTables");
+  assert.equal(sandbox2.__rmchDataTables.item[2].name, "龙血丹");
+  assert.equal(sandbox2.__rmchDataTables.system.switches[1], "剧情开关");
+  assert.equal(Object.keys(sandbox2.__rmchDataTables).length, 2, "junk hole-array must not classify");
+  assert.equal(sandbox2.__rmchCapture && sandbox2.__rmchCapture.party._gold, 5,
+    "save-shaped pile entry must feed the capture");
+  await sleep(1500);
+  const cachePath36 = path.join(bridgeDir2, "catalog-cache.json");
+  assert.ok(existsSync(cachePath36), "replayed tables must flush to catalog-cache.json");
+  const cache36 = JSON.parse(readFileSync(cachePath36, "utf8"));
+  assert.equal(cache36.tables.item[1].name, "回城卷轴");
+  assert.equal(cache36.tables.system.variables[1], "境界");
+  rmSync(tempGameRoot2, { recursive: true, force: true });
+  rmSync(tempProjectRoot2, { recursive: true, force: true });
+
   rmSync(tempGameRoot, { recursive: true, force: true });
   rmSync(tempProjectRoot, { recursive: true, force: true });
-  console.log("bridge harness test: PASS (33 groups)");
+  console.log("bridge harness test: PASS (36 groups)");
   process.exit(0);
 }
 

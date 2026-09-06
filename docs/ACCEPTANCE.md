@@ -1,5 +1,289 @@
 # RMCH 验收记录
 
+## v0.7.2：RUNASADMIN 兼容标志根治「拉起后一直转圈」（2026-09-06）
+
+用户在旧游戏包损坏后重新解压，随后「启动并注入」能拉起游戏但**一直转圈**
+（注入看似不成功），附加则时好时坏。50ms 级进程生灭监视（
+runtime/_scratch/_watch-game.ps1）+ CIM 取证定位：
+
+- **根因**：游戏 exe 被设置了 Windows 兼容标志「以管理员身份运行」
+  （HKCU\AppCompatFlags\Layers 对该路径的 `~ RUNASADMIN` 值，推断是用户
+  排查期间设置的；按路径生效，重解压同目录后依然命中）。游戏因此**提权
+  运行**，非提权的工具箱读不到它的 ExecutablePath/CommandLine（CIM 返回
+  空），`processesUnderRoot` 把它过滤掉 → 轮询永远看不到进程 → 转圈；
+  提权进程也无法被注入/被 taskkill（Access denied 实测）。
+- 该标志同时解释了旧包后期「任何方式拉起都 ~700ms 内消失」：UAC 提权
+  弹窗无人点确认，预提权进程一闪而过；00:18 UTC 的成功拉起发生在标志
+  设置之前。
+- 清除该注册表值后 CLI 端到端回归：1.4s 进程出现、2.6s renderer、30s
+  沉淀、注入一次命中、hello 同秒到达，全程 34.7s。
+
+### 产品行为（本次改动）
+
+- `core/attach.mjs` 新增 `clearRunAsAdminFlag`：launch 前与 attach 前自动
+  清除游戏 exe 的 RUNASADMIN 用户级兼容标志（HKCU 无需管理员），并落
+  [launch] 日志。
+- 新增提权实例识别：按 exe 名能枚举到进程、但全部读不出路径时，launch/
+  attach 不再空转超时，直接报错「检测到游戏以管理员身份运行……已自动清除
+  该设置，请关闭游戏后重试」。
+- `runPowerShellJson` 加 15s 超时（powershell/WMI 卡死不再冻结整个拉起
+  轮询）；拉起轮询新增「瞬时进程目击」日志，能区分「没拉起来」与「起来
+  后秒退」。
+- 版本 0.7.2，npm test 全绿，zip 重打。
+
+### 用户须知
+
+- 不要给游戏 exe 勾「以管理员身份运行」；若游戏已在提权状态运行，工具箱
+  杀不掉它，需手动关闭后重试。
+
+
+## v0.7.1：拉起链路加固——cmd start 主用 + 杀软拦截实证（2026-09-06）
+
+v0.7.0 的延迟附加在本机命令行验证通过后，用户 GUI 侧仍报「60s 无进程」。
+逐层排查（全程 [launch] 日志 + Start-Process -PassThru 直接观察进程生死）：
+
+- 游戏 exe 被**任何脚本方式**拉起后 ~1-2s 内自行退出（exit 0），双击正常；
+  游戏目录、用户配置文件（%LOCALAPPDATA%\\1）、黑名单祖先链、残留实例逐一
+  排除；最终定位到**火绒 HIPS**（关界面不停防护，HipsDaemon 服务常驻）对
+  「程序脚本拉起游戏」的行为拦截；用户处置后脚本拉起立即恢复。
+- 教训：_diag-procs.ps1 的进程计数会把 GUI 自己的 RMToolbox.exe×7 算进去，
+  一度造成「拉起成功」的误报——验证脚本拉起必须按 exe 名精确过滤。
+
+### 产品行为（本次改动）
+
+- **拉起双机制**：`cmdStartSpawn`（`cmd /c start "" /d <dir> <exe>`，cmd 交接
+  后立刻退出，游戏父进程为死 cmd，黑名单巡查遇死祖先即停；无 COM、无
+  base64，杀软特征面最小）主用，25s 无进程则回退原双跳 powershell
+  ShellExecute 链（再 35s），两个 spawn 的 error 事件也落日志。两者都失败时
+  报错明确提示「可能被杀软拦截，请手动双击启动后用附加到运行中」。
+- 真机实测（用户处置火绒后）：cmd start 拉起 1.4s 出现进程、2.6s renderer、
+  30s 沉淀、注入一次命中、hello 同秒到达，全程 34.6s。
+- 版本 0.7.1，npm test 全绿，zip 重打。
+
+
+## v0.7.0：启动并注入改延迟附加——一次就成（2026-09-06）
+
+v0.6.9 的 bootTap 早期注入在本机上被定性为**卡封面的根因**：判别实验
+（tools/_probe-bootstall.mjs noop 变体）证明与载荷无关——renderer 初生
+~1.4s 注入一个什么都不做的空 eval，游戏照样 80s+ 卡死在封面；即壳在引导
+解密期对远程线程/模块加载做完整性自检，被发现就静默挂起，而进游戏后的
+注入完全安全。用户侧同时观察到：首次「启动并注入」偶发 20s 内进程不出现
+（冷机两跳 ShellExecute + 杀软首扫超时太短），手动跑过一次后第二次才成。
+
+### 产品行为（本次改动）
+
+- **launchNwInjectGame 重写为延迟附加**：干净拉起 → 轮询进程出现（超时
+  20s→60s）→ renderer 出现（60s→90s）→ **固定再等 30s**（
+  `LAUNCH_ATTACH_DELAY_MS`，约 10 倍于实测解密窗口，跳过壳的自检期）→
+  存活复查 → 普通 file 通道附加（**不再 bootTap**——此刻 db 解析早已结束，
+  预换 JSON.parse 恰是壳自检会盯的残留）。目录缓存已建的游戏（本游戏）
+  ensureSealedCatalog 直接短路。真机实测（生产路径 rmch.mjs launch）：
+  spawn→进程 2.6s→renderer 3.8s→30s 沉淀→注入一次命中→hello 同秒到达，
+  全程 35.6s，游戏存活、bridge 正常。**一次点击即成，无需先手动开关一次。**
+- **启动链全程日志落 bridge.log**（attach.mjs launchLog，GUI 日志页可读）：
+  spawn、进程/renderer 出现时刻、沉淀等待、每次注入尝试结果、hello 到达、
+  失败原因。桥端新增：JSON tap 计数器、首次捕获日志
+  （`save contents captured {side,live}`）、每类数据表捕获日志、密封壳启动
+  前 3 分钟每 5s 一行的 `boot watch`（parses/stringifies/是否捕获/表数/钩子数），
+  以及 debug-json.flag 形状探针（排障用，落旗标文件后记录 JSON.parse 顶层
+  键签名）。
+- **数据页失败不再静默**：GUI 新增 `store.cmdWarn`——修改类命令失败弹 toast
+  并写日志（原先宽松吞错，"点了没反应"）。物品/开关/变量/独立开关/角色技能
+  状态/入离队/改名等全部修改入口已切换。桥端 `requireEngineObject`/
+  `requireActor` 在密封壳且无捕获时报错追加中文提示：「先在游戏里读档或
+  存档一次，修改器才能拿到实时数据」。
+- **列表图标修复**：host.cjs `iconSetImage` 增加无 www 布局查找
+  （`img/system/IconSet.png`）——本壳把包压平了，没有 www 层；实测返回
+  512×13952（6976 图标位）明文表，物品/装备/武器/技能/状态图标全部恢复。
+- 版本 0.7.0；harness 36 组、test-attach 22 项、npm test 全绿，gui-bundle
+  重建。真机验证：目录 catalog.query 物品 900 条真名、item.set/
+  actor.skill.learn 按预期给出存档提示、附加后连续运行 3.5 分钟无自动退出。
+
+### 已知限制
+
+- 延迟附加赶不上启动期 db 解析，**未建过缓存的新壳游戏**目录仍依赖
+  ensureSealedCatalog 捕库舞（保留原实现，仅无缓存时触发）；本游戏缓存已在，
+  不受影响。
+- 新开局未存/读档前 $game* 仍不可得，但报错会明说原因（同 v0.6.8 语义，提示
+  语改进）。
+
+## v0.6.9：闭包壳数据库目录捕获——数据页全量激活（2026-09-06）
+
+承接 v0.6.8：存档捕获让「持有物/开关值」活过来，但数据页各 tab 仍 0/0——
+catalog（物品/装备/武器/角色/地图/公共事件目录与开关/变量名）依赖 $data*
+表，它们在闭包里、存档里也没有。实测补充定性：
+
+- 游戏目录 `data/` 只剩 `.bak`；真实库在 `nb_data/<md5>.json`（壳加密），
+  离线破解不经济。但壳解密后必须经 `JSON.parse` 变成 JS 对象——与页面同
+  realm 共享原生对象，启动期拦下即可。
+- v0.6.8 捕获落地后的真机证据：switch.list 有真值（无名）、item.list 三个
+  持有物带真名（party.items() 兜底）、catalog.query/map.list 仍空。真机还
+  证明捕获到手的是**活单例**：MV `JsonEx._decode` 对 parse 结果原地
+  setPrototypeOf 复活，parse 捕获物随后就是单例本体。
+
+### 产品行为（本次改动）
+
+- **db 启动期捕获**（08-capture.js）：同一个 JSON.parse tap 按形状识别
+  物品/武器/护甲/技能/状态/角色/敌人/队伍/地图信息/公共事件/系统共 11 类
+  表（1-based + [0] 空洞 + 抽样 3 条签名一致性判定，插件数组不会误判），存入
+  `window.__rmchDataTables` 并 1s 防抖落盘 `bridge-state/<gameKey>/catalog-cache.json`；
+  10-engine.js `resolveData` 加第三级兜底（别名 → window → 捕获表，缺表时懒加载
+  磁盘缓存）。开关/变量名、地图列表、全目录随之恢复，**未持有物品也可凭空
+  添加**（v0.6.8 的「预期降级」解除）。
+- **活优先捕获**：stringify 侧只收活对象（或一无所获时的死快照兜底），
+  JsonEx 存档的编码死副本不再驱逐活捕获；parse 侧（读档）永远替换——读档换
+  单例的语义不变。
+- **启动并注入顺带建好目录缓存**：launchNwInjectGame 的等待砍到贴地（renderer
+  轮询 400ms、grace 200ms），启动注入改用 **bootTap bootstrap**（无 canvas 门
+  的暂存 tap）：DLL 在游戏上下文第一个 V8 调用上就装好 JSON.parse 暂存
+  （`window.__rmchBootParsed` 堆，≤80 条），再轮询 canvas 起全桥，桥启动时
+  `replayBootCaptured` 把暂存堆回放进真分类器。实测该壳的 db 在脚本执行
+  ~40ms 内开始解析（canvas 之前），canvas 门注入永远输这个竞速。attach 成功后
+  等 10s 缓存落盘，没等到就走 `ensureSealedCatalog` 捕库舞：先**预置**一个
+  「见活桥就 throw」的 DLL（throw 对 DLL 是非终态——解除占用、400ms 后重试，
+  于是它在旧上下文里保持武装，reload 后新上下文第一个 V8 调用必被截获；普通
+  return 是终态，DLL 会当场解除挂钩骑不过 reload），800ms 后再命令桥
+  `system.rebootCapture` 刷新页面（仅此流程使用——reload 丢未存档进度，从不
+  对用户自己启动的会话用），新上下文 t≈0 装上暂存 tap，db 解析全落堆，新桥
+  回放落盘。落盘按「活捕获覆盖、磁盘补齐」合并，多轮捕库只增不减。缓存建好
+  后永久生效，「附件到运行中」同样受益；游戏更新后删 catalog-cache.json 即可
+  重建。
+- harness 第 35/36 组：形状分类正/反例、目录回退、落盘、落盘合并、懒加载、
+  活优先、bootTap 暂存堆回放（独立 sandbox）。test-attach 加 bootTap/舞变体
+  断言。版本 0.6.9，gui-bundle 重建，npm test 全绿（harness 36 组，
+  test-attach 22 项）。
+- **真机 E2E（tools/_e2e-wzcy.mjs）全 PASS**：启动并注入 21s 返回，缓存 11 类
+  （物品 901/武器 501/护甲 501/角色 20/敌人 301/队伍 301/状态 751/技能/公共事件
+  301/地图信息 192/系统），catalog.query 各 tab 全有真名（物品示例：手机按键、
+  装备熔炼炉、s级奖励令牌），switch.list 恢复 $dataSystem（本游戏 System.json
+  原生 1101 个开关全无名——语义在变量名上，variable.list 有真名如「通用随机数」），
+  map.list 191 张，游戏存活 90s+（祖先链规则不回归）。
+
+### 已知限制
+
+- 附加到「已在跑且从未建过缓存」的游戏不会自动 reload（不丢用户进度），目录
+  仍空；用一次「启动并注入」即可建好。
+- 新开局未存/读档前 $game* 仍不可得（同 v0.6.8）。
+
+## v0.6.8：NB 壳祖先链黑名单定性 + 双连接修复 + 启动/数据页修复（2026-09-06）
+
+用户第二轮反馈四个问题：启动并注入报错、附件后数据空、连接列表出现两条、
+游戏一段时间后自动退出。逐一定性如下。
+
+### 实测定性：祖先链黑名单（修正先前的“时限到期”误判）
+
+> 先前版本此节曾结论为「壳内置时限到期、谁都打不开游戏」——**该结论错误**，
+> 用户实测双击仍正常启动。03:03–03:35 出现的「任何方式启动都死」是一个约
+> 30 分钟自行解除的锁定期（疑似壳的防篡改冷却，触发条件未确认），不是永久到期。
+
+锁定期后重新实测（V1.2.2_B / V3.7.3 / 宿敌同族互证），真正的规则是
+**祖先链黑名单**：壳在游戏 boot 早期遍历活祖先链，发现黑名单进程名
+（RMToolbox.exe / node.exe / cmd.exe / WmiPrvSE / svchost）就在 ~2s 时强退
+游戏；**死祖先使遍历停止、即放行**（双击的 explorer←已死 userinit 即此形态）。
+windowsHide 与否无关。死法实测矩阵：node 直接 spawn 死、cmd 常驻父死、
+WMI 死、计划任务死、瞬退 explorer.exe 中转死、一跳 ShellExecute（powershell
+中转但检查时仍存活、其上挂着 node）也死。
+
+「自动退出」症状与 03:03 那次注入后死亡事件相符；锁定期结束后未再复现
+（03:37 注入的实例随后存活数小时）。
+
+### 产品行为（本次改动）
+
+- **双连接修复**：删除 `core/nw-file-session.mjs`（NwFileSession 是与
+  ws-server FileSession 重复发明的轮子，两者同时认领同一文件通道导致连接
+  列表出两条）。attachNwFile 改为 `ensureServer` + 直接读文件通道等 hello
+  （fileBridgeHello/waitForFileBridgeHello），会话由桥服务器的 1.5s 扫描
+  认领为唯一 FileSession；host.cjs/launcher/gui-bundler 的 nwfile 路由全部
+  移除。新测试 tools/test-file-session.mjs（认领唯一性/命令往返/陈腐掉线）。
+- **启动并注入修复**：launchNwInjectGame 改为**两跳 ShellExecute**
+  （core/attach.mjs `shellExecuteSpawn`）：powershell#1 立即 ShellExecute
+  powershell#2 后退出；#2 等 #1 死亡再 ShellExecute 游戏并驻留 30s。游戏
+  祖先链 = 游戏 ← 活 powershell#2 ← 死 #1，遍历停在死祖先、无黑名单名 →
+  放行。实测在黑名单 node.exe 祖先下游戏存活 30s+ 且 hop 退出后仍活。
+  另记录一个实测陷阱：powershell 同时给 `windowsHide:true` 和
+  `-WindowStyle Hidden` 会静默不执行，只能给前者。
+- **数据页修复（闭包壳捕获机制）**：nb-evalnwbin 把整个引擎关在 eval blob
+  闭包里，window 上没有任何引擎全局。新增 bridge part `08-capture.js`：补丁
+  JSON.parse/stringify，游戏存档/读档经过时把 saveContents（活单例引用）
+  捕获到 window.__rmchCapture（最新覆盖，读档后自动刷新为新单例）；
+  10-engine.js 全部 resolver 加捕获兜底；开关/变量在 $dataSystem 不可得时
+  按编号列无名条目；物品名/改数经 party.items() 等持有物数据对象兜底。
+  harness 新增第 34 组模拟闭包壳全链路验证。**用户侧只需在游戏里存/读档
+  一次，数据页即激活**；开关/变量名为编号显示（$dataSystem 闭包内不可得，
+  预期降级）。
+- 版本 0.6.8，gui-bundle 重建，npm test 全绿（harness 34 组）。
+
+### 遗留
+
+- V1.2.2_B 真机「启动并注入」全链路待用户关闭当前游戏实例后复测
+  （该游戏单实例，运行中启动会走附加分支）。
+- 03:03 注入后死亡事件未复现，持续观察。
+- 未持有物品无法凭空添加（无 $data 目录表），属预期降级。
+
+## v0.6.7：NB 壳第二变体（evalNWBin）适配成功——裸启动 + DLL 注入 + 文件通道（万族穿越-源启崛起 v1.2.2 实测）（2026-09-05）
+
+用户请求适配 `D:\Downloads\RPG\_V1.2.2_B电脑端`（万族穿越-源启崛起，NB 加密壳，
+NW.js 0.72.0）。与 v0.6.3 判不可适配的宿敌变体**同族不同型**：没有 nbtool.node /
+Themida / bootEncryptedBin 明文调用——index.html 整段 JS 混淆（RC4 字符串表，键
+`nobi`），反混淆后引导调用是 `nw.Window.get().evalNWBin(null, "./nb_data/<md5>")`：
+引擎是 6.7MB 的 V8 字节码 blob（NW.js 原生 nwjc 保护），旁边一个 683KB 哈希命名
+的原生 addon（登录/CDK 体系），220 个 md5 文件名密文 json，`data/` 只剩 .bak。
+
+### 实测结论（逐条实测，非推测）
+
+1. **裸启动（零参数）完全正常**——9 进程常驻，游戏可用。
+2. **任何额外启动参数都死**：`--user-data-dir` 单独即秒死（3s 内进程树清零），
+   `--load-extension` 单独亦死——扩展 bridge 已注入并写出 bridge.log，数秒内被杀。
+3. **CreateRemoteThread DLL 注入本身不受检测**：rmch-mvhook 注入 noop bootstrap
+   到唯一 renderer（扩展进程上下文，页面是打包应用 chrome-extension:// 形态），
+   92ms 报 ok、自卸载，游戏长跑无感。与宿敌 Themida 变体（≤6s 必杀）相反。
+4. **页面内构造任何 WebSocket 即死**：原生构造器同步卡死 renderer 主线程
+   （eval 永不返回，注入器 30s core-timeout），看门狗随后清掉整个进程树。
+   WebSocket 本身未被 JS 层包裹（native code），系壳在原生层拦截。
+5. **文件通道全程无害**：`RMCH_TRANSPORT=file` 的完整 bridge（hook 安装、
+   每秒 state.json、250ms commands.jsonl 轮询全部在跑）实测 20s+ 存活，
+   ping/runtime.info 经 events.jsonl 正确应答。
+
+### 产品行为（本次改动）
+
+- bridge（55-transport）新增 `RMCH_TRANSPORT=file` 传输模式：connectWs 不再建
+  socket，hello 写入 events.jsonl，命令/状态全走 JSONL 文件（该通道原本就是
+  既有 fallback，零新增协议）。
+- `core/nw-file-session.mjs`：NwFileSession，镜像 RgssSession 形状
+  （describe/send/hello/state/close）。要点：**commandId 带进程 pid+时间戳**
+  （bridge 对 commandId 永久去重，跨进程重附加若重用 nw1/nw2 会被静默跳过——
+  实测踩中）；重附加时按 state.json 新鲜度**认领既有 hello** 而非清空通道干等
+  （bridge 的 bootstrap 有 `__rmchBridge` 守卫，二次注入不会重发 hello）；
+  活性 = 主进程 pid 探测 + state.json 15s 陈腐判定。
+- scanner：`nb_data/` 下哈希名 `.node` + 哈希无扩展名 blob → 新容器
+  `nb-evalnwbin`（engine MV/MZ low——data/ 全是密文，外部无法分辨 MV/MZ，
+  由 bridge hello 的 `Utils.RPGMAKER_NAME` 运行时补全）；保护级别 3；
+  策略 `inject-file-transport`。nbtool.node 存在的 Themida 变体优先级不变。
+- launcher：nb-evalnwbin 拒绝扩展启动路径并指向 attach（该路径会杀掉游戏）。
+- attach：`attachGame` 对该容器走 `attachNwFile`（RMCH_TRANSPORT=file +
+  RMCH_SEALED=1——引擎类要过登录门才出现，hook 永久慢速重试）；
+  新增 `launchNwInjectGame` = 无参数裸启动 → 等 renderer 出现 → 同上注入，
+  GUI「启动并注入」与 CLI `launch` 均路由到这里（gui-bundler 禁循环依赖，
+  故 host.cjs/CLI 侧路由，launchGame 本体拒绝）。
+- host.cjs：send()/listSessions() 增加 NwFileSession 路由（经 launcher
+  re-export），attach 的 summary.session 统一走 wireExternalSession。
+- 测试：test-nb-shell 增补变体识别/拒绝断言；新增 test-nw-file-session
+  （hello/应答/拒绝/超时/热接管 14 项断言）。npm test 全绿。
+
+### 实测验证（真实游戏，登录页阶段）
+
+- `launchNwInjectGame`：裸启动→注入→hello→`ping`/`runtime.info` 经文件通道
+  正确应答；`attachGame` 热接管认领 hello 后命令畅通；全程 20s+ 存活。
+- **遗留未验证**：登录门之后的实际游玩（hook 安装、数值修改、存档）需要用户
+  账号登录后实测——登录页阶段引擎类（Utils/$gameParty 等）尚未引导，
+  hello.engine 为 null 属预期，RMCH_SEALED 慢速重试会在进游戏后补上 hook。
+- **后续修正（同日）**：GUI 冷启动偶发「注入失败」——renderer 进程出现时壳还在
+  解密引擎 blob，JS 上下文未就绪，单次注入是竞态。`attachNwFile` 增加
+  retries/retryDelayMs（launch 传 20×4s，单次注入 10s 短引信），手工附加保持
+  单次。宿主层冷启动复测通过。
+- 存档目录离线探测不可用（无 save/ 明文目录）；存档页签依赖在线 bridge 的
+  StorageManager 命令，备份走 saveDirOf 的会话 state.saveDir 回退。
+
 ## v0.6.4：坏 global 档修复——loadGlobalInfo 守卫（再刷一把2 / 大千世界2 实测）（2026-09-04）
 
 两个游戏同日启动即崩：`setupNewGame → selectSavefileForNewGame → loadGlobalInfo`

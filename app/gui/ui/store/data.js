@@ -133,7 +133,7 @@
   }
 
   function setItemCount(kind, id, count) {
-    return store.cmd("item.set", { kind: kind, id: id, count: Math.max(0, Math.floor(count)) })
+    return store.cmdWarn("item.set", { kind: kind, id: id, count: Math.max(0, Math.floor(count)) })
       .then(function (p) {
         if (p) data.counts[p.kind][p.id] = p.count;
         return p;
@@ -152,7 +152,7 @@
   }
 
   function setFlag(kind, id, value) {
-    return store.cmd(kind === "switch" ? "switch.set" : "variable.set", { id: id, value: value })
+    return store.cmdWarn(kind === "switch" ? "switch.set" : "variable.set", { id: id, value: value })
       .then(function (p) {
         if (!p) return null;
         var list = data.flags[kind];
@@ -180,7 +180,7 @@
   }
 
   function setSelfSwitch(row, value) {
-    return store.cmd("selfSwitch.set", {
+    return store.cmdWarn("selfSwitch.set", {
       mapId: data.selfSwitches.mapId, eventId: row.eventId, letter: row.letter, value: value
     }).then(function (p) {
       if (p) row.value = p.value;
