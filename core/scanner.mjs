@@ -256,6 +256,22 @@ function resolveNwExe(root, manifest) {
   return real.length === 1 ? path.join(root, real[0]) : null;
 }
 
+// nwjc-compiled V8 bytecode blob (NW.js source protection): every JS payload
+// file starts with the magic 03 04 DE C0 instead of script text.
+function isNwjcBytecode(filePath) {
+  let fd;
+  try {
+    fd = openSync(filePath, "r");
+    const head = Buffer.alloc(4);
+    if (readSync(fd, head, 0, 4, 0) < 4) return false;
+    return head[0] === 0x03 && head[1] === 0x04 && head[2] === 0xde && head[3] === 0xc0;
+  } catch (_) {
+    return false;
+  } finally {
+    try { if (fd !== undefined) closeSync(fd); } catch (_) {}
+  }
+}
+
 function looksLikeEncryptedData(dataDir) {
   try {
     const files = readdirSync(dataDir).filter((name) => /\.json$/i.test(name));
@@ -516,6 +532,18 @@ export function scanGame(root) {
     if (result.container === "nwjs-sealed" && manifest.name) result.title = manifest.name;
   }
 
+  // Grover-shielded boot (傲世修仙录完结定制版 family): the whole www/js payload
+  // ships as nwjc V8 bytecode (rpg_core.js itself is a 03 04 DE C0 blob) booted
+  // by an obfuscated root bg-script chain. Measured on that family: the shell
+  // verifies its ancestry by execing `wmic` and fails CLOSED when wmic is
+  // missing (Windows 11 removed it), killing the process ~15s after boot even
+  // on a stock double-click launch. The flag routes shadow launches through
+  // the wmic-shim + guards strategy (core/shadow-launcher.mjs).
+  if (manifest && manifest["bg-script"] && engine && (engine.id === "MV" || engine.id === "MZ")) {
+    const coreName = engine.id === "MZ" ? RPG_MAKER_CORE_FILES.mz : RPG_MAKER_CORE_FILES.mv;
+    if (isNwjcBytecode(path.join(jsDir, coreName))) addFlag("grover-boot");
+  }
+
   if (result.engine.bytecode) addFlag("bytecode-js");
   if (jsFiles.some((name) => /^plugins\.jsc$/i.test(name)) || (result.paths.pluginsFile === null && jsFiles.some((name) => /\.jsc$/i.test(name)))) {
     addFlag("bytecode-plugins");
@@ -547,6 +575,8 @@ function computeProtectionLevel(flags) {
     } else if (flag === "enigma-nb-shell") {
       level = Math.max(level, 4);
     } else if (flag === "nb-evalnwbin-shell") {
+      level = Math.max(level, 3);
+    } else if (flag === "grover-boot") {
       level = Math.max(level, 3);
     } else if (flag === "node-main-guard" || flag === "bg-script-startup") {
       level = Math.max(level, 3);

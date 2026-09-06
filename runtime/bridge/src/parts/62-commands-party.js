@@ -48,6 +48,28 @@
     return ownedItemData(party, kind, id);
   }
 
+  // Custom engines sometimes replace gainGold with a shell that throws or
+  // silently no-ops outside their own UI flow (傲世修仙录定制版: the override
+  // dies on "Cannot read property 'constructor' of null"). Run the engine path
+  // first so clamping/notification still work, but verify the landing value
+  // and fall back to a direct container write — same contract as item.set's
+  // gainItem verification. A partial move means the engine clamped (kept).
+  function applyGoldDelta(party, delta, absolute) {
+    const fallback = absolute != null ? absolute : Math.max(0, Number(party._gold || 0) + delta);
+    if (typeof party.gainGold !== "function") {
+      party._gold = fallback;
+      return;
+    }
+    const before = safeGold(party) || 0;
+    try {
+      withRatesSuppressed(() => party.gainGold(delta));
+    } catch (_) {
+      party._gold = fallback;
+      return;
+    }
+    if (delta !== 0 && (safeGold(party) || 0) === before) party._gold = fallback;
+  }
+
   Object.assign(commandHandlers, {
 
     // --- gold -----------------------------------------------------------------
@@ -55,8 +77,7 @@
     "gold.add": (args) => {
       const party = requireParty();
       const amount = Math.floor(requireNumber(args.amount, "amount"));
-      if (typeof party.gainGold === "function") withRatesSuppressed(() => party.gainGold(amount));
-      else party._gold = Math.max(0, Number(party._gold || 0) + amount);
+      applyGoldDelta(party, amount);
       return { gold: safeGold(party) };
     },
 
@@ -65,8 +86,7 @@
       const value = Math.max(0, Math.floor(requireNumber(args.value, "value")));
       const current = safeGold(party) || 0;
       // Expressed as a delta so the engine's own clamping/notification runs.
-      if (typeof party.gainGold === "function") withRatesSuppressed(() => party.gainGold(value - current));
-      else party._gold = value;
+      applyGoldDelta(party, value - current, value);
       return { gold: safeGold(party) };
     },
 

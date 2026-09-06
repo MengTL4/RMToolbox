@@ -91,6 +91,35 @@ function main() {
     assert.equal(readFileSync(path.join(gameRoot2, "loading"), "utf8"), "// ORIGINAL LOADER\n",
       "root-level original must stay untouched");
 
+    // grover-boot: the shell's own chain runs (original kept), the manifest
+    // copy stays stock (Some.js validates it), the wmic shim is deployed, and
+    // the guards bootstrap is present. setupShadowApp copies the shim from
+    // <projectRoot>/runtime/bin, so seed the fake project with a dummy first.
+    makeFile(path.join(projectRoot, "runtime", "bin", "wmic.exe"), "fake-wmic-shim");
+    const gameRoot3 = path.join(tempRoot, "game3");
+    const stockManifest = JSON.stringify({ name: "fake-game-3", main: "www/loading.html", "bg-script": "loading", window: { show: false } });
+    makeFile(path.join(gameRoot3, "Game.exe"), "fake-nw-binary");
+    makeFile(path.join(gameRoot3, "package.json"), stockManifest);
+    makeFile(path.join(gameRoot3, "www", "loading.html"), "<html></html>");
+    makeFile(path.join(gameRoot3, "www", "index.html"), "<html></html>");
+    makeFile(path.join(gameRoot3, "loading"), "// ORIGINAL GROVER LOADER\n");
+    const scan3 = {
+      root: gameRoot3,
+      layout: "www",
+      manifest: { bgScript: "loading" },
+      protection: { flags: ["grover-boot"] }
+    };
+    const { appDir: appDir3, bgScriptPath: patchedPath3 } = setupShadowApp({ projectRoot, scan: scan3, gameKey: "fake-game-3" });
+    assert.equal(readFileSync(path.join(appDir3, "package.json"), "utf8"), stockManifest,
+      "grover shadow manifest copy must stay byte-identical to the game's");
+    assert.ok(existsSync(path.join(appDir3, "wmic.exe")), "grover shadow must carry the wmic shim");
+    const patched3 = readFileSync(patchedPath3, "utf8");
+    assert.ok(patched3.includes("ORIGINAL GROVER LOADER"), "grover patched bg-script must embed the original");
+    assert.ok(patched3.includes("__rmchGroverGuards"), "grover patched bg-script must carry the guards bootstrap");
+    assert.ok(patched3.includes("crashRenderer"), "grover guards must cover crashRenderer");
+    assert.equal(readFileSync(path.join(gameRoot3, "loading"), "utf8"), "// ORIGINAL GROVER LOADER\n",
+      "grover root-level original must stay untouched");
+
     console.log("shadow-launcher test: PASS");
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });

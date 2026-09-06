@@ -708,6 +708,33 @@ async function main() {
   assert.equal(sandbox.__rmchCapture.party, replacementParty, "capture must refresh on the next save");
   assert.equal((await sendCommand("party.info")).payload.gold, 77);
 
+  // 34b. gold fallback: sabotaged gainGold must not take gold.set/add down.
+  // 傲世修仙录定制版 ships a gainGold that throws outside its own UI flow
+  // ("constructor of null") and protected shells have shipped silent no-ops —
+  // applyGoldDelta verifies the landing value and writes the container
+  // directly when the polite path dies or lies.
+  const throwingParty = { _gold: 100, _items: {}, gold() { return this._gold; }, gainGold() { throw new Error("Cannot read property 'constructor' of null"); }, gainItem() {}, allMembers() { return []; }, members() { return []; }, battleMembers() { return []; }, inBattle() { return false; } };
+  sandbox.__testContents3 = { ...sealedContents, party: throwingParty };
+  vm.runInContext("JSON.stringify(window.__testContents3)", context);
+  assert.equal((await sendCommand("gold.add", { amount: 50 })).payload.gold, 150,
+    "gold.add must fall back to a direct write when gainGold throws");
+  assert.equal(throwingParty._gold, 150);
+  assert.equal((await sendCommand("gold.set", { value: 200 })).payload.gold, 200,
+    "gold.set must fall back to a direct write when gainGold throws");
+  assert.equal(throwingParty._gold, 200);
+
+  const silentParty = { _gold: 100, _items: {}, gold() { return this._gold; }, gainGold() {}, gainItem() {}, allMembers() { return []; }, members() { return []; }, battleMembers() { return []; }, inBattle() { return false; } };
+  sandbox.__testContents4 = { ...sealedContents, party: silentParty };
+  vm.runInContext("JSON.stringify(window.__testContents4)", context);
+  assert.equal((await sendCommand("gold.add", { amount: 25 })).payload.gold, 125,
+    "gold.add must fall back when gainGold silently no-ops");
+  assert.equal(silentParty._gold, 125);
+
+  // Hand the capture back to the party the later save-encoding assertions
+  // expect (they pin its _gold at 77).
+  vm.runInContext("JSON.stringify(window.__testContents2)", context);
+  assert.equal(sandbox.__rmchCapture.party, replacementParty);
+
   // 35. Boot-time database capture. Sealed shells decrypt the $data* tables
   // inside their blob and parse them through the tapped JSON.parse; shape
   // classification fills __rmchDataTables, a debounced flush persists them to
