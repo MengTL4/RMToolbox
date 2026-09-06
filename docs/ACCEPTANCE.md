@@ -1,5 +1,38 @@
 # RMCH 验收记录
 
+## v0.7.7：grover-boot 启动路由改裸启动+DLL 注入 + GUI 图标失败自动重试——傲世修仙录完结定制版实测（2026-09-06）
+
+v0.7.6 的 shadow+shim 方案之后用户实测反馈：**「先开游戏再附加」可用，
+「启动并注入」不可用、数据页图标不显示**。据此两组对照实验把策略钉死：
+
+- 双击裸开的真实游戏（祖先链校验失败、无 shim）在 Win11 上**完全可玩**：
+  壳的自杀路径自然失效（quit/crashRenderer 均不奏效），数据自解密
+  （decipherData 自带密钥，不依赖壳验证产物），标题画面正常，attach 落桥
+  干净利落（此前 CLI 实测 ping/catalog/assets.iconset 全通）。
+- 用 wmic shim 让验证**通过**反而**武装壳的反注入**：DLL 注入的 V8 调用
+  全部超时（core-timeout/no-v8-call），重试还会被残留管道 EADDRINUSE 级联
+  卡死。shadow 方案（任何变体）则载荷必然冻结。
+
+### 产品行为（本次改动）
+
+- **grover-boot 启动路由 = 裸启动 + DLL 注入**（与 nb-evalnwbin/enigma-nb
+  同路线）：`app/gui/host.cjs` 与 `tools/rmch.mjs` 的 launch 前置路由加
+  grover-boot 分支走 `launchNwInjectGame`；`core/launcher.mjs` 对 grover-boot
+  抛出与 enigma-nb 同款的防御性错误（防止误入 shadow 路径）；
+  `core/attach.mjs` 的 `launchNwInjectGame` 为 grover-boot 用 60s 沉淀等待
+  （覆盖 loading.html 的 ~10-26s 自重载循环期）后注入一次。
+  实测端到端：launch → 注入第一次尝试即 "evaled" → ping/catalog(600 物品
+  带 iconIndex)/assets.iconset(512×4000 图标表) 全通。
+- **GUI 图标失败自动重试**：`iconset.js` 此前把 failed 的图标表按 gameKey
+  永久缓存（「开完游戏立刻附加」时页面还在壳的自重载循环里，assets.iconset
+  超时 → 整个 GUI 会话无图标）。改为 failed 后 15s 冷却自动重试（状态翻转
+  触发列表重渲染）。
+- v0.7.6 的 shadow+shim 实现保留（shadow-launcher grover 分支 + 测试），
+  作为「壳自杀路径在某台机器恢复生效」时的备用方案；`wmic-shim.c` 的诊断
+  日志改写 %TEMP%（去掉硬编码绝对路径，安装版可用）。
+- 测试：npm test 全绿（gui-check 确认生成物同步）。
+
+
 ## v0.7.6：Grover 壳家族识别（grover-boot）+ wmic shim 接力——傲世修仙录完结定制版实测（适配进行中）（2026-09-06）
 
 《傲世修仙录完结定制版》（MV 1.6.1，NW.js Chromium 91）全 www/js 载荷是

@@ -229,8 +229,14 @@ async function launch(gameRoot) {
   // NB evalNWBin shells and Enigma-NB boxes refuse every launch flag, so the
   // extension launch is fatal to them; "launch" for these games is plain
   // spawn + DLL attach (the inject machinery lives in the attach module).
+  // grover-boot shells take the same route for a different reason: their
+  // ancestry-verified boot chain freezes the toolbox-shadowed variant, while
+  // the plainly launched real game runs fine (measured: double-click boot to
+  // a playable title screen; the shell's suicide paths fail on their own).
   const probe = state.modules.scanner.scanGame(gameRoot);
-  if (probe.container === "nb-evalnwbin" || probe.container === "enigma-nb") {
+  const grover = probe.protection && probe.protection.flags
+    && probe.protection.flags.includes("grover-boot");
+  if (probe.container === "nb-evalnwbin" || probe.container === "enigma-nb" || grover) {
     const summary = await state.modules.attach.launchNwInjectGame({
       scan: probe,
       projectRoot: state.projectRoot,
