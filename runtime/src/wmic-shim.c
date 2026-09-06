@@ -108,18 +108,27 @@ static void build_node_line(void) {
 
 static const char *WHITELIST[] = { "gearnt.exe", "totalcmd", "steam.exe", "cmd.exe", "explorer.exe" };
 
-static void log_call(const char *joined) {
-    FILE *f = fopen("E:\\project\\RMToolbox\\runtime\\bridge-state\\傲世修仙录完结定制版\\wmic-shim.log", "a");
+static void log_to(const char *suffix, const char *line) {
+    char path[MAX_PATH];
+    UINT n = GetTempPathA(sizeof(path) - 40, path);
+    if (!n) return;
+    snprintf(path + n, sizeof(path) - n, "rmch-%s", suffix);
+    FILE *f = fopen(path, "a");
     if (!f) return;
-    fprintf(f, "[%ld] %s\n", (long)GetTickCount(), joined);
+    fprintf(f, "%s", line);
     fclose(f);
 }
 
+static void log_call(const char *joined) {
+    char line[1200];
+    snprintf(line, sizeof(line), "[%ld] %s\n", (long)GetTickCount(), joined);
+    log_to("wmic-shim.log", line);
+}
+
 static void log_err(const char *what, DWORD code) {
-    FILE *f = fopen("E:\\project\\RMToolbox\\runtime\\bridge-state\\傲世修仙录完结定制版\\wmic-shim.log", "a");
-    if (!f) return;
-    fprintf(f, "[%ld] ERR %s gle=%lu\n", (long)GetTickCount(), what, (unsigned long)code);
-    fclose(f);
+    char line[160];
+    snprintf(line, sizeof(line), "[%ld] ERR %s gle=%lu\n", (long)GetTickCount(), what, (unsigned long)code);
+    log_to("wmic-shim.log", line);
 }
 
 static void write_utf16(const char *ascii) {
