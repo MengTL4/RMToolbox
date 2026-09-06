@@ -78,10 +78,27 @@
   // the GUI wants them zipped, paged.
   function listSystemEntries(kind, args) {
     const system = resolveData("system");
-    if (!system) throw new Error("$dataSystem is unavailable");
-    const names = kind === "switches" ? system.switches : system.variables;
-    if (!Array.isArray(names)) throw new Error(`system ${kind} list is unavailable`);
     const store = kind === "switches" ? resolveSwitches() : resolveVariables();
+    let names = system && (kind === "switches" ? system.switches : system.variables);
+    if (!Array.isArray(names)) {
+      // Closure-sealed shells keep $dataSystem inside their blob, so names
+      // are unavailable — but a captured store (08-capture.js) still knows
+      // its own size and values. List numbered, unnamed entries rather than
+      // failing the whole tab.
+      const data = store && store._data;
+      if (!data) throw new Error("$dataSystem is unavailable");
+      let size = 0;
+      if (Array.isArray(data)) {
+        size = data.length;
+      } else {
+        for (const key of Object.keys(data)) {
+          const id = Number(key);
+          if (Number.isFinite(id) && id > size) size = id;
+        }
+        size += 1; // ids are 1-based; names index is the id itself
+      }
+      names = new Array(size).fill("");
+    }
     const offset = Math.max(0, Math.floor(looseNumber(args.offset, 0)));
     const limit = Math.max(1, Math.min(2000, Math.floor(looseNumber(args.limit, 200))));
     const entries = [];
@@ -93,7 +110,7 @@
       } catch (_) {}
       entries.push({ id, name: names[id] || "", value });
     }
-    return { total: Math.max(0, names.length - 1), offset, limit, entries };
+    return { total: Math.max(0, names.length - 1), offset, limit, entries, namesUnavailable: !system };
   }
 
   // --- maps -------------------------------------------------------------------

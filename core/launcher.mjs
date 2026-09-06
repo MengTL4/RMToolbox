@@ -74,6 +74,17 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
       "start it with its own exe; the toolbox cannot attach to this shell either"
     );
   }
+  if (scan.container === "nb-evalnwbin") {
+    // The shell refuses every launch flag (measured: even --user-data-dir
+    // alone dies at boot), so the standard extension launch would kill the
+    // game. Launching plain and then attaching works — but the inject
+    // machinery lives in attach.mjs, which already imports this module;
+    // routing host-side keeps the GUI bundle cycle-free. CLI: use attach.
+    throw new Error(
+      "nb-evalnwbin shell game: it refuses every launch flag, so the extension launch path would kill it — " +
+      'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
+    );
+  }
   if (scan.engine.id === "RM2K") {
     throw new Error(`engine "${scan.engine.id}" is not supported by the M1 injectors (planned: ${injectionStrategy(scan).id})`);
   }

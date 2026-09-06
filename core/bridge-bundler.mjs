@@ -25,6 +25,7 @@ import vm from "node:vm";
 const PARTS = [
   "00-prelude.js",          // IIFE open + bridge state object
   "05-node-io.js",          // require/fs/path, paths, log + event writers
+  "08-capture.js",          // JSON save/load tap → live refs for closure-sealed shells
   "10-engine.js",           // TK.$ alias resolution, $game*/$data*, hook targets
   "20-values.js",           // coercion, arg guards, suppression scopes, stats
   "25-battlers.js",         // battler/party/troop access, actorInfo

@@ -24,6 +24,30 @@
     }
   }
 
+  // Closure-sealed shells (nb-evalnwbin) hide the $data tables, so catalog
+  // lookups fail even for items the party already owns. The party's own
+  // items()/weapons()/armors() return those very data objects though — fall
+  // back to them so owned items stay editable. Adding an item the party does
+  // NOT own still needs the catalog and fails with a clear error.
+  function ownedItemData(party, kind, id) {
+    try {
+      const fn = kind === "item" ? "items" : kind === "weapon" ? "weapons" : "armors";
+      if (typeof party[fn] === "function") {
+        const list = party[fn]() || [];
+        for (let i = 0; i < list.length; i += 1) {
+          if (list[i] && list[i].id === id) return list[i];
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function dataEntryLoose(kind, id, party) {
+    const table = runtimeDataTable(kind);
+    if (table[id]) return table[id];
+    return ownedItemData(party, kind, id);
+  }
+
   Object.assign(commandHandlers, {
 
     // --- gold -----------------------------------------------------------------
@@ -60,12 +84,14 @@
       const party = requireParty("gainItem");
       const kind = normalizeDropKind(args.kind || "item");
       if (!kind) throw new Error(`unsupported item kind: ${args.kind}`);
-      const { id } = requireDataEntry(kind, args.id, "id");
+      const id = requireId(args.id, "id");
+      const data = dataEntryLoose(kind, id, party);
+      if (!data) throw new Error(`${kind} ${id} not found`);
       const amount = Math.floor(requireNumber(args.amount, "amount"));
       if (!Number.isFinite(amount) || amount === 0) throw new Error("amount must be a non-zero number");
       const prop = inventorySlot(kind);
       const want = Math.max(0, (Number(party[prop] && party[prop][id]) || 0) + amount);
-      withRatesSuppressed(() => party.gainItem(runtimeDataTable(kind)[id], amount));
+      withRatesSuppressed(() => party.gainItem(data, amount));
       writeBackItemCount(party, prop, id, want);
       return { kind, id, amount, count: Number(party[prop] && party[prop][id]) || 0 };
     },
@@ -84,7 +110,7 @@
           const count = Math.round(Number(store[key]) || 0);
           if (count <= 0) continue;
           const id = Number(key);
-          const entry = runtimeDataTable(kind)[id];
+          const entry = runtimeDataTable(kind)[id] || ownedItemData(party, kind, id);
           entries.push({ kind, id, name: entry && entry.name || "", count });
         }
       }
@@ -96,14 +122,16 @@
       const party = requireParty("gainItem");
       const kind = normalizeDropKind(args.kind || "item");
       if (!kind) throw new Error(`unsupported item kind: ${args.kind}`);
-      const { id } = requireDataEntry(kind, args.id, "id");
+      const id = requireId(args.id, "id");
+      const data = dataEntryLoose(kind, id, party);
+      if (!data) throw new Error(`${kind} ${id} not found`);
       const count = Math.max(0, Math.floor(requireNumber(args.count, "count")));
       const prop = inventorySlot(kind);
       const current = Number(party[prop] && party[prop][id]) || 0;
       const delta = count - current;
       // gainItem first so a working engine keeps its bookkeeping; the writeback
       // then pins the exact count when gainItem is stubbed or scaled.
-      if (delta !== 0) withRatesSuppressed(() => party.gainItem(runtimeDataTable(kind)[id], delta));
+      if (delta !== 0) withRatesSuppressed(() => party.gainItem(data, delta));
       writeBackItemCount(party, prop, id, count);
       return { kind, id, count: Number(party[prop] && party[prop][id]) || 0 };
     },

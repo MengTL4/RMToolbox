@@ -67,7 +67,7 @@
       }
 
       function toggleParty(row, enabled) {
-        store.cmd(enabled ? "party.addActor" : "party.removeActor", { id: row.id })
+        store.cmdWarn(enabled ? "party.addActor" : "party.removeActor", { id: row.id })
           .then(function (payload) {
             if (!payload) return;
             store.ok("#" + row.id + " " + (row.name || "") + (enabled ? " 已入队" : " 已离队"));
@@ -79,7 +79,7 @@
       }
 
       function apply(type, args, label) {
-        return store.cmd(type, Object.assign({ id: actor.value.id }, args)).then(function (payload) {
+        return store.cmdWarn(type, Object.assign({ id: actor.value.id }, args)).then(function (payload) {
           store.applyActor(payload);
           store.refreshParty();
           if (payload) store.ok(label + " 已应用");
@@ -88,10 +88,10 @@
       }
 
       function applyName() {
-        return store.cmd("actor.name.set", { id: actor.value.id, name: form.value.name })
+        return store.cmdWarn("actor.name.set", { id: actor.value.id, name: form.value.name })
           .then(function (payload) {
             store.applyActor(payload);
-            return store.cmd("actor.nickname.set", { id: actor.value.id, nickname: form.value.nickname });
+            return store.cmdWarn("actor.nickname.set", { id: actor.value.id, nickname: form.value.nickname });
           })
           .then(function (payload) {
             store.applyActor(payload);
@@ -132,7 +132,7 @@
           ? (enabled ? "actor.skill.learn" : "actor.skill.forget")
           : (enabled ? "actor.state.add" : "actor.state.remove");
         var args = picker.value === "skill" ? { skillId: entry.id } : { stateId: entry.id };
-        store.cmd(type, Object.assign({ id: actor.value.id }, args))
+        store.cmdWarn(type, Object.assign({ id: actor.value.id }, args))
           .then(function (payload) { store.applyActor(payload); })
           .finally(function () { pickerBusy.value = false; });
       }
@@ -175,7 +175,7 @@
 
       function createSpecies(entry) {
         createBusy.value = true;
-        store.cmd("party.createPokemon", { species: entry.id, level: createLevel.value })
+        store.cmdWarn("party.createPokemon", { species: entry.id, level: createLevel.value })
           .then(function (payload) {
             if (!payload) return;
             store.ok((entry.name || entry.id) + (payload.where === "party" ? " 已入队" : " 已发送到存储箱"));

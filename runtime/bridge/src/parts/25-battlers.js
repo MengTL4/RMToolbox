@@ -115,7 +115,7 @@
       if (Array.isArray(data)) actor = data[actorId];
       else if (data && typeof data === "object") actor = data[actorId];
     }
-    if (!actor) throw new Error(`actor ${actorId} is unavailable`);
+    if (!actor) throw new Error(`actor ${actorId} is unavailable${sealedCaptureHint()}`);
     return actor;
   }
 

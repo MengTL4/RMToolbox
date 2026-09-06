@@ -101,6 +101,29 @@ function testBootstrap() {
     new Function(boot);
   } catch (e) { parseError = e; }
   check("bootstrap parses as JS", parseError === null, String(parseError));
+
+  // bootTap/dance variant: holding-tap prelude, no-throw canvas poll, and the
+  // throw-on-bridge guard that keeps a pre-armed dance DLL alive across the
+  // reload it straddles.
+  const dance = buildNwBootstrap({
+    gameRoot: "D:\\Games\\Foo",
+    projectRoot: root,
+    gameKey: "foo-key",
+    port: 47412,
+    token: "tok-123",
+    extraEnv: { RMCH_BOOT_TAP: "1", RMCH_THROW_IF_BRIDGED: "1" }
+  });
+  check("bootTap installs holding tap", dance.includes("__rmchBootParsed"));
+  check("bootTap arms a canvas poll", dance.includes("return 'armed';"));
+  check("dance copy throws on live bridge",
+    dance.includes("if (window.__rmchBridge) throw new Error('rmch-not-game-page');"));
+  check("plain bootstrap returns on live bridge",
+    boot.includes("if (window.__rmchBridge) return;"));
+  let danceParseError = null;
+  try {
+    new Function(dance);
+  } catch (e) { danceParseError = e; }
+  check("dance bootstrap parses as JS", danceParseError === null, String(danceParseError));
 }
 
 // --- pipe framing loopback -----------------------------------------------------

@@ -17,6 +17,16 @@
   ensureDir();
   log("bridge injected", { href: location.href, gameKey, bridgeVersion: bridge.version });
 
+  // Save-contents capture (08-capture.js): closure-sealed shells expose no
+  // engine globals, and this tap is the only channel that ever reaches them.
+  // Installed for every game — it is inert until a save/load flows by, and
+  // resolvers only consult the capture after every other source fails.
+  try { installSaveCaptureTap(); } catch (error) { noteError(error); }
+  // A bootTap bootstrap (launch/dance for sealed shells) may have arrived
+  // before the canvas gate allowed the full bridge eval — its holding tap
+  // kept the boot-time database parses for us.
+  try { replayBootCaptured(); } catch (error) { noteError(error); }
+
   loadProfile();
 
   // Sealed-launcher games (RMCH_SEALED=1): the engine's singletons are not on
@@ -27,6 +37,29 @@
   // then drops to a slow permanent retry so hooks whose classes materialise
   // later (party actors only exist once a save is loaded) still land.
   const sealedEngine = envVar("RMCH_SEALED") === "1";
+
+  // Boot progress watch (sealed shells only): while the game sits on its
+  // splash, the JSON tap counters are the only externally visible sign of
+  // life. One compact line every 5s for the first 3 minutes makes "卡在哪一
+  // 段" readable straight from bridge.log — parses frozen at a fixed count
+  // means the shell's boot is stalled, a save capture means gameplay reached.
+  if (sealedEngine) {
+    let bootWatchTicks = 0;
+    const bootWatchTimer = setInterval(function () {
+      bootWatchTicks += 1;
+      const stats = bridge.jsonTapStats || {};
+      const captured = !!window.__rmchCapture;
+      log("boot watch", {
+        t: bootWatchTicks * 5,
+        parses: stats.parses || 0,
+        stringifies: stats.stringifies || 0,
+        captured,
+        tables: Object.keys(window.__rmchDataTables || {}).length,
+        hooks: lastHookCount
+      });
+      if (captured || bootWatchTicks >= 36) clearInterval(bootWatchTimer);
+    }, 5000);
+  }
   let hookRetries = 0;
   let stablePasses = 0;
   let lastHookCount = -1;

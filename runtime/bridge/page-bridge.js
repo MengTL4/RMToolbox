@@ -181,6 +181,271 @@
     return bridge.lastError;
   }
   // ---------------------------------------------------------------------------
+  // Save-contents capture.
+  //
+  // Closure-sealed shells (nb-evalnwbin) run the whole engine inside an eval'd
+  // blob: $gameParty & friends never land on window, so every resolver in
+  // 10-engine.js comes back null and the toolbox looks "empty". But the blob
+  // shares this realm's intrinsics, and RMMV/MZ routes every save through
+  // JSON.stringify (the live singletons) and every load through JSON.parse
+  // (objects that extractSaveContents then installs AS the singletons — MV
+  // revives them in place via JsonEx setPrototypeOf, MZ's reviver has already
+  // run when our wrapper sees them). Patching both lets the bridge hold live
+  // engine references the moment the player saves or loads once; 10-engine.js
+  // resolvers consult the capture as their last fallback. Inert for normal
+  // games: the capture is only written when something save-shaped passes
+  // through, and nothing reads it before that.
+  //
+  // The same parse tap also catches the BOOT-TIME database load: sealed games
+  // decrypt Items.json & friends inside the blob and hand the plaintext to
+  // JSON.parse. Tables are recognized by shape, kept on window.__rmchDataTables
+  // and flushed to catalog-cache.json so later attaches serve catalogs from
+  // disk even when the bridge was injected long after boot.
+  // ---------------------------------------------------------------------------
+
+  function looksLikeSaveContents(value) {
+    return !!(value && typeof value === "object" && !Array.isArray(value)
+      && value.system && typeof value.system === "object"
+      && (value.party || value.switches || value.variables)
+      && (value.map || value.player));
+  }
+
+  // A save seen by the stringify tap is either the raw singleton container
+  // (custom save paths — LIVE, methods intact) or MV JsonEx's encoded deep
+  // copy (DEAD snapshot). A dead copy is still useful for reads when nothing
+  // else exists, but must never evict a live capture.
+  function captureLooksLive(contents) {
+    try {
+      const party = contents && contents.party;
+      return !!(party && typeof party.gold === "function");
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // --- $data* table capture ---------------------------------------------------
+
+  // Database arrays are 1-based with a null hole at index 0; that hole is the
+  // cheapest discriminator against plugin/config arrays. Kind is decided by up
+  // to three consistent samples. Order: the specific shapes before the looser
+  // ones (an armor also has iconIndex/price, so `item`'s itypeId check etc.
+  // carry the discrimination — every test names a field only its kind has).
+  const DATA_TABLE_SIGNATURES = Object.freeze([
+    ["weapon", (e) => e.wtypeId !== undefined && Array.isArray(e.params)],
+    ["armor", (e) => e.atypeId !== undefined && e.etypeId !== undefined],
+    ["skill", (e) => e.stypeId !== undefined && e.mpCost !== undefined],
+    ["item", (e) => e.itypeId !== undefined && e.price !== undefined],
+    ["state", (e) => e.restriction !== undefined && e.priority !== undefined],
+    ["actor", (e) => e.classId !== undefined && e.nickname !== undefined],
+    ["enemy", (e) => e.battlerName !== undefined && e.exp !== undefined],
+    ["troop", (e) => Array.isArray(e.members) && Array.isArray(e.pages)],
+    ["mapInfo", (e) => e.name !== undefined && e.parentId !== undefined && e.order !== undefined],
+    ["commonEvent", (e) => Array.isArray(e.list) && e.trigger !== undefined && e.switchId !== undefined]
+  ]);
+
+  function classifyDataTable(value) {
+    if (!value || typeof value !== "object") return null;
+    if (!Array.isArray(value)) {
+      // $dataSystem: the one non-array table. switch/variable NAME arrays are
+      // what the 开关/变量 tabs are missing without it.
+      if (Array.isArray(value.switches) && Array.isArray(value.variables)
+        && (value.terms || value.currencyUnit !== undefined)) return "system";
+      return null;
+    }
+    if (value.length < 2 || value[0] != null) return null;
+    let matched = null;
+    let samples = 0;
+    for (let i = 1; i < value.length && samples < 3; i += 1) {
+      const entry = value[i];
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      samples += 1;
+      const kind = DATA_TABLE_SIGNATURES.find((pair) => {
+        try { return pair[1](entry); } catch (_) { return false; }
+      });
+      if (!kind) return null;
+      if (matched && kind[0] !== matched) return null; // mixed array — not a db table
+      matched = kind[0];
+    }
+    return samples > 0 ? matched : null;
+  }
+
+  function storeDataTable(kind, table) {
+    const tables = window.__rmchDataTables || (window.__rmchDataTables = {});
+    // First capture wins for a kind: the boot load is the authoritative one,
+    // and a later plugin parse of similar shape must not clobber it.
+    if (tables[kind]) return;
+    tables[kind] = table;
+    log("data table captured", { kind, size: table && table.length || 0 });
+    scheduleDataFlush();
+  }
+
+  let dataFlushTimer = null;
+  function scheduleDataFlush() {
+    if (!fileIo || !bridgeDir || dataFlushTimer) return;
+    dataFlushTimer = setTimeout(() => {
+      dataFlushTimer = null;
+      flushDataTables();
+    }, 1000);
+  }
+
+  function catalogCachePath() {
+    return (fileIo && bridgeDir) ? path.join(bridgeDir, "catalog-cache.json") : null;
+  }
+
+  function flushDataTables() {
+    const file = catalogCachePath();
+    if (!file) return;
+    try {
+      const tables = window.__rmchDataTables;
+      if (!tables || !Object.keys(tables).length) return;
+      ensureDir();
+      // Merge over the existing cache (this boot's captures win): a bridge
+      // injected mid-boot catches only the tables parsed after its arrival,
+      // and a reload-capture round must never shrink what an earlier round
+      // already secured.
+      let existing = {};
+      try {
+        if (fs.existsSync(file)) {
+          const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+          existing = (parsed && parsed.tables) || {};
+        }
+      } catch (_) {}
+      const merged = Object.assign({}, existing, tables);
+      const payload = { version: 1, capturedAt: new Date().toISOString(), tables: merged };
+      fs.writeFileSync(file, JSON.stringify(payload), "utf8");
+      log("catalog cache flushed", { kinds: Object.keys(merged) });
+    } catch (error) { noteError(error); }
+  }
+
+  // Lazy load on first catalog miss: the cache can be several MB, and games
+  // that expose $data* on window never need it parsed.
+  function loadDataTablesCache() {
+    if (window.__rmchDataTablesLoaded) return;
+    window.__rmchDataTablesLoaded = true;
+    const file = catalogCachePath();
+    if (!file) return;
+    try {
+      if (!fs.existsSync(file)) return;
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (parsed && parsed.tables && typeof parsed.tables === "object") {
+        // Live captures (this boot's parse) take precedence over disk.
+        window.__rmchDataTables = Object.assign({}, parsed.tables, window.__rmchDataTables || {});
+        log("catalog cache loaded", { kinds: Object.keys(parsed.tables) });
+      }
+    } catch (error) { noteError(error); }
+  }
+
+  function capturedDataTable(kind) {
+    try {
+      if (!window.__rmchDataTables) loadDataTablesCache();
+      const table = window.__rmchDataTables && window.__rmchDataTables[kind];
+      if (table && (Array.isArray(table) || typeof table === "object")) return table;
+    } catch (_) {}
+    return null;
+  }
+
+  function installSaveCaptureTap() {
+    if (window.__rmchSaveTap) return;
+    window.__rmchSaveTap = true;
+    // Shape probe, toggled by dropping an empty debug-json.flag file into the
+    // bridge-state dir: logs each DISTINCT top-level key signature seen in
+    // JSON.parse once (capped). Sealed shells route all their traffic through
+    // this tap, and whether anything save-adjacent flows during normal play
+    // decides if capture can ever happen without a manual save/load.
+    let shapeProbe = null;
+    try {
+      shapeProbe = (fileIo && bridgeDir
+        && fs.existsSync(path.join(bridgeDir, "debug-json.flag")))
+        ? { seen: Object.create(null), count: 0 } : null;
+    } catch (_) { shapeProbe = null; }
+    const stats = bridge.jsonTapStats = { parses: 0, stringifies: 0 };
+    const origParse = JSON.parse;
+    const origStringify = JSON.stringify;
+    JSON.parse = function (text, reviver) {
+      const result = origParse.apply(this, arguments);
+      stats.parses += 1;
+      try {
+        if (looksLikeSaveContents(result)) {
+          // A load REPLACES the live singletons, so a stale capture would point
+          // at dead objects — the parse side always wins (its result becomes
+          // the live set once JsonEx decoding finishes).
+          if (!window.__rmchCapture) {
+            log("save contents captured", { side: "parse", live: captureLooksLive(result) });
+          }
+          window.__rmchCapture = result;
+        } else {
+          const kind = classifyDataTable(result);
+          if (kind) storeDataTable(kind, result);
+          else if (shapeProbe && result && typeof result === "object" && !Array.isArray(result)) {
+            const keys = Object.keys(result);
+            if (keys.length >= 6) {
+              const sig = keys.slice(0, 24).sort().join(",").slice(0, 160);
+              if (!shapeProbe.seen[sig] && shapeProbe.count < 40) {
+                shapeProbe.seen[sig] = true;
+                shapeProbe.count += 1;
+                log("json shape", { keys: sig });
+              }
+            }
+          }
+        }
+      } catch (_) {}
+      return result;
+    };
+    JSON.stringify = function (value, replacer, space) {
+      stats.stringifies += 1;
+      try {
+        if (looksLikeSaveContents(value)
+          && (captureLooksLive(value) || !window.__rmchCapture)) {
+          if (!window.__rmchCapture) {
+            log("save contents captured", { side: "stringify", live: captureLooksLive(value) });
+          }
+          window.__rmchCapture = value;
+        }
+      } catch (_) {}
+      return origStringify.apply(this, arguments);
+    };
+    // Some libraries sanity-check arity; keep the originals' signatures.
+    try {
+      Object.defineProperty(JSON.parse, "length", { value: 2 });
+      Object.defineProperty(JSON.stringify, "length", { value: 3 });
+    } catch (_) {}
+  }
+
+  function capturedEngine(key) {
+    try {
+      const capture = window.__rmchCapture;
+      return (capture && capture[key]) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // The launch/dance bootstrap (core/attach.mjs, bootTap) installs a bare
+  // JSON.parse holding-tap before any page script runs — well before the
+  // canvas gate lets the full bridge eval. Database tables decrypted during
+  // that window pile up in window.__rmchBootParsed; replay them through the
+  // real classifier once the bridge is up.
+  function replayBootCaptured() {
+    try {
+      const held = window.__rmchBootParsed;
+      if (!Array.isArray(held) || !held.length) return;
+      window.__rmchBootParsed = null;
+      let replayed = 0;
+      held.forEach((value) => {
+        if (looksLikeSaveContents(value)) {
+          window.__rmchCapture = value;
+        } else {
+          const kind = classifyDataTable(value);
+          if (kind && !(window.__rmchDataTables && window.__rmchDataTables[kind])) {
+            storeDataTable(kind, value);
+            replayed += 1;
+          }
+        }
+      });
+      if (replayed) log("boot capture replayed", { kinds: replayed });
+    } catch (error) { noteError(error); }
+  }
+  // ---------------------------------------------------------------------------
   // Engine object resolution.
   //
   // RMCH never assumes `$gameParty` is reachable by name: obfuscated/bundled
@@ -210,18 +475,22 @@
   }
 
   // --- $game* singletons ------------------------------------------------------
+  //
+  // capturedEngine() is the closure-sealed fallback: save-contents capture
+  // (08-capture.js) holds live singletons for sealed games once the player
+  // has saved or loaded once.
 
-  function resolveParty() { return callAlias("gameParty") || window.$gameParty || null; }
-  function resolveSystem() { return callAlias("gameSystem") || window.$gameSystem || null; }
-  function resolveVariables() { return callAlias("gameVariables") || window.$gameVariables || null; }
-  function resolveSwitches() { return callAlias("gameSwitches") || window.$gameSwitches || null; }
-  function resolveSelfSwitches() { return callAlias("gameSelfSwitches") || window.$gameSelfSwitches || null; }
-  function resolveActors() { return callAlias("gameActors") || window.$gameActors || null; }
+  function resolveParty() { return callAlias("gameParty") || window.$gameParty || capturedEngine("party"); }
+  function resolveSystem() { return callAlias("gameSystem") || window.$gameSystem || capturedEngine("system"); }
+  function resolveVariables() { return callAlias("gameVariables") || window.$gameVariables || capturedEngine("variables"); }
+  function resolveSwitches() { return callAlias("gameSwitches") || window.$gameSwitches || capturedEngine("switches"); }
+  function resolveSelfSwitches() { return callAlias("gameSelfSwitches") || window.$gameSelfSwitches || capturedEngine("selfSwitches"); }
+  function resolveActors() { return callAlias("gameActors") || window.$gameActors || capturedEngine("actors"); }
   function resolveTroop() { return callAlias("gameTroop") || window.$gameTroop || null; }
   function resolveTemp() { return callAlias("gameTemp") || window.$gameTemp || null; }
-  function resolveMap() { return callAlias("gameMap") || window.$gameMap || null; }
-  function resolvePlayer() { return callAlias("gamePlayer") || window.$gamePlayer || null; }
-  function resolveScreen() { return callAlias("gameScreen") || window.$gameScreen || null; }
+  function resolveMap() { return callAlias("gameMap") || window.$gameMap || capturedEngine("map"); }
+  function resolvePlayer() { return callAlias("gamePlayer") || window.$gamePlayer || capturedEngine("player"); }
+  function resolveScreen() { return callAlias("gameScreen") || window.$gameScreen || capturedEngine("screen"); }
 
   function resolveFollowers() {
     const player = resolvePlayer();
@@ -283,7 +552,9 @@
   function resolveData(kind) {
     const names = DATA_TABLES[kind];
     if (!names) return null;
-    return callAlias(names[0]) || window[names[1]] || null;
+    // capturedDataTable (08-capture.js): closure-sealed shells keep the $data*
+    // tables inside their blob, so the boot-time JSON tap is the only source.
+    return callAlias(names[0]) || window[names[1]] || capturedDataTable(kind);
   }
 
   function runtimeDataTable(kind) {
@@ -459,8 +730,17 @@
   // Commands used to repeat `const p = resolveParty(); if (!p) throw ...` a
   // couple of dozen times, with the message drifting between copies.
 
+  function sealedCaptureHint() {
+    // Closure-sealed shells: the live singletons only reach the bridge when a
+    // save/load flows through the JSON tap (08-capture.js). Until then a bare
+    // "is unavailable" reads like a bug; say what actually unblocks it.
+    return (envVar("RMCH_SEALED") === "1" && !window.__rmchCapture)
+      ? "（闭包壳游戏：先在游戏里读档或存档一次，修改器才能拿到实时数据）"
+      : "";
+  }
+
   function requireEngineObject(object, label, method) {
-    if (!object) throw new Error(`${label} is unavailable`);
+    if (!object) throw new Error(`${label} is unavailable${sealedCaptureHint()}`);
     if (method && typeof object[method] !== "function") {
       throw new Error(`${label}.${method} is unavailable`);
     }
@@ -682,7 +962,7 @@
       if (Array.isArray(data)) actor = data[actorId];
       else if (data && typeof data === "object") actor = data[actorId];
     }
-    if (!actor) throw new Error(`actor ${actorId} is unavailable`);
+    if (!actor) throw new Error(`actor ${actorId} is unavailable${sealedCaptureHint()}`);
     return actor;
   }
 
@@ -909,10 +1189,27 @@
   // the GUI wants them zipped, paged.
   function listSystemEntries(kind, args) {
     const system = resolveData("system");
-    if (!system) throw new Error("$dataSystem is unavailable");
-    const names = kind === "switches" ? system.switches : system.variables;
-    if (!Array.isArray(names)) throw new Error(`system ${kind} list is unavailable`);
     const store = kind === "switches" ? resolveSwitches() : resolveVariables();
+    let names = system && (kind === "switches" ? system.switches : system.variables);
+    if (!Array.isArray(names)) {
+      // Closure-sealed shells keep $dataSystem inside their blob, so names
+      // are unavailable — but a captured store (08-capture.js) still knows
+      // its own size and values. List numbered, unnamed entries rather than
+      // failing the whole tab.
+      const data = store && store._data;
+      if (!data) throw new Error("$dataSystem is unavailable");
+      let size = 0;
+      if (Array.isArray(data)) {
+        size = data.length;
+      } else {
+        for (const key of Object.keys(data)) {
+          const id = Number(key);
+          if (Number.isFinite(id) && id > size) size = id;
+        }
+        size += 1; // ids are 1-based; names index is the id itself
+      }
+      names = new Array(size).fill("");
+    }
     const offset = Math.max(0, Math.floor(looseNumber(args.offset, 0)));
     const limit = Math.max(1, Math.min(2000, Math.floor(looseNumber(args.limit, 200))));
     const entries = [];
@@ -924,7 +1221,7 @@
       } catch (_) {}
       entries.push({ id, name: names[id] || "", value });
     }
-    return { total: Math.max(0, names.length - 1), offset, limit, entries };
+    return { total: Math.max(0, names.length - 1), offset, limit, entries, namesUnavailable: !system };
   }
 
   // --- maps -------------------------------------------------------------------
@@ -1624,6 +1921,14 @@
   // The transport mode arrives via the env shim (05-node-io reads
   // window.__rmchEnv), so its value doubles as the CDP selector.
   const cdpTransport = transportMode === "cdp";
+  // "file": the NB evalNWBin shell family (万族穿越-源启崛起) kills the whole
+  // app the moment the page constructs ANY WebSocket — measured: the native
+  // constructor hangs the renderer and a watchdog exits the process tree
+  // seconds later. The JSONL channel below (commands.jsonl in, events.jsonl
+  // out, state.json once a second) carries everything instead; no socket is
+  // ever created. Injection still works because the bridge is eval'd by the
+  // attach DLL, not loaded as an extension.
+  const fileTransport = transportMode === "file";
 
   function wsUrl() {
     return `ws://127.0.0.1:${wsPort}/bridge/${encodeURIComponent(gameKey)}?token=${encodeURIComponent(wsToken)}`;
@@ -1721,6 +2026,23 @@
   // --- WebSocket --------------------------------------------------------------
 
   function connectWs() {
+    if (fileTransport) {
+      // No socket at all (see the transportMode note above): hello goes to
+      // events.jsonl, commands arrive via pollCommands(), state via state.json.
+      wsConnected = true;
+      if (eventPath) {
+        append(eventPath, {
+          t: "hello",
+          ts: Date.now(),
+          bridgeVersion: bridge.version,
+          engine: engineInfo(),
+          gameKey,
+          profile: bridge.profile || null
+        });
+      }
+      writeState();
+      return;
+    }
     if (cdpTransport) {
       // No socket at all: outbound piles into window.__rmchOutbox (drained by
       // the launcher's polling), inbound arrives via window.__rmchDispatch
@@ -1946,6 +2268,30 @@
     }
   }
 
+  // Closure-sealed shells (nb-evalnwbin) hide the $data tables, so catalog
+  // lookups fail even for items the party already owns. The party's own
+  // items()/weapons()/armors() return those very data objects though — fall
+  // back to them so owned items stay editable. Adding an item the party does
+  // NOT own still needs the catalog and fails with a clear error.
+  function ownedItemData(party, kind, id) {
+    try {
+      const fn = kind === "item" ? "items" : kind === "weapon" ? "weapons" : "armors";
+      if (typeof party[fn] === "function") {
+        const list = party[fn]() || [];
+        for (let i = 0; i < list.length; i += 1) {
+          if (list[i] && list[i].id === id) return list[i];
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function dataEntryLoose(kind, id, party) {
+    const table = runtimeDataTable(kind);
+    if (table[id]) return table[id];
+    return ownedItemData(party, kind, id);
+  }
+
   Object.assign(commandHandlers, {
 
     // --- gold -----------------------------------------------------------------
@@ -1982,12 +2328,14 @@
       const party = requireParty("gainItem");
       const kind = normalizeDropKind(args.kind || "item");
       if (!kind) throw new Error(`unsupported item kind: ${args.kind}`);
-      const { id } = requireDataEntry(kind, args.id, "id");
+      const id = requireId(args.id, "id");
+      const data = dataEntryLoose(kind, id, party);
+      if (!data) throw new Error(`${kind} ${id} not found`);
       const amount = Math.floor(requireNumber(args.amount, "amount"));
       if (!Number.isFinite(amount) || amount === 0) throw new Error("amount must be a non-zero number");
       const prop = inventorySlot(kind);
       const want = Math.max(0, (Number(party[prop] && party[prop][id]) || 0) + amount);
-      withRatesSuppressed(() => party.gainItem(runtimeDataTable(kind)[id], amount));
+      withRatesSuppressed(() => party.gainItem(data, amount));
       writeBackItemCount(party, prop, id, want);
       return { kind, id, amount, count: Number(party[prop] && party[prop][id]) || 0 };
     },
@@ -2006,7 +2354,7 @@
           const count = Math.round(Number(store[key]) || 0);
           if (count <= 0) continue;
           const id = Number(key);
-          const entry = runtimeDataTable(kind)[id];
+          const entry = runtimeDataTable(kind)[id] || ownedItemData(party, kind, id);
           entries.push({ kind, id, name: entry && entry.name || "", count });
         }
       }
@@ -2018,14 +2366,16 @@
       const party = requireParty("gainItem");
       const kind = normalizeDropKind(args.kind || "item");
       if (!kind) throw new Error(`unsupported item kind: ${args.kind}`);
-      const { id } = requireDataEntry(kind, args.id, "id");
+      const id = requireId(args.id, "id");
+      const data = dataEntryLoose(kind, id, party);
+      if (!data) throw new Error(`${kind} ${id} not found`);
       const count = Math.max(0, Math.floor(requireNumber(args.count, "count")));
       const prop = inventorySlot(kind);
       const current = Number(party[prop] && party[prop][id]) || 0;
       const delta = count - current;
       // gainItem first so a working engine keeps its bookkeeping; the writeback
       // then pins the exact count when gainItem is stubbed or scaled.
-      if (delta !== 0) withRatesSuppressed(() => party.gainItem(runtimeDataTable(kind)[id], delta));
+      if (delta !== 0) withRatesSuppressed(() => party.gainItem(data, delta));
       writeBackItemCount(party, prop, id, count);
       return { kind, id, count: Number(party[prop] && party[prop][id]) || 0 };
     },
@@ -2842,6 +3192,21 @@
       dataManager.setupNewGame();
       sceneManager.goto(sceneMap);
       return { started: true };
+    },
+
+    // Closure-sealed shells only: the launch flow's catalog dance (attach.mjs
+    // ensureSealedCatalog) asks the bridge to reload the page so the boot-time
+    // database load flows through the JSON tap with the bridge guaranteed
+    // present. The attach layer re-injects into the new context — without it
+    // this command would simply kill the bridge, so it is never exposed to the
+    // GUI directly.
+    "system.rebootCapture": () => {
+      log("reboot capture requested");
+      try { flushDataTables(); } catch (_) {}
+      setTimeout(() => {
+        try { location.reload(); } catch (error) { noteError(error); }
+      }, 50);
+      return { reloading: true };
     }
   });
   // ---------------------------------------------------------------------------
@@ -2991,6 +3356,16 @@
   ensureDir();
   log("bridge injected", { href: location.href, gameKey, bridgeVersion: bridge.version });
 
+  // Save-contents capture (08-capture.js): closure-sealed shells expose no
+  // engine globals, and this tap is the only channel that ever reaches them.
+  // Installed for every game — it is inert until a save/load flows by, and
+  // resolvers only consult the capture after every other source fails.
+  try { installSaveCaptureTap(); } catch (error) { noteError(error); }
+  // A bootTap bootstrap (launch/dance for sealed shells) may have arrived
+  // before the canvas gate allowed the full bridge eval — its holding tap
+  // kept the boot-time database parses for us.
+  try { replayBootCaptured(); } catch (error) { noteError(error); }
+
   loadProfile();
 
   // Sealed-launcher games (RMCH_SEALED=1): the engine's singletons are not on
@@ -3001,6 +3376,29 @@
   // then drops to a slow permanent retry so hooks whose classes materialise
   // later (party actors only exist once a save is loaded) still land.
   const sealedEngine = envVar("RMCH_SEALED") === "1";
+
+  // Boot progress watch (sealed shells only): while the game sits on its
+  // splash, the JSON tap counters are the only externally visible sign of
+  // life. One compact line every 5s for the first 3 minutes makes "卡在哪一
+  // 段" readable straight from bridge.log — parses frozen at a fixed count
+  // means the shell's boot is stalled, a save capture means gameplay reached.
+  if (sealedEngine) {
+    let bootWatchTicks = 0;
+    const bootWatchTimer = setInterval(function () {
+      bootWatchTicks += 1;
+      const stats = bridge.jsonTapStats || {};
+      const captured = !!window.__rmchCapture;
+      log("boot watch", {
+        t: bootWatchTicks * 5,
+        parses: stats.parses || 0,
+        stringifies: stats.stringifies || 0,
+        captured,
+        tables: Object.keys(window.__rmchDataTables || {}).length,
+        hooks: lastHookCount
+      });
+      if (captured || bootWatchTicks >= 36) clearInterval(bootWatchTimer);
+    }, 5000);
+  }
   let hookRetries = 0;
   let stablePasses = 0;
   let lastHookCount = -1;
