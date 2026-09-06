@@ -1124,6 +1124,11 @@
     "actor", "enemy", "troop", "mapInfo", "commonEvent"
   ]);
 
+  // Hard ceiling on one catalog/list response. The GUI always asks for 20000;
+  // grind games (再刷一把2 ships >2000 skills) blew past the old 2000 cap,
+  // which silently truncated the picker to the table's first 2000 entries.
+  const LIST_LIMIT_MAX = 20000;
+
   // Party inventory kind -> Game_Party storage field. Three call sites needed
   // this mapping (item.list, item.set, value-lock writeback) and each used to
   // spell it out inline.
@@ -1211,7 +1216,7 @@
       names = new Array(size).fill("");
     }
     const offset = Math.max(0, Math.floor(looseNumber(args.offset, 0)));
-    const limit = Math.max(1, Math.min(2000, Math.floor(looseNumber(args.limit, 200))));
+    const limit = Math.max(1, Math.min(LIST_LIMIT_MAX, Math.floor(looseNumber(args.limit, 200))));
     const entries = [];
     const end = Math.min(names.length, offset + limit);
     for (let id = Math.max(1, offset); id < end; id += 1) {
@@ -2319,7 +2324,7 @@
     "catalog.query": (args) => {
       const kind = String(args.kind || "");
       if (!CATALOG_KINDS.includes(kind)) throw new Error(`unsupported catalog kind: ${kind}`);
-      return catalogEntries(kind, { query: args.query, limit: clampNumber(args.limit, 1, 2000, 500) });
+      return catalogEntries(kind, { query: args.query, limit: clampNumber(args.limit, 1, LIST_LIMIT_MAX, 500) });
     },
 
     // --- inventory ------------------------------------------------------------
