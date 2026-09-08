@@ -54,7 +54,7 @@ body {
    width, whatever the NW window is sized to. */
 .rm-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(392px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
   gap: 14px;
 }
 
@@ -108,6 +108,28 @@ body {
 }
 .rm-md-list { flex: 1 1 350px; min-width: 0; }
 .rm-md-detail { flex: 1 1 400px; min-width: 0; }
+
+/* Shell and page flow. Component surfaces still use the shared theme. */
+.rm-header { min-height: 64px; padding: 12px 20px; display: flex; align-items: center; gap: 12px; }
+.rm-current-game { display: flex; align-items: center; gap: 8px; flex: 1; max-width: 480px; min-width: 220px; }
+.rm-current-game .n-select { flex: 1; min-width: 140px; }
+.rm-context-label { font-size: 12px; white-space: nowrap; opacity: .75; margin-left: 12px; }
+.rm-service-status { display: inline-flex; align-items: center; padding: 6px; }
+.rm-page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 2px 0 6px; }
+.rm-page-heading h1 { margin: 0 0 4px; font-size: 22px; font-weight: 650; letter-spacing: -.4px; }
+.rm-page-heading .n-text { font-size: 12px; }
+.rm-game-card { min-width: 0; }
+.rm-game-connected { border-inline-start: 3px solid var(--rm-connected) !important; }
+.rm-dark { --rm-connected: #4bcf8f; }
+.rm-light { --rm-connected: #22825b; }
+.rm-operation-status { font-size: 12px; overflow-wrap: anywhere; }
+.rm-empty-state { padding: 64px 20px; }
+.rm-main { height: calc(100% - 64px); }
+@media (max-width: 1020px) {
+  .rm-context-label, .rm-session-count { display: none; }
+  .rm-header { gap: 8px; padding-inline: 16px; }
+  .rm-md-list, .rm-md-detail { flex-basis: 100%; }
+}
 
 /* Selected row in a master list. Naive has no "selected row" state of its own,
    so this is the one place a data-table row gets painted by hand. */
@@ -247,3 +269,15 @@ body {
 }
 #boot-error .boot-error-item { margin-bottom: 18px; }
 #boot-error pre { margin: 6px 0 0; white-space: pre-wrap; color: #e6e8ef; }
+:root { --rm-event-border: rgba(128,145,167,.22); }
+.rm-event-hint { font-size:12px; opacity:.72; line-height:1.7; overflow-wrap:anywhere; }
+.rm-event-canvas { width:100%; height: min(54vh,560px); display:block; border-radius:8px; touch-action:none; cursor:crosshair; }
+.rm-event-conditions { border-left:3px solid #79a694; padding:8px 12px; background:rgba(111,155,139,.08); font-size:12px; }
+.rm-event-conditions p { margin:4px 0; }
+.rm-event-commands { max-height:54vh; overflow:auto; border:1px solid var(--rm-event-border); border-radius:8px; }
+.rm-event-command { padding:10px 12px; border-bottom:1px solid var(--rm-event-border); }
+.rm-event-command[data-current="true"] { background:rgba(90,161,220,.15); box-shadow:inset 3px 0 #69b5ef; }
+.rm-event-command pre { white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.7 Consolas,monospace; margin:6px 0; }
+.rm-event-command details { font-size:11px; opacity:.8; }
+.rm-event-command summary { cursor:pointer; }
+.rm-event-index { display:inline-block; min-width:42px; opacity:.55; font-variant-numeric:tabular-nums; }

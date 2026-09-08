@@ -1,0 +1,410 @@
+<script>
+import Component_RmIcon from '../shell/RmIcon.vue';
+import Component_RmEntryList from '../parts/RmEntryList.vue';
+import Component_RmPicker from '../parts/RmPicker.vue';
+import Component_RmVirtual from '../parts/RmVirtual.vue';
+
+var RMCH = (window.RMCH = window.RMCH || {});
+
+var store = RMCH.store;
+
+var data = store.data;
+
+var trainer = store.trainer;
+
+var ref = Vue.ref;
+
+var computed = Vue.computed;
+
+var watch = Vue.watch;
+
+var PARAM_NAMES = ["最大HP", "最大MP", "攻击", "防御", "魔攻", "魔防", "敏捷", "幸运"];
+
+export default {
+    name: "DataActorsView",
+    components: {
+      RmIcon: Component_RmIcon,
+      RmEntryList: Component_RmEntryList,
+      RmPicker: Component_RmPicker,
+      RmVirtual: Component_RmVirtual
+    },
+    setup: function () {
+      function actorField(field) {
+        var next = actor.value;
+        var session = store.sessionFor(trainer.gameKey);
+        var identity = next && next.identity != null ? next.identity + ":" + (session && session.connectedAt) : next && next.id;
+        return "actor." + (identity == null ? "none" : identity) + "." + field;
+      }
+      var form = store.useDraft(function () { return actorField("form"); }, function () {
+        var next = actor.value || {};
+        return { name: next.name || "", nickname: next.nickname || "", level: next.level, exp: 0, hp: next.hp, mp: next.mp, tp: next.tp || 0 };
+      });
+      var paramDrafts = store.useDraft(function () { return actorField("params"); }, [0, 0, 0, 0, 0, 0, 0, 0]);
+      var picker = ref(null);              // "skill" | "state" | null
+      var pickerBusy = ref(false);
+      var skills = ref([]);
+      var states = ref([]);
+      var createOpen = ref(false);
+      var createBusy = ref(false);
+      var createQuery = ref("");
+      var createLevel = store.useDraft("actor.createLevel", 5);
+      var species = ref([]);
+
+      var actor = computed(function () { return trainer.actor; });
+      var selectedId = computed(function () { return data.selected.actor; });
+      var isEssentials = computed(function () { return !!(trainer.live && trainer.live.essentials); });
+
+      var inParty = computed(function () {
+        if (!actor.value) return false;
+        return trainer.party.some(function (member) { return member.id === actor.value.id; });
+      });
+
+      watch(function () { return trainer.gameKey; }, function () {
+        picker.value = null; createOpen.value = false; skills.value = []; states.value = []; species.value = [];
+      });
+
+      function select(row) {
+        data.selected.actor = row.id;
+        store.openActor(row.id);
+      }
+
+      function toggleParty(row, enabled) {
+        store.cmdWarn(enabled ? "party.addActor" : "party.removeActor", { id: row.id })
+          .then(function (payload) {
+            if (!payload) return;
+            store.ok("#" + row.id + " " + (row.name || "") + (enabled ? " 已入队" : " 已离队"));
+            store.refreshParty();
+            // Essentials party ids are positional — a store/withdraw shifts
+            // them, so the roster must be re-pulled too (harmless elsewhere).
+            store.loadRoster();
+          });
+      }
+
+      function apply(type, args, label) {
+        if (!actor.value) return Promise.resolve(null);
+        return store.cmdWarn(type, Object.assign({ id: actor.value.id }, args)).then(function (payload) {
+          store.applyActor(payload);
+          if (payload) store.refreshParty();
+          if (payload) store.ok(label + " 已应用");
+          return payload;
+        });
+      }
+
+      function applyName() {
+        var id = actor.value.id, nickname = form.value.nickname;
+        return store.cmdWarn("actor.name.set", { id: id, name: form.value.name })
+          .then(function (payload) {
+            if (!payload) return null;
+            store.applyActor(payload);
+            return store.cmdWarn("actor.nickname.set", { id: id, nickname: nickname });
+          })
+          .then(function (payload) {
+            store.applyActor(payload);
+            if (payload) store.refreshParty();
+            if (payload) store.ok("名称 / 昵称已应用");
+          });
+      }
+
+      function applyLevel() {
+        if (!actor.value) return;
+        var id = actor.value.id, amount = Number(form.value.exp) || 0;
+        return store.cmdWarn("actor.level.set", { id: id, level: form.value.level }).then(function (payload) {
+          if (!payload) return null;
+          store.applyActor(payload);
+          return amount > 0 ? store.cmdWarn("actor.exp.add", { id: id, amount: amount }) : payload;
+        }).then(function (payload) {
+          if (!payload) return;
+          store.applyActor(payload); store.refreshParty(); store.ok("等级 / 经验已应用");
+        });
+      }
+
+      function applyParam(index) {
+        var value = Number(paramDrafts.value[index]) || 0;
+        if (!value) return store.warn("加值为 0，没什么可应用的");
+        return apply("actor.param.add", { paramId: index, value: value }, PARAM_NAMES[index]);
+      }
+
+      function bumpParam(index, step) {
+        var next = (Number(paramDrafts.value[index]) || 0) + step;
+        paramDrafts.value = paramDrafts.value.map(function (v, i) { return i === index ? next : v; });
+      }
+
+      // --- pickers -------------------------------------------------------------
+
+      function openPicker(kind) {
+        picker.value = kind;
+        var target = kind === "skill" ? skills : states;
+        if (target.value.length) return;
+        pickerBusy.value = true;
+        store.cmd("catalog.query", { kind: kind, limit: 20000 })
+          .then(function (payload) {
+            if (payload) target.value = payload.entries || [];
+          })
+          .finally(function () { pickerBusy.value = false; });
+      }
+
+      function togglePickerEntry(entry, enabled) {
+        if (!actor.value) return;
+        pickerBusy.value = true;
+        var type = picker.value === "skill"
+          ? (enabled ? "actor.skill.learn" : "actor.skill.forget")
+          : (enabled ? "actor.state.add" : "actor.state.remove");
+        var args = picker.value === "skill" ? { skillId: entry.id } : { stateId: entry.id };
+        store.cmdWarn(type, Object.assign({ id: actor.value.id }, args))
+          .then(function (payload) { store.applyActor(payload); })
+          .finally(function () { pickerBusy.value = false; });
+      }
+
+      var pickerEntries = computed(function () {
+        return picker.value === "skill" ? skills.value : states.value;
+      });
+
+      var ownedIds = computed(function () {
+        if (!actor.value) return [];
+        var list = picker.value === "skill" ? (actor.value.skills || []) : (actor.value.states || []);
+        return list.map(function (entry) { return entry.id; });
+      });
+
+      // --- create (Essentials only) ------------------------------------------
+      // The debug menu's own code path (pbAddPokemonSilent) behind a species
+      // picker. Default level follows the party average; the detail form on
+      // the right adjusts it afterwards.
+      var createFiltered = computed(function () {
+        var needle = createQuery.value.trim().toLowerCase();
+        if (!needle) return species.value;
+        return species.value.filter(function (entry) {
+          return String(entry.name || "").toLowerCase().indexOf(needle) !== -1 ||
+            String(entry.id).toLowerCase().indexOf(needle) !== -1;
+        });
+      });
+
+      function openCreate() {
+        createOpen.value = true;
+        if (species.value.length) return;
+        createBusy.value = true;
+        store.cmd("catalog.query", { kind: "enemy", limit: 20000 })
+          .then(function (payload) { if (payload) species.value = payload.entries || []; })
+          .finally(function () { createBusy.value = false; });
+      }
+
+      function createSpecies(entry) {
+        createBusy.value = true;
+        store.cmdWarn("party.createPokemon", { species: entry.id, level: createLevel.value })
+          .then(function (payload) {
+            if (!payload) return;
+            store.ok((entry.name || entry.id) + (payload.where === "party" ? " 已入队" : " 已发送到存储箱"));
+            store.refreshParty();
+            store.loadRoster();
+            if (payload.actor && payload.id != null) {
+              data.selected.actor = payload.id;
+              store.openActor(payload.id);
+            }
+            createOpen.value = false;
+          })
+          .finally(function () { createBusy.value = false; });
+      }
+
+      // MTool's "选中已拥有的": jump the list to what the actor already has.
+      var ownedOnly = ref(false);
+      var visibleEntries = computed(function () {
+        if (!ownedOnly.value) return pickerEntries.value;
+        var owned = Object.create(null);
+        ownedIds.value.forEach(function (id) { owned[id] = true; });
+        return pickerEntries.value.filter(function (entry) { return owned[entry.id]; });
+      });
+
+      var rosterEntries = computed(function () {
+        var inPartyIds = Object.create(null);
+        trainer.party.forEach(function (member) { inPartyIds[member.id] = true; });
+        return trainer.roster.map(function (entry) {
+          return { id: entry.id, name: entry.name, inParty: !!inPartyIds[entry.id], box: entry.box || 0 };
+        });
+      });
+
+      var listHeight = computed(function () { return Math.max(240, store.viewport.height - 340); });
+
+      return {
+        store: store,
+        data: data,
+        trainer: trainer,
+        actor: actor,
+        selectedId: selectedId,
+        inParty: inParty,
+        isEssentials: isEssentials,
+        createOpen: createOpen,
+        createBusy: createBusy,
+        createQuery: createQuery,
+        createLevel: createLevel,
+        createFiltered: createFiltered,
+        openCreate: openCreate,
+        createSpecies: createSpecies,
+        form: form,
+        paramNames: PARAM_NAMES,
+        paramDrafts: paramDrafts,
+        rosterEntries: rosterEntries,
+        listHeight: listHeight,
+        picker: picker,
+        pickerBusy: pickerBusy,
+        visibleEntries: visibleEntries,
+        ownedIds: ownedIds,
+        ownedOnly: ownedOnly,
+        select: select,
+        toggleParty: toggleParty,
+        apply: apply,
+        applyName: applyName,
+        applyLevel: applyLevel,
+        applyParam: applyParam,
+        bumpParam: bumpParam,
+        openPicker: openPicker,
+        togglePickerEntry: togglePickerEntry,
+        closePicker: function () { picker.value = null; ownedOnly.value = false; },
+        isInParty: function (row) { return row.inParty; },
+        partyMark: function (row) { return row.inParty ? "在队" : (row.box ? "盒子 " + row.box : ""); },
+        queryOf: computed(function () { return data.query.actor; })
+      };
+    },
+
+  };
+</script>
+
+<template>
+<div class="rm-md">
+  <n-card class="rm-md-list" size="small" title="角色列表">
+    <template #header-extra>
+      <n-flex align="center" :size="8">
+        <n-text depth="3" style="font-size: 12px">在队 {{ trainer.party.length }}</n-text>
+        <n-button v-if="isEssentials" size="tiny" tertiary type="primary"
+                  :loading="createBusy && !createOpen" @click="openCreate">
+          <template #icon><rm-icon name="plus" :size="14"/></template>新建
+        </n-button>
+        <n-button size="tiny" quaternary :loading="trainer.loading.roster"
+                  @click="store.loadRoster(); store.refreshParty()">
+          <template #icon><rm-icon name="refresh" :size="14"/></template>
+        </n-button>
+      </n-flex>
+    </template>
+    <rm-entry-list :entries="rosterEntries" :selected-id="selectedId" :query="queryOf"
+                   check-label="在队伍中" :checked="isInParty"
+                   value-label="" :value-of="partyMark"
+                   :height="listHeight" :loading="trainer.loading.roster"
+                   empty-text="等待游戏数据加载…"
+                   @update:query="v => data.query.actor = v"
+                   @select="select" @toggle="toggleParty"/>
+  </n-card>
+  <n-card class="rm-md-detail" size="small"
+          :title="actor ? '#' + actor.id + ' ' + actor.name : '角色详情'">
+    <template #header-extra>
+      <n-flex v-if="actor" align="center" :size="6" :wrap="false">
+        <n-button size="tiny" secondary type="primary" @click="openPicker('skill')">
+          技能 {{ (actor.skills || []).length }}
+        </n-button>
+        <n-button size="tiny" secondary @click="openPicker('state')">
+          状态 {{ (actor.states || []).length }}
+        </n-button>
+        <n-button size="tiny" tertiary @click="apply('actor.recover', {}, '全恢复')">全恢复</n-button>
+        <n-button v-if="!inParty" size="tiny" type="primary"
+                  @click="toggleParty({ id: actor.id, name: actor.name }, true)">入队</n-button>
+        <n-button v-else size="tiny" type="error" secondary
+                  @click="toggleParty({ id: actor.id, name: actor.name }, false)">离队</n-button>
+        <n-tag size="small" :bordered="false" :type="inParty ? 'success' : 'default'">
+          {{ inParty ? "在队" : "未入队" }}
+        </n-tag>
+      </n-flex>
+    </template>
+    <n-empty v-if="!actor" description="在左边点一个角色" style="padding: 40px 0"/>
+    <n-flex v-else vertical :size="14">
+      <n-descriptions :column="3" size="small" bordered label-placement="top">
+        <n-descriptions-item label="职业">{{ actor.className || actor.classId || "-" }}</n-descriptions-item>
+        <n-descriptions-item label="等级">{{ actor.level }} / {{ actor.maxLevel == null ? "?" : actor.maxLevel }}</n-descriptions-item>
+        <n-descriptions-item label="经验">{{ actor.exp == null ? "-" : actor.exp }}{{ actor.nextLevelExp == null ? "" : " / " + actor.nextLevelExp }}</n-descriptions-item>
+        <n-descriptions-item label="HP">{{ actor.hp }} / {{ actor.mhp }}</n-descriptions-item>
+        <n-descriptions-item label="MP">{{ actor.mp }} / {{ actor.mmp }}</n-descriptions-item>
+        <n-descriptions-item label="TP">{{ actor.tp == null ? "-" : actor.tp }}{{ actor.maxTp == null ? "" : " / " + actor.maxTp }}</n-descriptions-item>
+      </n-descriptions>
+      <n-form label-placement="top" size="small" :show-feedback="false">
+        <n-flex vertical :size="12">
+          <n-form-item label="名称 / 昵称" @keyup.enter="applyName">
+            <n-flex :size="6" :wrap="false" style="width: 100%">
+              <n-input v-model:value="form.name" placeholder="名称" style="flex: 1"/>
+              <n-input v-model:value="form.nickname" placeholder="昵称" style="flex: 1"/>
+              <n-button type="primary" @click="applyName">应用</n-button>
+            </n-flex>
+          </n-form-item>
+          <n-form-item label="等级 / 追加经验" @keyup.enter="applyLevel">
+            <n-flex :size="6" :wrap="false" style="width: 100%">
+              <n-input-number v-model:value="form.level" :min="1" :show-button="false" style="flex: 1"/>
+              <n-input-number v-model:value="form.exp" :min="0" :show-button="false" style="flex: 1" placeholder="经验 +"/>
+              <n-button type="primary"
+                        @click="applyLevel">
+                应用
+              </n-button>
+            </n-flex>
+          </n-form-item>
+          <n-form-item label="HP / MP / TP" @keyup.enter="apply('actor.vitals.set', { hp: form.hp, mp: form.mp, tp: form.tp }, 'HP/MP/TP')">
+            <n-flex :size="6" :wrap="false" style="width: 100%">
+              <n-input-number v-model:value="form.hp" :show-button="false" style="flex: 1"/>
+              <n-input-number v-model:value="form.mp" :show-button="false" style="flex: 1"/>
+              <n-input-number v-model:value="form.tp" :show-button="false" style="flex: 1"/>
+              <n-button type="primary"
+                        @click="apply('actor.vitals.set', { hp: form.hp, mp: form.mp, tp: form.tp }, 'HP/MP/TP')">
+                应用
+              </n-button>
+            </n-flex>
+          </n-form-item>
+        </n-flex>
+      </n-form>
+      <div>
+        <n-text depth="3" style="font-size: 12px">属性加值（当前值 → 加多少）</n-text>
+        <div class="rm-params">
+          <div v-for="(name, index) in paramNames" :key="name" class="rm-param-row">
+            <span class="rm-param-name">{{ name }}</span>
+            <span class="rm-param-cur">{{ actor.params ? actor.params[index] : "-" }}</span>
+            <n-input-number :value="paramDrafts[index]" size="tiny" :show-button="false"
+                            style="width: 72px"
+                            @update:value="v => paramDrafts = paramDrafts.map((x, i) => i === index ? v : x)"/>
+            <n-button-group size="tiny">
+              <n-button @click="bumpParam(index, -100)">-100</n-button>
+              <n-button @click="bumpParam(index, -1)">-1</n-button>
+              <n-button @click="bumpParam(index, 1)">+1</n-button>
+              <n-button @click="bumpParam(index, 100)">+100</n-button>
+            </n-button-group>
+            <n-button size="tiny" type="primary" @click="applyParam(index)">应用</n-button>
+          </div>
+        </div>
+      </div>
+    </n-flex>
+  </n-card>
+  <rm-picker :show="!!picker" :title="picker === 'skill' ? '技能' : '状态'"
+             :entries="visibleEntries" :owned-ids="ownedIds" :busy="pickerBusy"
+             :game-key="store.trainer.gameKey"
+             @update:show="v => { if (!v) closePicker() }"
+             @toggle="togglePickerEntry" @select-owned="ownedOnly = !ownedOnly"/>
+
+  <n-modal :show="createOpen" preset="card" title="新建宝可梦" style="width: min(640px, 92vw)"
+           :bordered="false" @update:show="v => createOpen = v">
+    <n-flex vertical :size="10">
+      <n-flex align="center" :size="10" :wrap="false">
+        <n-input v-model:value="createQuery" size="small" placeholder="搜索名称或内部名" clearable style="flex: 1">
+          <template #prefix><rm-icon name="search" :size="14"/></template>
+        </n-input>
+        <n-text depth="3" style="font-size: 12px; flex: none">等级</n-text>
+        <n-input-number v-model:value="createLevel" :min="1" :max="100" size="small"
+                        :show-button="false" style="width: 76px"/>
+      </n-flex>
+      <n-text depth="3" style="font-size: 12px">点一个物种即创建：队伍有空位就入队，满了自动进存储箱。{{ createFiltered.length }} 条</n-text>
+      <rm-virtual :items="createFiltered" :item-size="34" :height="420" key-field="id">
+        <template #default="{ item }">
+          <div class="rm-picker-row" style="cursor: pointer" @click="!createBusy && createSpecies(item)">
+            <span class="rm-picker-item">
+              <span class="rm-picker-name">
+                <n-text depth="3" style="font-variant-numeric: tabular-nums; flex: none">{{ item.id }}</n-text>
+                <span class="rm-picker-label">{{ item.name || "(无名)" }}</span>
+              </span>
+            </span>
+          </div>
+        </template>
+      </rm-virtual>
+    </n-flex>
+  </n-modal>
+</div>
+</template>

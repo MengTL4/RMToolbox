@@ -86,30 +86,11 @@ async function main() {
       break;
     }
     case "launch": {
-      const { launchGame } = await import("../core/launcher.mjs");
+      const { gameRuntime } = await import("../core/game-runtime.mjs");
       const { positional, options } = parseArgs(rest);
       if (!positional[0]) usage(1);
       const gameRootArg = path.resolve(positional[0]);
-      // NB evalNWBin shells and Enigma-NB boxes die on any launch flag; their
-      // "launch" is plain spawn + DLL attach, which lives in the attach module.
-      // grover-boot shells take the same route: the plainly launched real game
-      // runs (its suicide paths fail on their own), while the toolbox-shadowed
-      // variant freezes the payload.
-      const { scanGame } = await import("../core/scanner.mjs");
-      const probe = scanGame(gameRootArg);
-      const grover = probe.protection && probe.protection.flags
-        && probe.protection.flags.includes("grover-boot");
-      if (probe.container === "nb-evalnwbin" || probe.container === "enigma-nb" || grover) {
-        const { launchNwInjectGame } = await import("../core/attach.mjs");
-        const summary = await launchNwInjectGame({
-          scan: probe, projectRoot, port: Number(options.port) || 47412
-        });
-        const printable = { ...summary };
-        delete printable.session;
-        console.log(JSON.stringify(printable, null, 2));
-        break;
-      }
-      const summary = await launchGame({
+      const summary = await gameRuntime.launch({
         gameRoot: gameRootArg,
         projectRoot,
         port: Number(options.port) || 47412,
@@ -120,6 +101,7 @@ async function main() {
       // IPC back to it, so close it and point interactive use at the GUI.
       const tauriSession = summary.tauriSession;
       const printable = { ...summary };
+      delete printable.session;
       delete printable.rgssSession;
       delete printable.tauriSession;
       console.log(JSON.stringify(printable, null, 2));
@@ -130,10 +112,10 @@ async function main() {
       break;
     }
     case "attach": {
-      const { attachGame } = await import("../core/attach.mjs");
+      const { gameRuntime } = await import("../core/game-runtime.mjs");
       const { positional, options } = parseArgs(rest);
       if (!positional[0]) usage(1);
-      const summary = await attachGame({
+      const summary = await gameRuntime.attach({
         gameRoot: path.resolve(positional[0]),
         projectRoot,
         port: Number(options.port) || 47412

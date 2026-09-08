@@ -15,14 +15,18 @@ import path from "node:path";
 
 // Exported so tools/gui-check.mjs can scan exactly the files the GUI will run.
 export const MODULES = [
+  "core/jsonl-reader.mjs",
+  "core/bridge-sessions.mjs",
   "core/ws-server.mjs",
   "core/token.mjs",
   "core/rgss-marshal.mjs",
   "core/rgss-archive.mjs",
   "core/rgss.mjs",
   "core/rgss-savecode.mjs",
+  "core/save-files.mjs",
   "core/evb-unpack.mjs",
   "core/scanner.mjs",
+  "core/grover-compat.mjs",
   "core/bridge-bundler.mjs",
   "core/cdp-client.mjs",
   "core/sealed-seed.mjs",
@@ -30,7 +34,8 @@ export const MODULES = [
   "core/shadow-launcher.mjs",
   "core/rgss-launcher.mjs",
   "core/launcher.mjs",
-  "core/attach.mjs"
+  "core/attach.mjs",
+  "core/game-runtime.mjs"
 ];
 
 // Matches: import { a, b } from "...";  |  import x from "...";

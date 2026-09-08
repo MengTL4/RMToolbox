@@ -7,6 +7,7 @@ import path from "node:path";
 import { detectRgss } from "./rgss.mjs";
 import { detectEvb } from "./evb-unpack.mjs";
 import { probeTauriShell } from "./tauri-cdp.mjs";
+import { hasGroverModuleMonitor } from "./grover-compat.mjs";
 
 const RGSS_DLL_RE = /^rgss\d*[a-z]*\.dll$/i;
 const RPG_MAKER_CORE_FILES = {
@@ -252,7 +253,7 @@ function resolveNwExe(root, manifest) {
     return null;
   }
   const junk = /unins|setup|install|crash|redist|vc_redist|dxsetup|dotnet|launch|update|patch/i;
-  const real = exes.filter((name) => !junk.test(name));
+  const real = exes.filter((name) => !junk.test(name) && !/^notification_helper\.exe$/i.test(name));
   return real.length === 1 ? path.join(root, real[0]) : null;
 }
 
@@ -411,7 +412,7 @@ export function scanGame(root) {
   // --- Tauri-shelled games (WebView2) -------------------------------------------
   // No www/, no package.json, no RGSS — a single Tauri exe whose rodata carries
   // the WRY browser-args string. The YanBin "RPG Maker Builder" family ships a
-  // real MZ runtime this way; its arc_img/arc_audio hash-dirs are a cheap
+  // real MV or MZ runtime this way; its arc_img/arc_audio hash-dirs are a cheap
   // signature. Case-sensitive name check on purpose: the NW.js block below uses
   // existsSync("Game.exe"), which a lowercase tauri game.exe satisfies on
   // Windows and would otherwise be mislabeled "unknown-nwjs".
@@ -431,7 +432,7 @@ export function scanGame(root) {
     const exePath = path.join(resolvedRoot, tauriExeName);
     const probe = probeTauriShell(exePath, { deep: hasArcDirs });
     if (probe.isTauri) {
-      result.engine = { id: "MZ", bytecode: false, confidence: hasArcDirs ? "medium" : "low" };
+      result.engine = { id: "MV/MZ", bytecode: false, confidence: hasArcDirs ? "medium" : "low" };
       result.container = "tauri";
       result.tauri = { exeName: tauriExeName, patchable: !!probe.anchor };
       addFlag("tauri-webview2");
@@ -541,7 +542,10 @@ export function scanGame(root) {
   // the wmic-shim + guards strategy (core/shadow-launcher.mjs).
   if (manifest && manifest["bg-script"] && engine && (engine.id === "MV" || engine.id === "MZ")) {
     const coreName = engine.id === "MZ" ? RPG_MAKER_CORE_FILES.mz : RPG_MAKER_CORE_FILES.mv;
-    if (isNwjcBytecode(path.join(jsDir, coreName))) addFlag("grover-boot");
+    if (isNwjcBytecode(path.join(jsDir, coreName))) {
+      addFlag("grover-boot");
+      if (hasGroverModuleMonitor(jsDir)) addFlag("grover-module-monitor");
+    }
   }
 
   if (result.engine.bytecode) addFlag("bytecode-js");
@@ -656,7 +660,7 @@ export function injectionStrategy(scan) {
     return { id: "rgss-script", reason: "RGSS (Ruby): bridge spliced into the Scripts archive inside a shadow copy" };
   }
   if (scan.container === "tauri") {
-    return { id: "tauri-cdp", reason: "Tauri (WebView2) shell over an MZ runtime: patched exe copy exposes CDP, bridge transport is Runtime.evaluate outbox polling" };
+    return { id: "tauri-cdp", reason: "Tauri (WebView2) shell over an MV/MZ runtime: patched exe copy exposes CDP, bridge transport is Runtime.evaluate outbox polling" };
   }
   if (scan.container === "nwjs-sealed") {
     return { id: "extension-cdp-seed", reason: "sealed MZ engine (obfuscated game.js, no window globals): extension bridge + a CDP heap scan publishes the engine objects once the game boots" };
@@ -672,6 +676,9 @@ export function injectionStrategy(scan) {
   }
   if (scan.container === "enigma-nb") {
     return { id: "launch-inject", reason: "Enigma-packed NB variant (三国修仙传 family): any launch flag makes the box exit within seconds, so launch is a flag-free spawn + rmch-mvhook DLL attach on the standard WebSocket bridge" };
+  }
+  if (scan.protection && scan.protection.flags && scan.protection.flags.includes("grover-boot")) {
+    return { id: "launch-inject", reason: "Grover bytecode startup: launch without flags, wait for boot checks, then attach the DLL bridge" };
   }
   if (scan.manifest && scan.manifest.nodeMain) return { id: "extension", reason: "node-main guard tolerates --load-extension; verify game does not self-close" };
   if (scan.manifest && scan.manifest.bgScript) return { id: "extension-then-shadow", reason: "bg-script startup chain may detect extensions; fall back to shadow-dir bg-script patch" };

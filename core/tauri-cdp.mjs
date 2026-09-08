@@ -36,6 +36,7 @@ import net from "node:net";
 import path from "node:path";
 import { openCdpSession, listTargets } from "./cdp-client.mjs";
 import { buildBridge } from "./bridge-bundler.mjs";
+import { externalSessions } from "./bridge-sessions.mjs";
 
 export class TauriLaunchError extends Error {}
 
@@ -206,21 +207,19 @@ function pickFreePort() {
 
 // --- session ---------------------------------------------------------------------
 
-const tauriSessions = new Map();
-
 export function getTauriSession(gameKey) {
-  return tauriSessions.get(gameKey) || null;
+  return externalSessions.get("tauri", gameKey);
 }
 
 export function listTauriSessions() {
-  return [...tauriSessions.values()].map((session) => session.describe());
+  return externalSessions.list("tauri");
 }
 
 // How often the host drains the page's outbound queue. 250ms keeps trainer
 // feedback snappy while the evaluate calls stay invisible to the game.
 const OUTBOX_POLL_MS = 250;
 
-class TauriSession extends EventEmitter {
+export class TauriSession extends EventEmitter {
   constructor({ gameKey, pid, cdpPort, saveDir, patchedExe }) {
     super();
     this.gameKey = gameKey;
@@ -387,16 +386,15 @@ class TauriSession extends EventEmitter {
     }
   }
 
-  // The slot list is the one save feature the in-page bridge cannot answer in
-  // degraded (no-Node) mode — but the files are plain <gameRoot>/save/*.rmmzsave
-  // and THIS side of the CDP tunnel has a filesystem, so answer it locally.
+  // Native Tauri saves are listed on the host; MV browser saves are routed
+  // through the bridge instead because they have no game-directory files.
   answerSaveList() {
     const dir = this.saveDir;
     const entries = [];
     if (dir && existsSync(dir)) {
       try {
         for (const name of readdirSync(dir)) {
-          if (!/\.rmmzsave$/i.test(name)) continue;
+          if (!/\.(rpgsave|rmmzsave)$/i.test(name)) continue;
           const stat = statSync(path.join(dir, name));
           entries.push({ name, size: stat.size, mtime: stat.mtime.toISOString() });
         }
@@ -406,14 +404,12 @@ class TauriSession extends EventEmitter {
     return { dir, entries };
   }
 
-  send(type, args = {}, timeout = COMMAND_TIMEOUT_MS) {
+  async send(type, args = {}, timeout = COMMAND_TIMEOUT_MS) {
     if (!this.alive || !this.cdp) return Promise.reject(new Error("bridge is not connected"));
     if (type === "save.list") {
-      try {
-        return Promise.resolve(this.answerSaveList());
-      } catch (error) {
-        return Promise.reject(error);
-      }
+      const webStorage = await this.cdp.evaluate(
+        "!!(window.StorageManager && typeof StorageManager.webStorageKey === 'function' && typeof StorageManager.isLocalMode === 'function' && !StorageManager.isLocalMode())", timeout);
+      if (!webStorage) return this.answerSaveList();
     }
     if (type === "save.contents.apply") timeout = Math.max(timeout, 120000);
     const id = this.nextId;
@@ -565,7 +561,7 @@ const tauriLaunches = new Map(); // gameKey -> in-flight launch promise
 
 export function launchTauriGame({ scan, projectRoot }) {
   const key = scan.gameKey;
-  const existing = tauriSessions.get(key);
+  const existing = getTauriSession(key);
   if (existing && existing.alive) {
     dbg("already running, handing back the live session");
     return Promise.resolve(launchSummary(existing, scan));
@@ -665,10 +661,7 @@ async function doLaunchTauriGame({ scan, projectRoot }) {
     } catch (_) {}
     throw error;
   }
-  tauriSessions.set(scan.gameKey, session);
-  session.on("close", () => {
-    if (tauriSessions.get(scan.gameKey) === session) tauriSessions.delete(scan.gameKey);
-  });
+  externalSessions.register("tauri", session);
 
   return launchSummary(session, scan);
 }

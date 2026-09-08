@@ -1,0 +1,11 @@
+{
+  "version": "0.115.0",
+  "platform": "win-x64",
+  "flavor": "normal",
+  "archive": "nwjs-v0.115.0-win-x64.zip",
+  "url": "https://dl.nwjs.io/v0.115.0/nwjs-v0.115.0-win-x64.zip",
+  "sha256": "e4c4fdf59a581d33e3363dddc18638740f0f6a3d34a266f1c709bb7b561b22b5",
+  "checksumsUrl": "https://dl.nwjs.io/v0.115.0/SHASUMS256.txt",
+  "node": "26.7.0",
+  "chromium": "152.0.7977.42"
+}

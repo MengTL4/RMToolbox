@@ -8,10 +8,9 @@
   // a switch back. The GUI owns persistence (runtime/locks/<gameKey>.json), the
   // bridge owns the live set — so refreshing the GUI never drops a lock.
   //
-  // Writes go to the backing store slot (party._items[3] = 99) rather than
-  // through gainItem/setValue: this runs 60x a second, and re-entering the
-  // game's own hooks that often is both slow and visible (refresh flicker,
-  // "item obtained" side effects).
+  // Compare decoded values first, then use native methods only on change.
+  // This preserves custom encoding without repeating refresh/obtained hooks
+  // every frame while the locked value is already satisfied.
   // ---------------------------------------------------------------------------
 
   const LOCKABLE_KINDS = Object.freeze(["item", "weapon", "armor", "switch", "variable"]);
@@ -20,7 +19,7 @@
   // a plain comparison. lock.set and lock.replace share this.
   function coerceLockValue(kind, value) {
     if (kind === "switch") return !!value;
-    if (kind === "variable") return typeof value === "string" ? value : (Number(value) || 0);
+    if (kind === "variable") return typeof value === "string" ? value : Math.floor(Number(value) || 0);
     return Math.max(0, Math.floor(Number(value) || 0));
   }
 
@@ -36,6 +35,16 @@
     return out;
   }
 
+  function validateInventoryLock(kind, id, value) {
+    if (kind !== "item" && kind !== "weapon" && kind !== "armor") return;
+    const party = resolveParty();
+    const custom = party && customInventory(party);
+    if (!custom) return;
+    const data = dataEntryLoose(kind, id, party);
+    if (!data) throw new Error(`${kind} ${id} not found`);
+    custom.validateLock(data, value);
+  }
+
   function applyValueLocks() {
     const locks = bridge.valueLocks;
     if (!locks || bridge.suppressLocks > 0) return;
@@ -43,7 +52,15 @@
     try {
       if (locks.gold != null) {
         const party = resolveParty();
-        if (party) party._gold = Math.max(0, Math.floor(locks.gold));
+        if (party) {
+          let want = Math.max(0, Math.floor(locks.gold));
+          if (typeof party.maxGold === "function") {
+            const max = Number(party.maxGold());
+            if (Number.isFinite(max) && max >= 0) want = Math.min(want, max);
+          }
+          const current = safeGold(party) || 0;
+          if (current !== want) applyGoldDelta(party, want - current, want);
+        }
       }
 
       for (const [kind, prop] of INVENTORY_SLOTS) {
@@ -52,10 +69,18 @@
         if (!ids.length) continue;
         const party = resolveParty();
         const store = party && party[prop];
-        if (!store) continue;
+        if (!party || (!store && !customInventory(party))) continue;
         for (const id of ids) {
           const want = Math.max(0, Math.floor(Number(table[id]) || 0));
-          if (Number(store[id]) !== want) store[id] = want;
+          validateInventoryLock(kind, Number(id), want);
+          const data = dataEntryLoose(kind, Number(id), party);
+          const current = inventoryCount(party, prop, id, data);
+          if (current !== want) {
+            if (data && typeof party.gainItem === "function") {
+              withRatesSuppressed(() => changeInventory(party, data, want - current));
+            }
+            writeBackItemCount(party, prop, id, want, data);
+          }
         }
       }
 
@@ -77,6 +102,9 @@
     const data = store && store._data;
     if (!data) return;
     for (const id of ids) {
-      if (data[id] !== table[id]) data[id] = table[id];
+      const current = typeof store.value === "function" ? store.value(Number(id)) : data[id];
+      if (current === table[id]) continue;
+      if (typeof store.setValue === "function") store.setValue(Number(id), table[id]);
+      else data[id] = table[id];
     }
   }

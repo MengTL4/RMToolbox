@@ -92,7 +92,7 @@ function main() {
 
     const scan = scanGame(gameRoot);
     assert.equal(scan.container, "tauri");
-    assert.equal(scan.engine.id, "MZ", "Tauri-MZ should report as MZ");
+    assert.equal(scan.engine.id, "MV/MZ", "Tauri packaging alone cannot distinguish MV from MZ");
     assert.equal(scan.paths.exe, path.join(gameRoot, "game.exe"));
     assert.equal(scan.paths.saveDir, path.join(gameRoot, "save"));
     assert.equal(scan.saveDirKnown, true);

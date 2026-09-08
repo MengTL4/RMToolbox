@@ -74,12 +74,30 @@ async function main() {
     const command = JSON.parse(readFileSync(commandPath, "utf8").trim().split("\n")[0]);
     assert.equal(command.type, "ping");
     assert.deepEqual(command.args, { n: 1 });
-    assert.match(command.commandId, /^f\d+$/);
-    appendFileSync(
-      path.join(dir, "events.jsonl"),
-      JSON.stringify({ ts: Date.now(), commandId: `file:${command.commandId}`, type: "ping", ok: true, payload: { pong: true } }) + "\n"
-    );
-    assert.deepEqual(await pending, { pong: true }, "command result resolves with payload");
+    assert.match(command.commandId, /^f.+$/);
+    const reply = Buffer.from(JSON.stringify({ ts: Date.now(), commandId: `file:${command.commandId}`, type: "ping", ok: true, payload: { pong: true, name: "中文🐉" } }) + "\n");
+    const split = reply.indexOf(Buffer.from("中")) + 1;
+    appendFileSync(path.join(dir, "events.jsonl"), reply.subarray(0, split));
+    await sleep(400); // let the real session read an incomplete UTF-8 character
+    appendFileSync(path.join(dir, "events.jsonl"), reply.subarray(split));
+    assert.deepEqual(await pending, { pong: true, name: "中文🐉" }, "split response resolves intact");
+
+    // A new toolbox server can adopt this still-running game without erasing
+    // its queue. The live bridge retains processed ids across that adoption.
+    const successor = new BridgeServer({ port: 0, token: "t", stateDir });
+    await successor.start();
+    try {
+      await waitFor(() => successor.session("fake-game"), "successor adoption");
+      const resumed = successor.sendCommand("fake-game", "ping", { n: 2 });
+      resumed.catch(() => {});
+      const next = JSON.parse(readFileSync(commandPath, "utf8").trim().split("\n").at(-1));
+      assert.notEqual(next.commandId, command.commandId, "a fresh server must not reuse an id already processed by the live bridge");
+      appendFileSync(path.join(dir, "events.jsonl"), JSON.stringify({ commandId: `file:${next.commandId}`, ok: true, payload: { resumed: true } }) + "\n");
+      assert.deepEqual(await resumed, { resumed: true });
+      assert.equal(readFileSync(commandPath, "utf8").trim().split("\n").length, 2, "re-adoption preserves prior commands");
+    } finally {
+      await successor.stop();
+    }
 
     // Bridge dies (state.json stops being rewritten) → session dropped.
     clearInterval(heartbeat);

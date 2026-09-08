@@ -14,7 +14,7 @@
     fontFamily: FONT,
     fontFamilyMono: MONO,
     fontSize: "14px",
-    borderRadius: "8px",
+    borderRadius: "10px",
     borderRadiusSmall: "6px",
 
     primaryColor: "#5b8cff",
@@ -44,7 +44,7 @@
   };
 
   var darkCommon = Object.assign({}, brand, {
-    bodyColor: "#0e1016",
+    bodyColor: "#11141b",
     popoverColor: "#1b1f2a",
     cardColor: "#161a23",
     modalColor: "#1b1f2a",
@@ -62,15 +62,18 @@
     textColorBase: "#eaecf3",
     textColor1: "#f2f4f9",
     textColor2: "#c9cedb",
-    textColor3: "#7c8496",
-    placeholderColor: "#5f6779",
+    textColor3: "#a0a9bb",
+    placeholderColor: "#8993a7",
     closeIconColor: "#7c8496",
     boxShadow2: "0 6px 22px rgba(0, 0, 0, 0.5)",
     boxShadow3: "0 10px 34px rgba(0, 0, 0, 0.58)"
   });
 
   var lightCommon = Object.assign({}, brand, {
-    bodyColor: "#f4f6fb",
+    primaryColor: "#315fd4",
+    primaryColorHover: "#4674e6",
+    primaryColorPressed: "#254db4",
+    bodyColor: "#f3f5f9",
     cardColor: "#ffffff",
     tableColor: "#ffffff",
     tableHeaderColor: "#f6f8fd",
@@ -81,7 +84,8 @@
     textColorBase: "#1b2030",
     textColor1: "#151a27",
     textColor2: "#3b4356",
-    textColor3: "#8b93a7",
+    textColor3: "#647087",
+    placeholderColor: "#737f94",
     boxShadow2: "0 6px 22px rgba(24, 32, 56, 0.1)"
   });
 
@@ -90,7 +94,7 @@
   function componentOverrides(common) {
     return {
       Card: {
-        paddingSmall: "12px 14px",
+        paddingSmall: "16px",
         titleFontSizeSmall: "14px",
         titleFontWeight: "600",
         borderColor: common.borderColor
@@ -107,7 +111,7 @@
         color: common.bodyColor
       },
       Menu: {
-        itemHeight: "40px",
+        itemHeight: "38px",
         borderRadius: "8px",
         itemColorActive: "rgba(91, 140, 255, 0.16)",
         itemColorActiveHover: "rgba(91, 140, 255, 0.22)",

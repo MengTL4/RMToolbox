@@ -90,36 +90,42 @@
   // --- save-data tree ----------------------------------------------------------
 
   function loadSaveTree() {
+    var epoch = store.state.selectionEpoch;
     data.tree.loading = true;
     data.tree.error = null;
     return store.send(store.trainer.gameKey, "save.contents.get", {})
       .then(function (payload) {
+        if (epoch !== store.state.selectionEpoch) return null;
         data.tree.json = payload.json;
         data.tree.bytes = payload.bytes;
         store.ok("已拉取存档数据（" + Math.round(payload.bytes / 1024) + " KB）");
         return payload;
       })
       .catch(function (error) {
+        if (epoch !== store.state.selectionEpoch) return null;
         data.tree.error = error.message;
         store.fail("拉取存档数据失败：" + error.message);
         return null;
       })
-      .finally(function () { data.tree.loading = false; });
+      .finally(function () { if (epoch === store.state.selectionEpoch) data.tree.loading = false; });
   }
 
   function applySaveTree(json, reload) {
+    var epoch = store.state.selectionEpoch;
     data.tree.applying = true;
     return store.send(store.trainer.gameKey, "save.contents.apply", { json: json, reload: reload !== false })
       .then(function (payload) {
+        if (epoch !== store.state.selectionEpoch) return null;
         data.tree.json = json;
         store.ok("已应用至游戏" + (payload.reloaded ? "（已重载地图）" : "（未重载）"));
         return payload;
       })
       .catch(function (error) {
+        if (epoch !== store.state.selectionEpoch) return null;
         store.fail("应用失败：" + error.message);
         return null;
       })
-      .finally(function () { data.tree.applying = false; });
+      .finally(function () { if (epoch === store.state.selectionEpoch) data.tree.applying = false; });
   }
 
   // --- scenes / repair ---------------------------------------------------------

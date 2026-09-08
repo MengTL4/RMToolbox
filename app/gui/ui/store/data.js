@@ -61,6 +61,8 @@
     data.tree.json = null;
     data.tree.bytes = 0;
     data.tree.error = null;
+    data.tree.loading = false;
+    data.tree.applying = false;
     Object.keys(data.loading).forEach(function (key) { data.loading[key] = false; });
   }
 

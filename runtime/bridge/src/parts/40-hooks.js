@@ -39,6 +39,15 @@
     if (!options || typeof options !== "object") return { ...bridge.options };
     const given = (key) => Object.prototype.hasOwnProperty.call(options, key);
 
+    // This target's native updateMain takes no elapsed-time argument. The
+    // generic extra-speed hook cannot accelerate it; do not acknowledge a
+    // setting that has no effect or replace the game's authored Drill gear.
+    if (typeof isNativeFramePacingTarget === "function" && isNativeFramePacingTarget() &&
+        ((given("gameSpeedMulti") && Number(options.gameSpeedMulti) > 1) ||
+         (given("speedHoldCtrl") && toBool(options.speedHoldCtrl)))) {
+      throw new Error("此游戏的原生时间步进暂不支持额外游戏倍速或 Ctrl 加速；游戏原有速度保持不变，其他修改功能可正常使用");
+    }
+
     RATE_OPTIONS.forEach((key) => {
       if (given(key)) bridge.options[key] = clampNumber(options[key], 0, 999, bridge.options[key]);
     });
@@ -62,10 +71,7 @@
   // writes these too, so 90-startup re-applies them on a timer.
   function applyWorldOptions() {
     try {
-      const player = resolvePlayer();
-      if (player && Object.prototype.hasOwnProperty.call(player, "_through")) {
-        player._through = !!bridge.options.throughWalls;
-      }
+      patchThrough();
       const followers = resolveFollowers();
       if (followers && "_visible" in followers) {
         followers._visible = !!bridge.options.showFollowers;
@@ -77,6 +83,19 @@
     } catch (error) {
       noteError(error);
     }
+  }
+
+  // Events own _through (stairs, doors, scripted movement). Keep the trainer
+  // override in the query so timer ticks and toggles never overwrite it or
+  // persist a cheat flag in the player's save data.
+  function patchThrough() {
+    const player = resolvePlayer();
+    if (!player || typeof player.isThrough !== "function") return false;
+    const owner = Object.getPrototypeOf(player);
+    if (!owner || owner === Object.prototype) return false;
+    return patchMethod(owner, "isThrough", "player.isThrough", function (original, args) {
+      return (this === resolvePlayer() && !!bridge.options.throughWalls) || original.apply(this, args);
+    });
   }
 
   // --- movement / encounters --------------------------------------------------
@@ -330,7 +349,21 @@
   function defeatEnemy(battler, source) {
     if (!battler || typeof battler.die !== "function") return false;
     try {
-      battler.die();
+      // Custom die() implementations may update only states, leaving positive
+      // HP behind. Use the native setter as well as the native death state.
+      if (typeof battler.setHp === "function") battler.setHp(0);
+      if (typeof battler.addState === "function" && typeof battler.deathStateId === "function") {
+        battler.addState(battler.deathStateId());
+        // Some engines reject death through ordinary status application even
+        // at zero HP. Forced defeat still needs the native death-state path;
+        // addNewState performs die()/state bookkeeping without that guard.
+        if (typeof battler.isAlive === "function" && battler.isAlive() && typeof battler.addNewState === "function") {
+          battler.addNewState(battler.deathStateId());
+        }
+      } else {
+        battler.die();
+      }
+      if (typeof battler.isAlive === "function" && battler.isAlive()) return false;
       bumpBattleStat("oneHitKill", { source });
       return true;
     } catch (_) {
@@ -341,12 +374,15 @@
   // --- master installer -------------------------------------------------------
 
   function patchTrainerHooks() {
+    publishRenamedEngine();
     const hooked = [];
     const track = (ok, label) => { if (ok) hooked.push(label); };
 
     hookKeyboard();
+    track(patchThrough(), "through");
     track(patchMoveSpeed(), "moveSpeed");
     track(patchSceneUpdate(), "sceneUpdate");
+    track(patchNativeFramePacing(), "framePacing");
     track(patchEncounter(), "encounter");
     track(patchGlobalInfoGuard(), "globalInfoGuard");
     patchBattleRewards(track);

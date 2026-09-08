@@ -1,93 +1,112 @@
-// Prepare app/gui as an NW.js app by hard-linking a known-good NW runtime
-// into app/gui. Falls back to copying.
-//
-// Donor resolution order:
-//   1. config.local.json: { "nwRuntimeDonor": "C:\\path\\to\\nw-runtime" }
-//   2. <projectRoot>/nwjs/  — drop an NW.js (≈0.54, Chromium 91) sdk/normal
-//      extract here; nwjs.io/downloads has the archives
-//   3. DEFAULT_DONORS — known-good modkits on the maintainer's machine
-
-import { cpSync, existsSync, linkSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+// Build-time only: install an official, hash-pinned GUI runtime. The runtime
+// inside a target game is independent and must never be upgraded here.
+import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { execFileSync } from "node:child_process";
 
-// The donor's runtime binary is always named Game.exe (modkit) or nw.exe
-// (official NW.js extract); app/gui ships it under the product name so the GUI
-// never shares a process name with the games it patches (tasklist / Task
-// Manager used to be ambiguous, and stale-process cleanup risked killing the
-// GUI).
 export const GUI_EXE_NAME = "RMToolbox.exe";
-const DONOR_EXE_NAMES = new Set(["Game.exe", "nw.exe"]);
+const STAMP = ".nw-runtime.json";
+const LEGACY = ["Game.exe", "nw.exe", "snapshot_blob.bin", "v8_context_snapshot.bin", "swiftshader", "Dictionaries",
+  "nw.dll", "node.dll", "nw_elf.dll", "libEGL.dll", "libGLESv2.dll", "d3dcompiler_47.dll", "icudtl.dat",
+  "resources.pak", "nw_100_percent.pak", "nw_200_percent.pak", "locales", "notification_helper.exe"];
+const SOURCES = new Set(["package.json", "index.html", "host.cjs", "gui-bundle.cjs", "ui", "src", "vendor", "styles.css", "jsoneditor-theme.css", "icon.png"]);
+const psString = value => "'" + String(value).replaceAll("'", "''") + "'";
 
-const DEFAULT_DONORS = [
-  "F:\\SteamLibrary\\steamapps\\common\\再刷一把2：金色传说\\zs2_modkit\\runtime\\trainer",
-  "F:\\SteamLibrary\\steamapps\\common\\大千世界2 The Stupendous World Demo\\dq2_modkit\\runtime\\trainer",
-  "F:\\SteamLibrary\\steamapps\\common\\Nightmare without return\\nwr_modkit\\runtime\\game-app"
-];
-
-// Files/dirs that belong to the donor app itself, never to RMCH's GUI.
-const DONOR_APP_FILES = new Set([
-  "index.html", "package.json", "www", "app.js", "app.ts", "src", "styles",
-  "html", "node_modules", "package-lock.json", "tsconfig.json", "debug.log",
-  "styles.css", "index.template.html",
-  // RMCH's own GUI sources — a donor with same-named entries must not clobber
-  // them (and --force would otherwise delete them before copying).
-  "ui", "vendor",
-  // NWR game-app donor specifics: its patched bg-script + loader files.
-  "loading", "bg_script", "loading.html"
-]);
-
-export function findNwRuntimeDonor(projectRoot) {
-  const configPath = path.join(projectRoot, "config.local.json");
-  if (existsSync(configPath)) {
-    try {
-      const config = JSON.parse(readFileSync(configPath, "utf8"));
-      if (config.nwRuntimeDonor && existsSync(config.nwRuntimeDonor)) return config.nwRuntimeDonor;
-    } catch (_) {}
+export function assertBuildPath(root, target) {
+  const base = path.resolve(root), resolved = path.resolve(target);
+  const relative = path.relative(base, resolved);
+  if (!relative || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) throw new Error(`Build target outside workspace: ${resolved}`);
+  let cursor = base;
+  for (const part of relative.split(path.sep)) {
+    cursor = path.join(cursor, part);
+    try { if (fs.lstatSync(cursor).isSymbolicLink()) throw new Error(`Linked build target refused: ${cursor}`); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-  const local = path.join(projectRoot, "nwjs");
-  if (existsSync(path.join(local, "nw.dll")) && existsSync(path.join(local, "nw.exe"))) return local;
-  for (const donor of DEFAULT_DONORS) {
-    if (existsSync(path.join(donor, "nw.dll")) && existsSync(path.join(donor, "Game.exe"))) return donor;
-  }
-  return null;
+  return resolved;
 }
 
-export function setupGuiRuntime({ projectRoot, force = false } = {}) {
-  const donor = findNwRuntimeDonor(projectRoot);
-  if (!donor) throw new Error(
-    "no NW.js runtime donor found; extract an NW.js ≈0.54 build into nwjs/ " +
-    "or set nwRuntimeDonor in config.local.json");
-  const guiDir = path.join(projectRoot, "app", "gui");
-  let linked = 0;
-  let copied = 0;
-  for (const entry of readdirSync(donor)) {
-    if (DONOR_APP_FILES.has(entry)) continue;
-    const source = path.join(donor, entry);
-    // Ship the runtime binary under the product name (see GUI_EXE_NAME).
-    const dest = path.join(guiDir, DONOR_EXE_NAMES.has(entry) ? GUI_EXE_NAME : entry);
-    const stat = statSync(source);
-    if (existsSync(dest)) {
-      if (!force) continue;
-      rmSync(dest, { recursive: true, force: true });
-    }
-    try {
-      if (stat.isDirectory()) {
-        cpSync(source, dest, { recursive: true, dereference: false });
-      } else {
-        linkSync(source, dest);
-      }
-      linked += 1;
-    } catch (_) {
-      cpSync(source, dest, { recursive: true });
-      copied += 1;
-    }
+export function fileSha256(file) { return createHash("sha256").update(fs.readFileSync(file)).digest("hex"); }
+
+export function readRuntimeLock(projectRoot) {
+  const lock = JSON.parse(fs.readFileSync(path.join(projectRoot, "nw-runtime.lock.json"), "utf8"));
+  if (!/^\d+\.\d+\.\d+$/.test(lock.version) || !/^[a-f0-9]{64}$/.test(lock.sha256) || lock.platform !== "win-x64") throw new Error("Invalid NW runtime lock");
+  if (lock.archive !== `nwjs-v${lock.version}-win-x64.zip` || lock.url !== `https://dl.nwjs.io/v${lock.version}/${lock.archive}`) throw new Error("Runtime must use the pinned official normal build");
+  return lock;
+}
+
+function inventory(root, relative = "") {
+  return fs.readdirSync(path.join(root, relative)).flatMap(name => {
+    const rel = path.join(relative, name), file = path.join(root, rel);
+    if (fs.lstatSync(file).isSymbolicLink()) throw new Error(`Runtime contains a link: ${file}`);
+    return fs.statSync(file).isDirectory() ? inventory(root, rel) : [{ path: rel.split(path.sep).join("/"), sha256: fileSha256(file) }];
+  });
+}
+
+export function verifyInstalledRuntime(guiDir, lock) {
+  try {
+    const stamp = JSON.parse(fs.readFileSync(path.join(guiDir, STAMP), "utf8"));
+    return stamp.archiveSha256 === lock.sha256 && stamp.version === lock.version && stamp.files.length > 0
+      && stamp.files.some(f => f.path === GUI_EXE_NAME) && stamp.files.some(f => f.path === "nw.dll")
+      && stamp.files.every(file => fileSha256(assertBuildPath(guiDir, path.join(guiDir, file.path))) === file.sha256);
+  } catch (_) { return false; }
+}
+
+export async function prepareRuntime(projectRoot) {
+  const lock = readRuntimeLock(projectRoot);
+  const cache = assertBuildPath(projectRoot, path.join(projectRoot, ".cache", "nwjs", lock.version));
+  fs.mkdirSync(cache, { recursive: true });
+  const archive = path.join(cache, lock.archive);
+  if (!fs.existsSync(archive) || fileSha256(archive) !== lock.sha256) {
+    console.log(`Downloading official NW.js ${lock.version} (${lock.platform})`);
+    const response = await fetch(lock.url, { signal: AbortSignal.timeout(180000) });
+    if (!response.ok) throw new Error(`Runtime download failed: HTTP ${response.status}`);
+    const temp = assertBuildPath(projectRoot, archive + ".download");
+    await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(temp));
+    if (fileSha256(temp) !== lock.sha256) { fs.unlinkSync(temp); throw new Error("NW runtime SHA256 mismatch; installation stopped"); }
+    if (fs.existsSync(archive)) fs.unlinkSync(archive);
+    fs.renameSync(temp, archive);
   }
-  // Drop the pre-rename donor exe links so only one name ever exists in
-  // app/gui. They are hard links to the donor's files — unlinking never
-  // touches the donor.
-  for (const name of DONOR_EXE_NAMES) {
-    const staleExe = path.join(guiDir, name);
-    if (existsSync(staleExe)) rmSync(staleExe, { force: true });
+  const unpack = assertBuildPath(projectRoot, path.join(cache, "unpacked"));
+  fs.rmSync(unpack, { recursive: true, force: true });
+  execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command",
+    `$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath ${psString(archive)} -DestinationPath ${psString(unpack)}`], { windowsHide: true, stdio: "inherit" });
+  const donor = path.join(unpack, lock.archive.replace(/\.zip$/, ""));
+  const exe = fs.readFileSync(path.join(donor, "nw.exe"));
+  if (exe.readUInt16LE(exe.readUInt32LE(60) + 4) !== 0x8664 || !fs.existsSync(path.join(donor, "nw.dll"))) throw new Error("Runtime is not a complete x64 NW build");
+  return { lock, donor };
+}
+
+export async function setupGuiRuntime({ projectRoot, guiDir = path.join(projectRoot, "app", "gui"), force = false } = {}) {
+  const lock = readRuntimeLock(projectRoot);
+  assertBuildPath(projectRoot, guiDir);
+  if (!force && verifyInstalledRuntime(guiDir, lock)) return { version: lock.version, guiDir, reused: true };
+  const prepared = await prepareRuntime(projectRoot);
+  const entries = fs.readdirSync(prepared.donor);
+  if (entries.some(name => SOURCES.has(name))) throw new Error("Official runtime conflicts with GUI source files");
+  let old = [];
+  if (fs.existsSync(path.join(guiDir, STAMP))) {
+    try { old = JSON.parse(fs.readFileSync(path.join(guiDir, STAMP), "utf8")).files.map(f => f.path.split("/")[0]); }
+    catch (_) { throw new Error('Invalid installed runtime manifest; refusing cleanup'); }
   }
-  return { donor, linked, copied, guiDir, exe: path.join(guiDir, GUI_EXE_NAME) };
+  const targets = [...new Set([...LEGACY, ...old, ...entries, GUI_EXE_NAME])].map(name => {
+    if (!name || name === '.' || name === '..' || /[\\/\\\\:]/.test(name)) throw new Error(`Invalid runtime entry: ${name}`);
+    if (SOURCES.has(name)) throw new Error(`Refusing to replace GUI source: ${name}`);
+    // Older setup made donor directory junctions. Unlink the leaf itself only;
+    // the parent GUI path was checked above and must never be a junction.
+    return path.join(guiDir, name);
+  });
+  fs.mkdirSync(guiDir, { recursive: true });
+  for (const target of targets) {
+    let linked = false;
+    try { linked = fs.lstatSync(target).isSymbolicLink(); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (linked) fs.unlinkSync(target);
+    else { assertBuildPath(projectRoot, target); fs.rmSync(target, { recursive: true, force: true }); }
+  }
+  for (const name of entries) fs.cpSync(path.join(prepared.donor, name), path.join(guiDir, name === "nw.exe" ? GUI_EXE_NAME : name), { recursive: true });
+  const files = inventory(prepared.donor).map(f => ({ ...f, path: f.path === "nw.exe" ? GUI_EXE_NAME : f.path }));
+  fs.writeFileSync(path.join(guiDir, STAMP), JSON.stringify({ version: lock.version, archiveSha256: lock.sha256, files }, null, 2) + "\n");
+  return { version: lock.version, guiDir, reused: false, files: files.length };
 }

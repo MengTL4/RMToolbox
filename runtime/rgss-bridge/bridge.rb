@@ -34,6 +34,7 @@
 # "unsupported on RGSS", which the GUI degrades gracefully.
 
 module RMCH
+  class EventExecutionStop < StandardError; end
   VERSION = "0.4.0"
   # "RGSS1" / "RGSS2" / "RGSS3", patched in by the injector.
   GENERATION = "__RMCH_GENERATION__"
@@ -934,6 +935,8 @@ module RMCH
       end
       {
         "id" => index + 1,
+        # Party/box positions can change; GUI drafts follow the Pokemon object.
+        "identity" => pkmn.object_id.to_s,
         "species" => safe(pkmn, :species).to_s,
         "name" => safe(pkmn, :name),
         "nickname" => nil,
@@ -1200,10 +1203,248 @@ module RMCH
       { "total" => entries.length, "entries" => entries }
     end
 
+    # Event tools use flat request fields, compatible with the RGSS1 parser.
+    def et_get(object, name, fallback = nil)
+      return fallback unless object
+      ivar = "@" + name.to_s
+      return object.instance_variable_get(ivar) if object.instance_variable_defined?(ivar)
+      object.respond_to?(name) ? object.send(name) : fallback
+    rescue
+      fallback
+    end
+
+    def et_context(args = nil)
+      raise "No current map" unless $game_map && $game_player
+      info = map_info_payload
+      data = et_get($game_map, :map)
+      token = [info["mapId"], $game_map.object_id, data.object_id].join(":")
+      raise "Map changed; refresh before retrying" if args && args["mapToken"] != token
+      [info, token]
+    end
+
+    def et_events
+      events = et_get($game_map, :events, {})
+      (events.kind_of?(Hash) ? events.values : events).compact
+    end
+
+    def et_row(event)
+      data = et_get(event, :event)
+      pages = et_get(data, :pages, [])
+      page = et_get(event, :page)
+      index = pages.index(page) || -1
+      x = et_get(event, :x, 0); y = et_get(event, :y, 0)
+      erased = !!et_get(event, :erased, false)
+      {"eventId" => et_get(event, :id), "name" => et_get(data, :name, ""), "x" => x, "y" => y,
+       "pageIndex" => index, "pages" => pages.size, "erased" => erased,
+       "through" => !!et_get(event, :through, false), "priority" => et_get(event, :priority_type, 1),
+       "trigger" => et_get(event, :trigger), "eventToken" => [event.object_id,index,x,y,erased].join(":")}
+    end
+
+    def et_busy
+      scene = defined?(SceneManager) && SceneManager.respond_to?(:scene) ? SceneManager.scene : $scene
+      return "Not in an active map scene" unless defined?(Scene_Map) && scene.kind_of?(Scene_Map)
+      return "Battle in progress" if $game_party && $game_party.respond_to?(:in_battle) && $game_party.in_battle
+      return "Dialogue in progress" if defined?($game_message) && $game_message && $game_message.respond_to?(:busy?) && $game_message.busy?
+      return "Dialogue in progress" if $game_temp && (et_get($game_temp, :message_text) || et_get($game_temp, :message_window_showing, false))
+      interpreter = et_get($game_map, :interpreter) || et_get($game_system, :map_interpreter)
+      return "Event in progress" if interpreter && interpreter.respond_to?(:running?) && interpreter.running?
+      return "Transfer in progress" if et_get($game_player, :transferring, false) || et_get($game_temp, :player_transferring, false)
+      return "Transition or battle pending" if et_get($game_temp, :transition_processing, false) || et_get($game_temp, :battle_calling, false) || et_get($game_temp, :in_battle, false)
+      return "Forced movement in progress" if et_get($game_player, :move_route_forcing, false)
+      return "Scene is busy" if scene.respond_to?(:busy?) && scene.busy?
+      return "Scene is changing" if defined?(SceneManager) && SceneManager.respond_to?(:scene_changing?) && SceneManager.scene_changing?
+      return "Vehicle movement is not supported" if $game_player.respond_to?(:in_vehicle?) && $game_player.in_vehicle?
+      return "Player cannot move" if $game_player.respond_to?(:movable?) && !$game_player.movable?
+      nil
+    end
+
+    def et_cell(x, y)
+      return -1 unless $game_map.respond_to?(:passable?)
+      # VX uses a passage flag, XP/Ace use a direction. Do not pass a direction
+      # to VX: bits 2/4/8 there describe vehicles, not walking directions.
+      return $game_map.passable?(x, y, 1) ? 15 : 0 if rgss2?
+      mask = 0
+      [2,4,6,8].each_with_index do |d, i|
+        pass = rgss1? ? $game_map.passable?(x,y,d,nil) : $game_map.passable?(x,y,d)
+        mask |= (1 << i) if pass
+      end
+      mask
+    rescue
+      -1
+    end
+
+    def et_valid(info, x, y)
+      x >= 0 && y >= 0 && x < info["width"].to_i && y < info["height"].to_i
+    end
+
+    def et_vacant(x, y)
+      !et_events.any? do |event|
+        row = et_row(event)
+        !row["erased"] && !row["through"] && row["priority"] == 1 && row["x"] == x && row["y"] == y
+      end
+    end
+
+    def et_move(args)
+      raise "Tool event running; cannot teleport separately" if ex_active?
+      info, token = et_context(args)
+      busy = et_busy; raise busy if busy
+      force = args["force"].to_s == "true"
+      x = Integer(args["x"] || 0); y = Integer(args["y"] || 0)
+      if args["eventId"]
+        event = et_events.find { |e| et_get(e, :id).to_i == args["eventId"].to_i }
+        raise "Event no longer exists" unless event
+        row = et_row(event)
+        raise "Event erased or has no active page" if row["erased"] || row["pageIndex"] < 0
+        raise "Event moved or changed page; refresh" unless row["eventToken"] == args["eventToken"]
+        x = row["x"]; y = row["y"]
+        unless force
+          near = [[x,y+1],[x-1,y],[x+1,y],[x,y-1]].map do |p|
+            [$game_map.respond_to?(:round_x) ? $game_map.round_x(p[0]) : p[0], $game_map.respond_to?(:round_y) ? $game_map.round_y(p[1]) : p[1]]
+          end.find { |p| et_valid(info,p[0],p[1]) && et_cell(p[0],p[1]) > 0 && et_vacant(p[0],p[1]) }
+          raise "No known passable space next to this event" unless near
+          x,y = near
+        end
+      end
+      raise "Coordinates outside map" unless et_valid(info,x,y)
+      raise "Explicit confirmation required" if force && args["confirmed"].to_s != "true"
+      raise "Destination blocked or unknown" if !force && (et_cell(x,y) <= 0 || !et_vacant(x,y))
+      raise "Player positioning unavailable" unless $game_player.respond_to?(:moveto)
+      $game_player.moveto(x,y)
+      {"mapId" => info["mapId"], "x" => x, "y" => y}
+    end
+
+    def et_raw(value, depth = 0)
+      return "[depth limit]" if depth > 8
+      case value
+      when NilClass, TrueClass, FalseClass, Numeric then value
+      when String then value.size > 16000 ? value[0,16000] + "[truncated]" : value
+      when Array
+        out = value[0,1000].map { |v| et_raw(v,depth+1) }
+        out << "[remaining array entries truncated]" if value.size > 1000
+        out
+      when Hash
+        out = {}; value.keys[0,100].each { |k| out[k.to_s] = et_raw(value[k],depth+1) }
+        out["$truncated"] = "remaining properties truncated" if value.size > 100
+        out
+      else
+        out = {"class" => value.class.to_s}
+        value.instance_variables[0,100].each { |k| out[k.to_s.sub(/^@/, "")] = et_raw(value.instance_variable_get(k),depth+1) }
+        out["$truncated"] = "remaining properties truncated" if value.instance_variables.size > 100
+        out
+      end
+    end
+
+    def et_running
+      rows = []; seen = {}
+      visit = nil
+      visit = lambda do |interpreter, label, depth|
+        if interpreter && !seen[interpreter.object_id] && depth < 16
+          seen[interpreter.object_id] = true
+          list = et_get(interpreter, :list)
+          index = et_get(interpreter, :index, 0)
+          if list.kind_of?(Array) && index < list.size
+            rows << {"id" => [interpreter.object_id,list.object_id].join(":"), "name" => label, "index" => index,
+                     "eventId" => et_get(interpreter, :event_id, 0), "interpreter" => interpreter}
+          end
+          visit.call(et_get(interpreter, :child_interpreter), label + " / child", depth+1)
+        end
+      end
+      visit.call(et_get($game_map, :interpreter) || et_get($game_system, :map_interpreter), "Map interpreter", 0)
+      et_events.each { |e| visit.call(et_get(e, :interpreter), "Event #" + et_get(e, :id).to_s, 0) }
+      common = et_get($game_map, :common_events, [])
+      common = common.values if common.kind_of?(Hash)
+      common.each { |e| visit.call(et_get(e, :interpreter), "Common #" + et_get(e, :common_event_id).to_s, 0) }
+      rows
+    end
+
+    def et_conditions(page)
+      condition = et_get(page, :condition)
+      names = {"switch1_valid" => "switch1Valid", "switch2_valid" => "switch2Valid", "switch1_id" => "switch1Id", "switch2_id" => "switch2Id",
+        "variable_valid" => "variableValid", "variable_id" => "variableId", "variable_value" => "variableValue",
+        "self_switch_valid" => "selfSwitchValid", "self_switch_ch" => "selfSwitchCh", "item_valid" => "itemValid", "item_id" => "itemId",
+        "actor_valid" => "actorValid", "actor_id" => "actorId"}
+      out = {}; names.each { |from,to| out[to] = et_get(condition, from) }; out
+    end
+
+    def et_read(args)
+      info, token = et_context(args)
+      kind = args["kind"]; id = args["id"].to_i
+      pages = []; conditions = {}; active = nil; index = nil; name = ""
+      if kind == "running"
+        row = et_running.find { |r| r["id"] == args["runId"] }
+        raise "Event execution ended or changed" unless row
+        list = et_get(row["interpreter"], :list); name = row["name"]; index = row["index"]
+      elsif kind == "common"
+        event = $data_common_events && $data_common_events[id]
+        raise "Common event not found" unless event
+        list = et_get(event, :list); name = et_get(event, :name, "")
+      elsif kind == "map"
+        event = et_events.find { |e| et_get(e,:id).to_i == id }
+        raise "Map event not found" unless event
+        data = et_get(event, :event); definitions = et_get(data, :pages, [])
+        active = definitions.index(et_get(event, :page)) || -1
+        definitions.each_with_index { |p,i| pages << {"index" => i, "conditions" => et_conditions(p), "active" => i == active} }
+        page_index = args["pageIndex"] ? args["pageIndex"].to_i : [active,0].max
+        page = definitions[page_index]; raise "Event page not found" unless page && page_index >= 0
+        conditions = et_conditions(page); list = et_get(page,:list); name = et_get(data,:name,"")
+      else
+        raise "Unknown event source"
+      end
+      raise "Command list unavailable" unless list.kind_of?(Array)
+      raise "Event exceeds 20000 commands" if list.size > 20000
+      commands = list.map { |c| {"code" => et_get(c,:code), "indent" => et_get(c,:indent,0), "parameters" => et_raw(et_get(c,:parameters,[]))} }
+      hash = 2166136261
+      jenc([commands,conditions,active]).each_byte { |b| hash = ((hash ^ b) * 16777619) & 0xffffffff }
+      revision = hash.to_s(16)
+      raise "Event changed; reread required" if args["revision"] && args["revision"] != revision
+      values = {}
+      [conditions["switch1Id"],conditions["switch2Id"]].compact.each { |sid| values["switch:"+sid.to_s] = $game_switches ? $game_switches[sid] : nil }
+      vid = conditions["variableId"]; values["variable:"+vid.to_s] = et_raw($game_variables[vid]) if vid && $game_variables
+      values["selfSwitch"] = $game_self_switches[[info["mapId"],id,conditions["selfSwitchCh"]]] if conditions["selfSwitchValid"] && $game_self_switches
+      if conditions["itemValid"] && $game_party && $game_party.respond_to?(:has_item?)
+        item = $data_items && $data_items[conditions["itemId"]]
+        values["item"] = item ? $game_party.has_item?(item) : nil
+      end
+      if conditions["actorValid"] && $game_party
+        members = et_get($game_party, :members) || et_get($game_party, :actors)
+        values["actor"] = members.any? { |a| (a.kind_of?(Numeric) ? a : et_get(a,:actor_id,et_get(a,:id))) == conditions["actorId"] } if members.kind_of?(Array)
+      end
+      offset = [args["offset"].to_i,0].max; count = [[(args["count"] || 200).to_i,1].max,300].min
+      {"mapToken" => token, "name" => name, "pages" => pages, "activePage" => active, "conditions" => conditions, "values" => values,
+       "revision" => revision, "commands" => commands[offset,count] || [], "total" => commands.size, "offset" => offset, "index" => index}
+    end
+
+    def et_dispatch(type, args)
+      info, token = et_context(type == "map.inspect" ? nil : args)
+      case type
+      when "map.inspect"
+        info.merge({"mapToken" => token, "busy" => et_busy, "events" => et_events.map { |e| et_row(e) },
+                    "capabilities" => {"grid" => $game_map.respond_to?(:passable?), "events" => true, "reader" => true, "running" => true}})
+      when "map.grid"
+        total = info["width"].to_i * info["height"].to_i
+        raise "Map dimensions unavailable or too large" if total <= 0 || total > 4000000
+        offset = [args["offset"].to_i,0].max; count = [[(args["count"] || 1024).to_i,1].max,2048].min
+        cells = []; (offset...[total,offset+count].min).each { |i| cells << et_cell(i % info["width"], i / info["width"]) }
+        {"mapToken" => token, "offset" => offset, "total" => total, "cells" => cells}
+      when "map.move" then et_move(args)
+      when "events.running"
+        {"mapToken" => token, "entries" => et_running.map { |r| {"id" => r["id"], "name" => r["name"], "index" => r["index"], "eventId" => r["eventId"]} }}
+      when "events.read" then et_read(args)
+      when "events.status"
+        result = et_read(args)
+        {"mapToken" => token, "revision" => result["revision"], "activePage" => result["activePage"], "index" => result["index"]}
+      end
+    end
+
     def map_transfer(args)
+      et_context(args) if args["mapToken"]
+      busy = et_busy; raise busy if busy
       map_id = args["mapId"].to_i
       x = args["x"].to_i
       y = args["y"].to_i
+      raise "Coordinates must not be negative" if x < 0 || y < 0
+      info, token = et_context
+      raise "Coordinates outside map" if map_id == info["mapId"] && !et_valid(info,x,y)
       raise "mapId must be positive" if map_id <= 0
       raise "no player yet: start or continue a game first" unless $game_player
       if $game_player.respond_to?(:reserve_transfer)
@@ -1224,6 +1465,309 @@ module RMCH
         raise "map transfer is unavailable"
       end
       { "mapId" => map_id, "x" => x, "y" => y }
+    end
+
+    # Owned event execution. Hooks are class methods (never singleton methods on
+    # saved interpreter objects), so ordinary Marshal saves remain possible.
+    def ex_main
+      et_get($game_map, :interpreter) || et_get($game_system, :map_interpreter)
+    end
+
+    def ex_active?
+      @ex_session && !["completed","stopped","failed"].include?(@ex_session["state"])
+    end
+
+    def ex_public
+      out = nil
+      if @ex_session
+        out = {}; %w[id eventId name start end state reason index commandEventId stopRequested].each { |k| out[k] = @ex_session[k] }
+      end
+      {"execution" => out}
+    end
+
+    def ex_finish(state, reason = "")
+      @ex_session["state"] = state; @ex_session["reason"] = reason
+    end
+
+    def ex_ends
+      {102=>404,111=>412,112=>413,301=>604}
+    end
+
+    def ex_markers
+      [401,402,403,404,405,408,411,412,413,505,601,602,603,604,605,655,657]
+    end
+
+    def ex_end_at(list, start)
+      first = list[start]; code = et_get(first,:code); depth = et_get(first,:indent,0)
+      ending = ex_ends[code]
+      if ending
+        return start+1 if code == 301 && ![601,602,603].include?(et_get(list[start+1],:code))
+        ((start+1)...list.size).each do |i|
+          return i+1 if et_get(list[i],:code) == ending && et_get(list[i],:indent,0) == depth
+          raise "Incomplete event structure" if et_get(list[i],:indent,0) < depth
+        end
+        raise "Missing structure end command"
+      end
+      continuation = {101=>401,108=>408,302=>605,355=>655}
+      continuation[rgss1? ? 209 : 205] = 505
+      continuation[105] = 405 if rgss3?
+      finish = start+1
+      while continuation[code] && et_get(list[finish],:code) == continuation[code] && et_get(list[finish],:indent,0) == depth
+        finish += 1
+      end
+      inputs = rgss1? ? [102,103] : [102,103,104]
+      finish = ex_end_at(list,finish) if code == 101 && inputs.include?(et_get(list[finish],:code)) && et_get(list[finish],:indent,0) == depth
+      finish
+    end
+
+    def ex_steps(list)
+      out = []; i = 0
+      while i < list.size
+        code = et_get(list[i],:code)
+        if code == 0; i += 1; next; end
+        finish = i+1; reason = nil
+        begin
+          raise "Select a complete structure, not an inner line" if et_get(list[i],:indent,0) != 0 || ex_markers.include?(code)
+          finish = ex_end_at(list,i)
+        rescue => e
+          reason = e.message
+        end
+        out << {"start"=>i,"end"=>finish,"code"=>code,"reason"=>reason}; i = finish
+      end
+      out
+    end
+
+    def ex_problem(list, interpreter)
+      stack = []; labels = list.select { |c| et_get(c,:code) == 118 }.map { |c| et_get(c,:parameters,[])[0].to_s }
+      list.each_with_index do |c,i|
+        code = et_get(c,:code); p = et_get(c,:parameters,[]); depth = et_get(c,:indent,0)
+        stack << [code,depth] if ex_ends[code] && (code != 301 || [601,602,603].include?(et_get(list[i+1],:code)))
+        if [404,412,413,604].include?(code)
+          top = stack.pop
+          return "Incomplete event structure" unless top && ex_ends[top[0]] == code && top[1] == depth
+        end
+        return "Break has no enclosing loop" if code == 113 && !stack.any? { |entry| entry[0] == 112 }
+        return "Label jump leaves the selected step" if code == 119 && !labels.include?(p[0].to_s)
+        targets = rgss1? ? [202,207,209] : [203,205,212,213]
+        needs_context = code == 123 || code == 214 || (targets.include?(code) && p[0] == 0)
+        needs_context ||= code == 111 && (p[0] == 2 || (p[0] == 6 && p[1] == 0))
+        needs_context ||= code == 122 && ((!rgss3? && p[3] == 6 && p[4] == 0) || (rgss3? && p[3] == 3 && p[4] == 5 && p[5] == 0))
+        return "Map event caller context is required" if needs_context
+        unless code == 0 || ex_markers.include?(code) || interpreter.respond_to?("command_"+code.to_s, true)
+          return "Unsupported command #"+code.to_s
+        end
+      end
+      stack.empty? ? nil : "Incomplete event structure"
+    end
+
+    def ex_hash(value)
+      hash = 2166136261
+      Marshal.dump(value).each_byte { |b| hash = ((hash ^ b) * 16777619) & 0xffffffff }
+      hash.to_s(16)
+    end
+
+    def ex_script?(list)
+      list.any? do |c|
+        code = et_get(c,:code); p = et_get(c,:parameters,[])
+        route = code == (rgss1? ? 209 : 205) && et_get(p[1],:list,[]).any? { |m| et_get(m,:code) == 45 }
+        [355,356,357].include?(code) || (code == 111 && p[0] == 12) || (rgss3? && code == 122 && p[3] == 4) || route
+      end
+    end
+
+    def ex_plan(id, start, whole = false, root_hash = nil, known = nil)
+      interpreter = ex_main
+      raise "Native event execution interface unavailable" unless interpreter && [:setup,:update,:execute_command,:running?].all? { |m| interpreter.respond_to?(m,true) }
+      event = $data_common_events && $data_common_events[id]
+      list = et_get(event,:list); raise "Common event not found" unless list.kind_of?(Array)
+      raise "Event exceeds 20000 commands" if list.size > 20000
+      step = whole ? {"start"=>0,"end"=>list.size} : (known || ex_steps(list).find { |s| s["start"] == start })
+      raise "Select a complete event step" unless step
+      raise step["reason"] if step["reason"]
+      chosen = Marshal.load(Marshal.dump(list[step["start"]...step["end"]]))
+      dependencies = {}; visiting = {}; count = chosen.size
+      capture = nil
+      capture = lambda do |cid|
+        raise "Recursive common event calls are unsupported" if visiting[cid]
+        unless dependencies[cid]
+          target = $data_common_events && $data_common_events[cid]; original = et_get(target,:list)
+          raise "Called common event missing" unless original.kind_of?(Array)
+          count += original.size; raise "Calls exceed 20000 commands" if count > 20000
+          visiting[cid] = true; dependencies[cid] = Marshal.load(Marshal.dump(original))
+          original.each { |c| capture.call(et_get(c,:parameters,[])[0].to_i) if et_get(c,:code) == 117 }
+          visiting.delete(cid)
+        end
+      end
+      chosen.each { |c| capture.call(et_get(c,:parameters,[])[0].to_i) if et_get(c,:code) == 117 }
+      [chosen,*dependencies.values].each { |commands| problem=ex_problem(commands,interpreter); raise problem if problem }
+      script = [chosen,*dependencies.values].any? { |commands| ex_script?(commands) }
+      # Preview only executable script text, without the reader's truncation.
+      previews = []
+      [chosen,*dependencies.values].each do |commands|
+        commands.each do |c|
+          code = et_get(c,:code); p = et_get(c,:parameters,[])
+          if [355,655].include?(code); previews << p[0].to_s
+          elsif [356,357].include?(code); previews << p.inspect
+          elsif code == 111 && p[0] == 12; previews << p[1].to_s
+          elsif rgss3? && code == 122 && p[3] == 4; previews << p[-1].to_s
+          end
+          if code == (rgss1? ? 209 : 205)
+            et_get(p[1],:list,[]).each { |m| previews << et_get(m,:parameters,[])[0].to_s if et_get(m,:code) == 45 }
+          end
+        end
+      end
+      preview = previews.join("\n"); raise "Script preview exceeds 128K characters" if preview.size > 131072
+      step.merge({"eventId"=>id,"name"=>et_get(event,:name,""),"revision"=>ex_hash([root_hash || ex_hash(list),dependencies]),
+        "script"=>script,"preview"=>preview,"list"=>chosen,"dependencies"=>dependencies,"interpreter"=>interpreter})
+    end
+
+    def ex_effects_pending?(session)
+      session["effects"].any? { |character| !!et_get(character,:move_route_forcing,false) }
+    end
+
+    def ex_checkpoint(interpreter)
+      session = @ex_context
+      return true unless session && ex_active?
+      list = et_get(interpreter,:list)
+      unless session["lists"][list.object_id]
+        # XP/VX may start the next map event within the same update call.
+        if interpreter.equal?(session["interpreter"])
+          ex_finish(session["stopRequested"] ? "stopped" : "completed"); @ex_context = nil; return true
+        end
+        return true if session["script"]
+        raise "Execution command source changed"
+      end
+      command = list[et_get(interpreter,:index,0)]
+      ending = interpreter.equal?(session["interpreter"]) && (!command || [0,115].include?(et_get(command,:code)))
+      if session["stopRequested"] || ending
+        if rgss3?
+          while ex_effects_pending?(session); Fiber.yield; end
+        else
+          return false if ex_effects_pending?(session)
+        end
+      end
+      raise RMCH::EventExecutionStop if session["stopRequested"]
+      if rgss3?
+        while session["budget"] <= 0; Fiber.yield; end
+      else
+        return false if session["budget"] <= 0
+      end
+      raise RMCH::EventExecutionStop if session["stopRequested"]
+      session["budget"] -= 1
+      origin = session["lists"][list.object_id]
+      session["index"] = origin[1] + et_get(interpreter,:index,0); session["commandEventId"] = origin[0]
+      if et_get(command,:code) == (rgss1? ? 209 : 205) && interpreter.respond_to?(:get_character,true)
+        character=interpreter.send(:get_character,et_get(command,:parameters,[])[0])
+        session["effects"] << character if character && !session["effects"].include?(character)
+      end
+      true
+    end
+
+    def ex_owned_update(interpreter)
+      return yield unless ex_active? && interpreter.equal?(@ex_session["interpreter"])
+      return if @ex_context
+      session = @ex_session; @ex_context = session; session["budget"] = 200
+      session["state"] = session["stopRequested"] ? "stopping" : "running"
+      begin
+        result = yield
+        if ex_active? && !interpreter.running?
+          ex_finish(session["stopRequested"] ? "stopped" : "completed")
+        elsif ex_active?
+          session["state"] = session["stopRequested"] ? "stopping" : "waiting"
+        end
+        result
+      rescue Exception => e
+        if et_get(interpreter,:list).equal?(session["root"])
+          interpreter.instance_variable_set(:@list,nil)
+          interpreter.instance_variable_set(:@fiber,nil) if rgss3?
+          interpreter.instance_variable_set(:@child_interpreter,nil)
+        end
+        ex_finish(e.kind_of?(RMCH::EventExecutionStop) ? "stopped" : "failed",e.kind_of?(RMCH::EventExecutionStop) ? "" : e.message.to_s)
+      ensure
+        @ex_context = nil
+      end
+    end
+
+    def ex_call_child(interpreter)
+      session = @ex_context; return false unless session && ex_active?
+      params = et_get(interpreter,:params) || et_get(interpreter,:parameters,[])
+      id = params[0].to_i
+      list = session["dependencies"][id]
+      return false if !list && session["script"]
+      raise "Unvalidated common event call" unless list
+      child = interpreter.class.new(et_get(interpreter,:depth,0)+1); child.setup(list,0)
+      if rgss3?; child.run
+      else; interpreter.instance_variable_set(:@child_interpreter,child)
+      end
+      true
+    end
+
+    def ex_install(interpreter)
+      klass = interpreter.class; @ex_hooks ||= {}
+      if @ex_hooks[klass]
+        raise "Interpreter was replaced; reconnect required" unless klass.instance_method(:update) == @ex_hooks[klass][0] && klass.instance_method(:execute_command) == @ex_hooks[klass][1] && klass.instance_method(:command_117) == @ex_hooks[klass][2]
+        return
+      end
+      update = klass.instance_method(:update); execute = klass.instance_method(:execute_command)
+      common = klass.instance_method(:command_117)
+      klass.class_eval do
+        define_method(:update) { |*args| RMCH.ex_owned_update(self) { update.bind(self).call(*args) } }
+        define_method(:execute_command) { |*args| RMCH.ex_checkpoint(self) ? execute.bind(self).call(*args) : false }
+        define_method(:command_117) { |*args| RMCH.ex_call_child(self) ? true : common.bind(self).call(*args) }
+      end
+      @ex_hooks[klass] = [klass.instance_method(:update),klass.instance_method(:execute_command),klass.instance_method(:command_117)]
+    end
+
+    def ex_dispatch(type, args)
+      if type == "events.execution"
+        ex_finish("failed","Game replaced the execution context") if ex_active? && !ex_main.equal?(@ex_session["interpreter"])
+        return ex_public
+      end
+      if type == "events.stop"
+        raise "Execution identity changed" unless @ex_session && @ex_session["id"] == args["executionId"]
+        if ex_active?; @ex_session["stopRequested"] = true; @ex_session["state"] = "stopping"; end
+        return ex_public
+      end
+      info, token = et_context(args); id = args["id"].to_i
+      if type == "events.steps"
+        event = $data_common_events && $data_common_events[id]; list = et_get(event,:list)
+        raise "Common event unavailable" unless list.kind_of?(Array)
+        raise "Event exceeds 20000 commands" if list.size > 20000
+        root_hash = ex_hash(list)
+        steps = ex_steps(list).map do |step|
+          begin
+            plan = ex_plan(id,step["start"],false,root_hash,step)
+            step.merge({"revision"=>plan["revision"],"script"=>plan["script"]})
+          rescue => e; step.merge({"reason"=>e.message}); end
+        end
+        begin
+          plan = ex_plan(id,0,true,root_hash)
+          whole = {"revision"=>plan["revision"],"script"=>plan["script"]}
+        rescue => e; whole = {"reason"=>e.message}; end
+        read = et_read({"mapToken"=>token,"kind"=>"common","id"=>id.to_s})
+        return {"mapToken"=>token,"id"=>id,"steps"=>steps,"whole"=>whole,"readerRevision"=>read["revision"]}
+      end
+      whole = type == "commonEvent.run" || args["whole"].to_s == "true"
+      plan = ex_plan(id,args["start"].to_i,whole)
+      raise "Event changed; reread steps" unless plan["revision"] == args["revision"]
+      return {"preview"=>plan["preview"]} if type == "events.preview"
+      raise "A tool event is already running" if ex_active?
+      busy = et_busy; raise busy if busy
+      raise "Common event is already reserved" if et_get($game_temp,:common_event_id,0).to_i > 0
+      raise "Confirm script or plugin source first" if plan["script"] && args["confirmed"].to_s != "true"
+      ex_install(plan["interpreter"])
+      root = plan["list"]
+      unless !root.empty? && et_get(root[-1],:code) == 0
+        raise "RPG event command class unavailable" unless defined?(RPG::EventCommand)
+        root << RPG::EventCommand.new(0,0,[])
+      end
+      lists = {root.object_id=>[id,plan["start"]]}
+      plan["dependencies"].each { |cid,list| lists[list.object_id] = [cid,0] }
+      @ex_sequence = (@ex_sequence || 0)+1
+      @ex_session = plan.merge({"id"=>"execution:"+Time.now.to_f.to_s+":"+@ex_sequence.to_s,"state"=>"accepted","reason"=>"",
+        "index"=>plan["start"],"commandEventId"=>id,"stopRequested"=>false,"root"=>root,"lists"=>lists,"effects"=>[]})
+      begin; plan["interpreter"].setup(root,0)
+      rescue => e; ex_finish("failed",e.message); raise; end
+      ex_public
     end
 
     # --- save slots -------------------------------------------------------------
@@ -1264,6 +1808,35 @@ module RMCH
       rel = File.dirname(save_rel_name(0))
       return @real_dir if rel == "." || rel.empty?
       @real_dir + "/" + rel
+    end
+
+    # Host-side copies need the game's actual slot names; recognizing every
+    # rxdata file would accidentally include Data/Scripts and database files.
+    # Recomputed with state so late-loaded/custom slot plugins remain visible.
+    def save_location
+      return nil if @real_dir.to_s.empty?
+      paths = []
+      if essentials?
+        ess_slots.each { |slot| paths << ess_save_path(slot) }
+      else
+        count = 99
+        if rgss3? && defined?(DataManager) && DataManager.respond_to?(:savefile_max)
+          count = DataManager.savefile_max.to_i
+        end
+        count.times { |index| paths << save_rel_name(index) }
+      end
+      dir = save_dir_real
+      names = []
+      paths.each do |file|
+        next if file.to_s.empty?
+        rel = file.to_s.sub(%r{\A\.?/}, "")
+        actual_dir = File.dirname(rel)
+        actual_dir = actual_dir == "." ? @real_dir : @real_dir + "/" + actual_dir
+        names << File.basename(rel) if actual_dir == dir
+      end
+      { "gameRoot" => @real_dir, "saveDir" => dir, "files" => names.uniq }
+    rescue Exception
+      nil
     end
 
     # Read the source fully (binary mode — IO.read is text mode on Windows and
@@ -1386,6 +1959,8 @@ module RMCH
       ess_player!
       ok = Game.save(slot)
       raise "Game.save returned false" unless ok
+      rel = ess_save_path(slot).to_s.sub(%r{\A\.?/}, "")
+      safe_copy(rel, @real_dir + "/" + rel) unless @real_dir.to_s.empty? || rel.empty?
       { "id" => id, "saved" => true }
     end
 
@@ -2087,6 +2662,7 @@ module RMCH
         "map" => map_info_payload,
         "party" => party_state,
         "saveDir" => save_dir_real,
+        "saveLocation" => save_location,
         "essentials" => essentials?,
         "inBattle" => in_battle?,
         "options" => options
@@ -3119,6 +3695,10 @@ module RMCH
       # --- maps -----------------------------------------------------------------------
       when "map.info"
         map_info_payload || {}
+      when "map.inspect", "map.grid", "map.move", "events.running", "events.read", "events.status"
+        et_dispatch(type, args)
+      when "events.steps", "events.preview", "events.execute", "events.execution", "events.stop", "commonEvent.run"
+        ex_dispatch(type, args)
       when "map.list"
         map_list
       when "map.transfer"

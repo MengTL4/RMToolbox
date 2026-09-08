@@ -73,6 +73,8 @@ function makeMockGame(sandbox) {
     reserveTransfer(mapId, x, y, direction, fade) {
       this._transfer = { mapId, x, y, direction, fade };
     }
+    isThrough() { return this._through; }
+    setThrough(value) { this._through = value; }
   }
 
   const actors = [new Game_Actor(1), new Game_Actor(2)];
@@ -389,6 +391,13 @@ async function main() {
   await sendCommand("trainer.options.set", { options: { lockHp: true, lockHpVal: 150, noSkillCost: false } });
   actor1.setHp(10);
   assert.equal(actor1._hp, 150, "setHp must be forced back to the locked value");
+  actor1.addParam = function () { this.refresh(); };
+  const ignoredParam = await sendCommand("actor.param.add", { id: 1, paramId: 2, value: 10 });
+  assert.equal(ignoredParam.ok, false, "a game-disabled addParam must not report success");
+  delete actor1.addParam;
+  const appliedParam = await sendCommand("actor.param.add", { id: 1, paramId: 2, value: 10 });
+  assert.equal(appliedParam.ok, true, "native parameter fallback still applies changes");
+  assert.equal(actor1._paramPlus[2], 10);
 
   // 11. battle reward rates on BattleManager mock
   sandbox.BattleManager._rewards = { exp: 100, gold: 200 };
@@ -401,11 +410,32 @@ async function main() {
   sandbox.BattleManager._phase = "init";
 
   // 12. map transfer / through
+  const unsafeTransfer = await sendCommand("map.transfer", { mapId: 2, x: 5, y: 6 });
+  assert.equal(unsafeTransfer.ok, false, "transfer outside a map scene must be refused");
+  sandbox.SceneManager._scene = new sandbox.Scene_Map();
   const transfer = await sendCommand("map.transfer", { mapId: 2, x: 5, y: 6 });
   assert.deepEqual(transfer.payload, { mapId: 2, x: 5, y: 6, direction: 2, fade: 0 });
   assert.equal(sandbox.$gamePlayer._transfer.mapId, 2);
   const through = await sendCommand("map.through.toggle");
   assert.equal(through.payload.through, true);
+  await sendCommand("map.through.set", { value: false });
+  // Stair events enable through, wait across bridge timer ticks, then move
+  // across blocked tiles. An inactive trainer must preserve that state.
+  const stairPlayer = sandbox.$gamePlayer;
+  stairPlayer.setThrough(true);
+  await sleep(1100);
+  assert.equal(stairPlayer.isThrough(), true, "bridge timer must preserve stair-event through state");
+  await sendCommand("map.through.set", { value: true });
+  stairPlayer.setThrough(false);
+  assert.equal(stairPlayer.isThrough(), true, "trainer through must remain effective after an event disables native through");
+  assert.equal(stairPlayer._through, false, "trainer must not write through into game/save state");
+  await sendCommand("map.through.set", { value: false });
+  assert.equal(stairPlayer.isThrough(), false, "disabling trainer restores native collision immediately");
+  stairPlayer.setThrough(true);
+  await sendCommand("map.through.toggle");
+  await sendCommand("map.through.toggle");
+  assert.equal(stairPlayer.isThrough(), true, "toggling trainer must preserve a running event's native through");
+  stairPlayer.setThrough(false);
 
   // 13. map list
   const maps = await sendCommand("map.list");
@@ -413,7 +443,7 @@ async function main() {
 
   // 14. common event
   const ce = await sendCommand("commonEvent.run", { id: 1 });
-  assert.equal(ce.payload.name, "CE1");
+  assert.equal(ce.ok, false, "whole event execution requires a current map and validated event revision");
 
   // 15. console.eval
   const evaluated = await sendCommand("console.eval", { code: "2 + 3" });
@@ -477,6 +507,37 @@ async function main() {
   mock.party._gold = 3;
   tick();
   assert.equal(mock.party._gold, 3, "released gold lock must stop writing");
+  // Renamed/custom engines keep a second ledger in gainGold; raw field writes
+  // invalidate it. Locks must use that same path, and only when gold differs.
+  let ledgerGold = 3, ledgerCalls = 0;
+  const oldGainGold = mock.party.gainGold;
+  Object.defineProperty(mock.party, "_gold", { configurable: true, get() { return ledgerGold; }, set() { throw new Error("raw gold write invalidates ledger"); } });
+  mock.party.gainGold = amount => { ledgerCalls++; ledgerGold += amount; };
+  await sendCommand("lock.set", { kind: "gold", value: 500 });
+  tick();
+  assert.equal(ledgerGold, 500, "gold lock must preserve the game's gainGold bookkeeping");
+  const callsAtTarget = ledgerCalls;
+  tick();
+  assert.equal(ledgerCalls, callsAtTarget, "unchanged locks must not repeatedly notify the game");
+  await sendCommand("lock.set", { kind: "gold", enabled: false });
+  Object.defineProperty(mock.party, "_gold", { configurable: true, writable: true, value: ledgerGold });
+  mock.party.gainGold = oldGainGold;
+  const oldGoldReader = mock.party.gold;
+  mock.party._gold = "encoded:100";
+  mock.party.gold = () => Number(String(mock.party._gold).split(":")[1]);
+  mock.party.maxGold = () => 100;
+  let cappedGoldCalls = 0;
+  mock.party.gainGold = delta => { cappedGoldCalls++; mock.party._gold = "encoded:" + Math.max(0, Math.min(100, mock.party.gold() + delta)); };
+  const cappedGold = await sendCommand("gold.set", { value: 500 });
+  assert.equal(cappedGold.payload.gold, 100, "native encoded gold caps remain authoritative");
+  assert.equal(mock.party._gold, "encoded:100");
+  await sendCommand("lock.set", { kind: "gold", value: 500 });
+  const callsAtCap = cappedGoldCalls;
+  tick(); tick();
+  assert.equal(cappedGoldCalls, callsAtCap, "an unreachable gold lock does not repeat native notifications");
+  await sendCommand("lock.clear");
+  mock.party.gold = oldGoldReader; mock.party.gainGold = oldGainGold; delete mock.party.maxGold;
+  mock.party._gold = 100;
 
   // 24. bulk replace + snapshot round trip
   const replaced = await sendCommand("lock.replace", {
@@ -490,6 +551,43 @@ async function main() {
   assert.deepEqual(cleared.payload.locks.item, {});
   assert.equal(cleared.payload.locks.gold, null);
   mock.party._gold = 1234;                        // restore for anything downstream
+  const plainItems = mock.party._items, plainGainItem = mock.party.gainItem;
+  mock.party._items = { 1: "encoded:5" };
+  mock.party.numItems = item => {
+    const raw = mock.party._items[item.id];
+    if (typeof raw === "number") throw new Error("raw inventory write invalidates encoding");
+    return raw ? Number(raw.split(":")[1]) : 0;
+  };
+  mock.party.gainItem = (item, amount) => { mock.party._items[item.id] = "encoded:" + Math.max(0, mock.party.numItems(item) + amount); };
+  const encodedSet = await sendCommand("item.set", { kind: "item", id: 1, count: 8 });
+  assert.equal(encodedSet.payload.count, 8, "inventory updates read back through numItems");
+  assert.equal(mock.party._items[1], "encoded:8", "inventory writes preserve encoded backing fields");
+  const encodedAdd = await sendCommand("item.add", { kind: "item", id: 1, amount: 2 });
+  assert.equal(encodedAdd.payload.count, 10);
+  const encodedList = await sendCommand("item.list");
+  assert.equal(encodedList.payload.entries.find(e => e.kind === "item" && e.id === 1).count, 10);
+  await sendCommand("lock.set", { kind: "item", id: 1, value: 12 });
+  tick();
+  assert.equal(mock.party._items[1], "encoded:12", "inventory locks use the engine's write path");
+  await sendCommand("lock.clear");
+  mock.party.thTyZhNumGain = value => "encoded:" + value;
+  mock.party.thTyZhNumGet = value => Number(String(value).split(":")[1]) || 0;
+  delete mock.party._items[1];
+  mock.party.gainItem = () => {};
+  const refusedEmptySlot = await sendCommand("item.set", { kind: "item", id: 1, count: 5 });
+  assert.equal(refusedEmptySlot.ok, false, "encoded inventory cannot fall back to writing raw empty slots");
+  assert.equal(mock.party._items[1], undefined);
+  delete mock.party.thTyZhNumGain; delete mock.party.thTyZhNumGet;
+  mock.party._items = plainItems; mock.party.gainItem = plainGainItem; delete mock.party.numItems;
+  const oldVariableValue = mock.variables.value, oldVariableSet = mock.variables.setValue;
+  mock.variables._data[1] = "encoded:4";
+  mock.variables.value = id => Number(String(mock.variables._data[id]).split(":")[1]) || 0;
+  mock.variables.setValue = (id, value) => { mock.variables._data[id] = "encoded:" + value; };
+  await sendCommand("lock.set", { kind: "variable", id: 1, value: 25 });
+  tick();
+  assert.equal(mock.variables._data[1], "encoded:25", "variable locks preserve engine encoding");
+  await sendCommand("lock.clear");
+  mock.variables.value = oldVariableValue; mock.variables.setValue = oldVariableSet; mock.variables._data[1] = 555;
 
   // 25. save-contents round trip (数据修改)
   const contents = await sendCommand("save.contents.get");
@@ -564,9 +662,26 @@ async function main() {
 
   const hurt = await sendCommand("battle.enemy.setHp", { index: 0, value: 5 });
   assert.equal(hurt.payload.hp, 5);
+  // MV die() clears states; alive/dead is determined by the death state.
+  const deathStateEnemy = sandbox.$gameTroop.members()[0];
+  deathStateEnemy._states = [];
+  deathStateEnemy.die = function () { this._hp = 0; this._states = []; };
+  deathStateEnemy.deathStateId = function () { return 1; };
+  deathStateEnemy.addState = function (id) { this.die(); this._states.push(id); };
+  deathStateEnemy.isAlive = function () { return this._states.indexOf(1) < 0; };
+  // FT blocks ordinary state application for death, even with zero HP. Its
+  // native addNewState is the forced-death path and still runs die().
+  const guardedDeathEnemy = sandbox.$gameTroop.members()[1];
+  guardedDeathEnemy._states = [];
+  guardedDeathEnemy.die = function () { this._states = []; };
+  guardedDeathEnemy.deathStateId = function () { return 1; };
+  guardedDeathEnemy.addState = function () {};
+  guardedDeathEnemy.addNewState = function (id) { this.die(); this._states.push(id); };
+  guardedDeathEnemy.isAlive = function () { return this._states.indexOf(1) < 0; };
   const killed = await sendCommand("battle.killEnemies");
   assert.equal(killed.payload.killed, 2);
   assert.equal(killed.payload.remaining, 0);
+  assert.equal(guardedDeathEnemy._hp, 0, "custom die() may only update states; forced defeat must also clear native HP");
   sandbox.BattleManager._phase = "init";
 
   // 31. suppressNoCost is honoured. withNoCostSuppressed used to bump a counter

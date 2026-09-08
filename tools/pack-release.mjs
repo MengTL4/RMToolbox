@@ -1,80 +1,69 @@
-// Build the downloadable release zip:
-//   node tools/pack-release.mjs
-//
-// Rebuilds the generated bundles, stages everything the GUI/CLI need (including
-// the linked NW.js runtime in app/gui) into output/release/RMToolbox/, then
-// zips it to output/RMToolbox-v<version>-win-x64.zip. The zip is what the
-// GitHub Release ships: unzip → double-click RMToolbox.exe, no Node required.
+// Release entry point: npm ci, then npm run build. No game runtime donor needed.
+import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { buildBridge } from '../core/bridge-bundler.mjs';
+import { buildGuiBundle } from '../core/gui-bundler.mjs';
+import { buildFrontend } from './gui-frontend.mjs';
+import { verifyReleaseArchive } from './verify-release.mjs';
+import { assertBuildPath, setupGuiRuntime, readRuntimeLock, fileSha256 } from '../core/setup-gui-runtime.mjs';
 
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { buildBridge } from "../core/bridge-bundler.mjs";
-import { buildGuiBundle } from "../core/gui-bundler.mjs";
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+if (!/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(pkg.version)) throw new Error('Invalid release version');
+const staging = assertBuildPath(root, path.join(root, 'output/release/RMToolbox'));
+const destZip = assertBuildPath(root, path.join(root, `output/RMToolbox-v${pkg.version}-win-x64.zip`));
+const tempZip = assertBuildPath(root, destZip.replace(/\.zip$/, '.building.zip'));
+const run = (...args) => execFileSync(process.execPath, args, {cwd: root, stdio: 'inherit', windowsHide: true});
+const psString = value => "'" + value.replaceAll("'", "''") + "'";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const version = JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8")).version;
+run('node_modules/vue-tsc/bin/vue-tsc.js', '--noEmit');
+buildGuiBundle(root);
+buildBridge(root);
+await buildFrontend(root);
+run('tools/test-gui-runtime-setup.mjs');
+run('tools/test-gui-host-boundary.mjs');
+run('tools/test-ui-interactions.mjs');
+run('tools/gui-check.mjs');
 
-const staging = path.join(projectRoot, "output", "release", "RMToolbox");
-const destZip = path.join(projectRoot, "output", `RMToolbox-v${version}-win-x64.zip`);
-
-// Directory contents to ship, relative to projectRoot. app/gui ships complete —
-// the linked NW runtime binaries are the whole point of the release zip.
-// runtime/inject/bin ships the prebuilt injector + hook DLLs for the attach
-// feature (obj/ intermediates and the self-test binaries are dev-only).
-const SHIP_DIRS = ["app/gui", "core", "runtime/bridge", "runtime/rgss-bridge", "runtime/inject/bin", "tools", "docs/screenshots"];
-const SHIP_FILES = ["README.md", "LICENSE", "package.json"];
-// Volatile / machine-local entries inside the shipped dirs.
-const EXCLUDE = new Set([
-  "app/gui/cache", "app/gui/debug.log",
-  "runtime/inject/bin/obj", "runtime/inject/bin/win32/test", "runtime/inject/bin/x64/test"
-]);
-
-function main() {
-  const exe = path.join(projectRoot, "app", "gui", "RMToolbox.exe");
-  if (!existsSync(exe)) {
-    throw new Error("app/gui/RMToolbox.exe 不存在 —— 先跑一次 tools/launch-gui.ps1 或 tools/setup-gui.mjs");
-  }
-
-  // Generated artifacts must be current with the sources being zipped.
-  buildGuiBundle(projectRoot);
-  buildBridge(projectRoot);
-
-  rmSync(staging, { recursive: true, force: true });
-  rmSync(destZip, { force: true });
-  for (const dir of SHIP_DIRS) {
-    const from = path.join(projectRoot, dir);
-    const to = path.join(staging, dir);
-    cpSync(from, to, {
-      recursive: true,
-      filter: (source) => {
-        const rel = path.relative(projectRoot, source).split(path.sep).join("/");
-        return !EXCLUDE.has(rel);
-      }
-    });
-  }
-  for (const file of SHIP_FILES) {
-    cpSync(path.join(projectRoot, file), path.join(staging, file));
-  }
-
-  // The exe sits three levels down (app/gui/RMToolbox.exe) — give users a
-  // double-clickable launcher at the zip root instead. CRLF is required for
-  // cmd files; %* passes through args such as --remote-debugging-port.
-  writeFileSync(
-    path.join(staging, "RMToolbox.cmd"),
-    '@echo off\r\nstart "" "%~dp0app\\gui\\RMToolbox.exe" %*\r\n',
-    "ascii"
-  );
-
-  mkdirSync(path.dirname(destZip), { recursive: true });
-  execFileSync("powershell", [
-    "-NoProfile", "-Command",
-    `Compress-Archive -Path '${staging}' -DestinationPath '${destZip}' -CompressionLevel Optimal`
-  ], { stdio: "inherit" });
-
-  const { size } = statSync(destZip);
-  console.log(`release zip: ${destZip} (${(size / 1024 / 1024).toFixed(1)} MB)`);
+// Whitelist GUI application assets: never copy local Chromium profiles, donor
+// junctions or unknown runtime leftovers from the developer's app/gui folder.
+fs.rmSync(staging, {recursive: true, force: true});
+fs.mkdirSync(path.join(staging, 'app/gui'), {recursive: true});
+const guiEntries = ['package.json', 'index.html', 'host.cjs', 'gui-bundle.cjs', 'ui', 'vendor', 'styles.css', 'jsoneditor-theme.css', 'icon.png'];
+for (const name of guiEntries) fs.cpSync(path.join(root, 'app/gui', name), path.join(staging, 'app/gui', name), {recursive: true});
+const exclude = new Set(['runtime/inject/bin/obj', 'runtime/inject/bin/win32/test', 'runtime/inject/bin/x64/test']);
+for (const name of ['core', 'runtime/bridge', 'runtime/rgss-bridge', 'runtime/inject/bin', 'tools', 'docs/screenshots']) {
+  fs.cpSync(path.join(root, name), path.join(staging, name), {recursive: true,
+    filter: source => !exclude.has(path.relative(root, source).split(path.sep).join('/'))});
 }
+for (const name of ['README.md', 'LICENSE', 'package.json', 'nw-runtime.lock.json', 'package-lock.json',
+  'docs/NEW-GAMES-ADAPTATION.md', 'docs/HOMECOMING-0133-ACCEPTANCE.md', 'docs/STORM-ADAPTATION.md']) fs.copyFileSync(path.join(root, name), path.join(staging, name));
+// Always install from the checksum-verified official archive into a clean stage.
+await setupGuiRuntime({projectRoot: root, guiDir: path.join(staging, 'app/gui'), force: true});
+const guiPackagePath = path.join(staging, 'app/gui/package.json');
+const guiPackage = JSON.parse(fs.readFileSync(guiPackagePath, 'utf8'));
+guiPackage.version = pkg.version;
+fs.writeFileSync(guiPackagePath, JSON.stringify(guiPackage, null, 2) + '\n');
+for (const arch of ['win32', 'x64']) for (const name of ['rmch-inject.exe', 'rmch-mvhook.dll', 'rmch-rgsshook.dll']) {
+  if (!fs.statSync(path.join(staging, 'runtime/inject/bin', arch, name)).size) throw new Error('Empty injector: ' + name);
+}
+fs.writeFileSync(path.join(staging, 'RMToolbox.cmd'), '@echo off\r\nstart "" "%~dp0app\\gui\\RMToolbox.exe" %*\r\n', 'ascii');
+run('tools/test-gui-runtime.mjs', path.join(staging, 'app/gui'), path.join(staging, 'app/gui'));
+const lock = readRuntimeLock(root);
+fs.writeFileSync(path.join(staging, 'build-info.json'), JSON.stringify({
+  version: pkg.version, platform: lock.platform, runtime: lock,
+  dependencyLockSha256: fileSha256(path.join(root, 'package-lock.json')),
+  generated: Object.fromEntries(['app/gui/gui-bundle.cjs', 'app/gui/ui/modern.js', 'runtime/bridge/page-bridge.js'].map(file => [file, fileSha256(path.join(staging, file))]))
+}, null, 2) + '\n');
 
-main();
+// Keep the previous good ZIP until the replacement has been fully written.
+fs.rmSync(tempZip, {force: true});
+execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command',
+  `$ErrorActionPreference='Stop'; Compress-Archive -LiteralPath ${psString(staging)} -DestinationPath ${psString(tempZip)} -CompressionLevel Optimal`], {stdio: 'inherit', windowsHide: true});
+verifyReleaseArchive(tempZip, staging);
+fs.rmSync(destZip, {force: true});
+fs.renameSync(tempZip, destZip);
+fs.writeFileSync(destZip + '.sha256', `${fileSha256(destZip)}  ${path.basename(destZip)}\n`);
+console.log(`release zip: ${destZip} (${(fs.statSync(destZip).size / 1024 / 1024).toFixed(1)} MB)`);

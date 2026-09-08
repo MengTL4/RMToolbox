@@ -22,11 +22,11 @@
 // an adopted one.
 
 import http from "node:http";
-import { appendFileSync, closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { StringDecoder } from "node:string_decoder";
+import { JsonlReader } from "./jsonl-reader.mjs";
 
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const PING_INTERVAL_MS = 10000;
@@ -214,6 +214,7 @@ export class BridgeServer extends EventEmitter {
     /** @type {Map<string, Session>} gameKey -> session */
     this.sessions = new Map();
     this.nextCommandId = 1;
+    this.commandNamespace = randomBytes(12).toString("hex");
     this.stopped = false;
   }
 
@@ -601,12 +602,7 @@ class FileSession {
     this.state = null;
     this.pending = new Map();
     this.lastStateText = "";
-    this.eventOffset = 0;
-    this.eventRemainder = "";
-    this.decoder = new StringDecoder("utf8");
-    try {
-      if (existsSync(this.eventPath)) this.eventOffset = statSync(this.eventPath).size;
-    } catch (_) {}
+    this.reader = new JsonlReader(this.eventPath, { fromEnd: true });
     this.readState();
     this.pollTimer = setInterval(() => {
       this.readState();
@@ -657,31 +653,12 @@ class FileSession {
   }
 
   readEvents() {
-    let size;
+    let lines;
     try {
-      size = statSync(this.eventPath).size;
+      lines = this.reader.readLines();
     } catch (_) {
       return;
     }
-    if (size < this.eventOffset) this.eventOffset = 0; // file was truncated
-    if (size === this.eventOffset) return;
-    let text;
-    try {
-      const fd = openSync(this.eventPath, "r");
-      try {
-        const length = size - this.eventOffset;
-        const chunk = Buffer.allocUnsafe(length);
-        const got = readSync(fd, chunk, 0, length, this.eventOffset);
-        this.eventOffset += got;
-        text = this.decoder.write(got === length ? chunk : chunk.subarray(0, got));
-      } finally {
-        closeSync(fd);
-      }
-    } catch (_) {
-      return;
-    }
-    const lines = (this.eventRemainder + text).split(/\r?\n/);
-    this.eventRemainder = lines.pop();
     for (const line of lines) {
       if (!line) continue;
       let message;
@@ -691,7 +668,7 @@ class FileSession {
         continue;
       }
       if (!message || typeof message.commandId !== "string") continue;
-      // The bridge prefixes file-channel ids: commands.jsonl "f7" -> events "file:f7".
+      // The bridge adds "file:" to the opaque command id in its reply.
       const id = message.commandId.replace(/^file:/, "");
       const entry = this.pending.get(id);
       if (!entry) continue;
@@ -711,7 +688,8 @@ class FileSession {
         reject(new BridgeServerError(`file bridge for "${this.gameKey}" is gone`));
         return;
       }
-      const id = `f${this.server.nextCommandId++}`;
+      // A running game's processed-id set survives a toolbox restart.
+      const id = `f${this.server.commandNamespace}-${this.server.nextCommandId++}`;
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new BridgeServerError(`command "${type}" timed out after ${timeoutMs}ms`));

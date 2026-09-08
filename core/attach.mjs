@@ -20,7 +20,7 @@
 // Native binaries live in runtime/inject/bin/<arch>/ (see tools/build-inject.mjs).
 
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -30,6 +30,7 @@ import { buildBridge } from "./bridge-bundler.mjs";
 import { ensureServer, launchGame } from "./launcher.mjs";
 import { getToken } from "./token.mjs";
 import { adoptRgssSession } from "./rgss-launcher.mjs";
+import { buildGroverCompatibilityBootstrap, isKnownSangforModule } from "./grover-compat.mjs";
 
 export class AttachError extends Error {}
 
@@ -54,17 +55,18 @@ const LAUNCH_ATTACH_DELAY_MS = 30000;
 // fails without wmic on Win11 — harmless, the game boots anyway) before the
 // payload boots; inject only after that window closes.
 const GROVER_SETTLE_MS = 60000;
+const GROVER_COMPAT_SETTLE_MS = 0;
 const RGSS_EVAL_TIMEOUT_MS = 75000;
 
 // --- process discovery -------------------------------------------------------
 
-function runPowerShellJson(script) {
+function runPowerShellJson(script, executable = "powershell.exe") {
   return new Promise((resolve, reject) => {
     // A powershell child can hang for good (WMI service stall, an AV engine
     // holding the process in scan) — without this timeout a single wedged
     // query silently freezes the whole launch poll loop.
     execFile(
-      "powershell.exe",
+      executable,
       ["-NoProfile", "-NonInteractive", "-Command", script],
       { maxBuffer: 16 * 1024 * 1024, windowsHide: true, timeout: 15000, killSignal: "SIGKILL" },
       (error, stdout) => {
@@ -312,7 +314,7 @@ const BOOT_TAP_SNIPPET = [
   "  }",
 ].join("\n");
 
-export function buildNwBootstrap({ gameRoot, projectRoot, gameKey, port, token, extraEnv }) {
+export function buildNwBootstrap({ gameRoot, projectRoot, gameKey, port, token, extraEnv, pageRealm = false }) {
   const bridgePath = path.join(projectRoot, "runtime", "bridge", "page-bridge.js");
   const bridgeSource = readFileSync(bridgePath, "utf8");
   const envVars = {
@@ -341,7 +343,7 @@ export function buildNwBootstrap({ gameRoot, projectRoot, gameKey, port, token, 
       : "  if (window.__rmchBridge) return; // already attached/launched",
     "  var __rmchStart = function () {",
     "    Object.assign(process.env, " + JSON.stringify(envVars) + ");",
-    "    (0, eval)(" + JSON.stringify(bridgeSource) + ");",
+    "    " + (pageRealm ? "window.eval" : "(0, eval)") + "(" + JSON.stringify(bridgeSource) + ");",
     "  };",
     "  var isGamePage = !!(document && document.querySelector &&",
     "    (document.querySelector('canvas') || window.SceneManager || window.PluginManager || window.Utils));",
@@ -382,17 +384,7 @@ export function buildNwBootstrap({ gameRoot, projectRoot, gameKey, port, token, 
 
 // --- MV/MZ attach -----------------------------------------------------------------
 
-async function attachNw({ scan, projectRoot, port, extraEnv }) {
-  if (!scan.paths.exe) throw new AttachError("Game.exe not found in game root");
-  const token = getToken(projectRoot);
-  buildBridge(projectRoot);
-  await ensureServer({ projectRoot, port, token });
-
-  const exeName = path.basename(scan.paths.exe);
-  const procs = processesUnderRoot(await listProcessesByExeName(exeName), scan.root);
-  if (!procs.length) {
-    throw new AttachError(`no running ${exeName} process found under ${scan.root}`);
-  }
+function nwProcessTargets(procs) {
   const renderers = procs.filter((p) => /--type=renderer/.test(p.CommandLine || ""));
   const mains = procs.filter((p) => !/--type=/.test(p.CommandLine || ""));
   // Game pages usually live in a plain renderer; --extension-process renderers
@@ -403,81 +395,74 @@ async function attachNw({ scan, projectRoot, port, extraEnv }) {
   const extRenderers = renderers.filter((p) => /--extension-process/.test(p.CommandLine || ""));
   const targets = [...pageRenderers, ...extRenderers];
   if (!targets.length) targets.push(...mains);
-
-  const arch = readPeArch(scan.paths.exe);
-  const bootstrap = buildNwBootstrap({
-    gameRoot: scan.root, projectRoot, gameKey: scan.gameKey, port, token,
-    ...(extraEnv ? { extraEnv } : {})
-  });
-
-  const results = [];
-  for (const target of targets) {
-    const result = await injectAndDeliver({
-      projectRoot, arch, pid: target.ProcessId,
-      dllName: "rmch-mvhook.dll", bootstrap, mode: "crt",
-      timeoutMs: INJECT_RESULT_TIMEOUT_MS
-    });
-    results.push({ pid: target.ProcessId, ...result });
-    // One live bridge is enough — every extra injection is more foreign-module
-    // exposure on games with integrity scans.
-    if (result.ok) break;
-  }
-  const ok = results.filter((r) => r.ok);
-  if (!ok.length) {
-    throw new AttachError(
-      "injection failed: " + results.map((r) => `pid ${r.pid}: ${r.detail}`).join("; ")
-    );
-  }
-  return {
-    game: scan.title,
-    gameKey: scan.gameKey,
-    root: scan.root,
-    engine: scan.engine.id,
-    strategy: "nw-inject",
-    arch,
-    pid: mains.length ? mains[0].ProcessId : null, // main process, for the stop button
-    injected: ok.map((r) => r.pid),
-    results,
-    port
-  };
+  return { mains, targets };
 }
 
-// attachNw with RMCH_SEALED=1 + retries, for the Enigma-NB box family
-// (三国修仙传). Measured on V1.91: unlike the evalNWBin shell, this box
-// tolerates the in-page WebSocket, so the standard WS bridge works — but the
-// box keeps the game on its own validation page for a while (engine singletons
-// appear late), so hook installation needs the sealed retry mode, and the
-// attach itself needs retries while the renderer's page context is still
-// booting (the canvas gate throws until then and every target misses).
-async function attachNwSealed({ scan, projectRoot, port, retries = 1, retryDelayMs = 4000 }) {
-  let lastError = null;
-  for (let attempt = 1; attempt <= retries; attempt += 1) {
-    try {
-      return await attachNw({
-        scan, projectRoot, port,
-        extraEnv: { RMCH_SEALED: "1" }
-      });
-    } catch (error) {
-      lastError = error;
-      launchLog(projectRoot, scan.gameKey, "ws attach attempt failed", {
-        attempt, error: String(error && error.message || error)
-      });
-      if (attempt < retries) {
-        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-      }
-    }
-  }
-  throw lastError;
+async function listProcessModules(pid, arch) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new AttachError("invalid module-query process id");
+  const executable = arch === "win32"
+    ? path.join(process.env.SystemRoot || "C:\\Windows", "SysWOW64", "WindowsPowerShell", "v1.0", "powershell.exe")
+    : "powershell.exe";
+  return runPowerShellJson(`$ErrorActionPreference='Stop'; (Get-Process -Id ${pid}).Modules | Select-Object -ExpandProperty FileName | ConvertTo-Json -Compress`, executable);
+}
+
+async function showNwGameWindow(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new AttachError("invalid game window process id");
+  // EnumWindows includes hidden top-level windows but not message-only windows.
+  // Match the new main PID and Chromium's actual titled application window.
+  return runPowerShellJson(`Add-Type -TypeDefinition '
+using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
+public class RmchWindowResult { public long handle; public bool wasVisible; public bool wasMinimized; public bool foreground; }
+public class RmchStartupWindow {
+ delegate bool Visitor(IntPtr h,IntPtr p);
+ [DllImport("user32.dll")] static extern bool EnumWindows(Visitor callback,IntPtr p);
+ [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h,StringBuilder b,int n);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetWindowTextLength(IntPtr h);
+ [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+ [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+ [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h,int n);
+ [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+ public static RmchWindowResult[] Restore(uint pid) {
+  var results=new List<RmchWindowResult>();
+  EnumWindows(delegate(IntPtr h,IntPtr unused) { uint owner; GetWindowThreadProcessId(h,out owner);
+   if(owner!=pid || GetWindowTextLength(h)==0)return true;
+   var c=new StringBuilder(128); GetClassName(h,c,c.Capacity); if(c.ToString()!="Chrome_WidgetWin_1")return true;
+   var r=new RmchWindowResult {handle=h.ToInt64(),wasVisible=IsWindowVisible(h),wasMinimized=IsIconic(h)};
+   ShowWindow(h,9); r.foreground=SetForegroundWindow(h); results.Add(r); return true;
+  },IntPtr.Zero); return results.ToArray();
+ }
+}'; @([RmchStartupWindow]::Restore(${pid})) | ConvertTo-Json -Compress`);
+}
+
+// The evalNWBin shell cannot survive an in-page socket. Enigma-NB tolerates WS
+// but exposes its engine late, so both hooks and attachment need retries.
+// Preserve the existing routes, including their operation-specific
+// differences: launch finding an existing instance uses file transport even
+// for Enigma-NB; manual Grover attach uses ordinary WS. Changing that matrix
+// is a behaviour change, not part of concentrating the orchestration here.
+function nwAttachmentPolicy(scan, operation) {
+  const launched = operation === "launched";
+  const existing = operation === "existing";
+  const sealedWs = scan.container === "enigma-nb" && !existing;
+  const file = existing || (launched && !sealedWs) || scan.container === "nb-evalnwbin";
+  const retries = launched ? 8 : sealedWs ? 5 : 1;
+  return {
+    file,
+    sealed: file || sealedWs,
+    retries,
+    timeoutMs: file && retries > 1 ? 10000 : INJECT_RESULT_TIMEOUT_MS
+  };
 }
 
 // Reads the file channel directly for the bridge's hello — the same liveness
 // signal the bridge server's FileSession adoption keys on (state.json
 // rewritten every second + a {t:"hello"} line in events.jsonl). Returns the
 // hello message, or null when no live bridge has announced itself.
-function fileBridgeHello(stateDir) {
+function fileBridgeHello(stateDir, now) {
   try {
     const stat = statSync(path.join(stateDir, "state.json"));
-    if (Date.now() - stat.mtimeMs > 5000) return null; // stale — writer is dead
+    if (now - stat.mtimeMs > 5000) return null; // stale — writer is dead
   } catch (_) {
     return null;
   }
@@ -498,114 +483,126 @@ function fileBridgeHello(stateDir) {
 
 // Holds the attach result until the bridge announces itself; the bridge
 // server's 1.5s adoption scan then picks the channel up as a FileSession.
-async function waitForFileBridgeHello(stateDir, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
+async function waitForFileBridgeHello(stateDir, timeoutMs, clock) {
+  const deadline = clock.now() + timeoutMs;
   for (;;) {
-    const hello = fileBridgeHello(stateDir);
+    const hello = fileBridgeHello(stateDir, clock.now());
     if (hello) return hello;
-    if (Date.now() > deadline) {
+    if (clock.now() > deadline) {
       throw new AttachError(`bridge did not announce itself on the file channel within ${Math.round(timeoutMs / 1000)}s`);
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await clock.sleep(250);
   }
 }
 
-// attachNw on a plain-running game, with the bridge pinned to the JSONL file
-// channel (RMCH_TRANSPORT=file) — the only transport an nb-evalnwbin shell
-// survives. RMCH_SEALED keeps hook installation retrying forever because the
-// engine classes only appear after the shell's login gate lets the game boot.
-//
-// `retries`/`retryDelayMs`: when called right after spawning the game (launch
-// path), the renderer process exists LONG before its JS context is ready —
-// the shell is still decrypting the engine blob, and an early eval finds no
-// page context (or no canvas gate) and fails. A single attempt is therefore
-// racy on slower machines; launch passes a retry loop, manual attach stays
-// single-shot (the game has been sitting at its login screen for a while).
-async function attachNwFile({ scan, projectRoot, port, retries = 1, retryDelayMs = 4000, bootTap = false }) {
-  // Fail BEFORE touching anything (bridge build, token, state dir) when the
-  // game is not even running.
+// One orchestration owns preparation, target order, retries and confirmation.
+// A file hello is ground truth even if an injection result raced the pipe;
+// WS retains its existing success condition (the DLL reported successful eval).
+async function attachNw({ scan, projectRoot, port = 47412 }, runtime, operation) {
+  const { platform, clock } = runtime;
+  const policy = nwAttachmentPolicy(scan, operation);
+  const { file, retries } = policy;
+  if (!scan.paths.exe) throw new AttachError("Game.exe not found in game root");
+  // File attachment rejects a missing game before bridge build/token/state
+  // writes. Sealed WS keeps retrying if its first process snapshot is empty.
   const exeName = path.basename(scan.paths.exe);
-  const allByName = await listProcessesByExeName(exeName);
-  const firstProcs = processesUnderRoot(allByName, scan.root);
-  if (!firstProcs.length) {
-    if (allByName.length && allByName.every((p) => !p.ExecutablePath)) {
-      // Elevated (RUNASADMIN) running instance — unreadable from here.
-      clearRunAsAdminFlag(scan.paths.exe, (m, e) => launchLog(projectRoot, scan.gameKey, m, e));
-      launchLog(projectRoot, scan.gameKey, "attach aborted: running instance is elevated/unreadable");
-      throw elevatedInstanceError(exeName);
+  let firstProcs = null;
+  if (file) {
+    const allByName = await platform.listProcessesByExeName(exeName);
+    firstProcs = processesUnderRoot(allByName, scan.root);
+    if (!firstProcs.length) {
+      if (allByName.length && allByName.every((p) => !p.ExecutablePath)) {
+        // Elevated (RUNASADMIN) running instance — unreadable from here.
+        platform.clearRunAsAdminFlag(scan.paths.exe, (m, e) => launchLog(projectRoot, scan.gameKey, m, e));
+        launchLog(projectRoot, scan.gameKey, "attach aborted: running instance is elevated/unreadable");
+        throw elevatedInstanceError(exeName);
+      }
+      throw new AttachError(`no running ${exeName} process found under ${scan.root}`);
     }
-    throw new AttachError(`no running ${exeName} process found under ${scan.root}`);
   }
 
   const token = getToken(projectRoot);
   buildBridge(projectRoot);
-  // The bridge never dials the WS port (the shell kills the page on any socket
-  // construct), but the bridge SERVER is what adopts the file channel as a
-  // FileSession — in the GUI the in-process server is already up, for CLI use
-  // ensureServer spawns the standalone one.
+  // Both transports need the server: it adopts file channels even when the
+  // injected page must never construct a socket. Prepare it once per flow.
   await ensureServer({ projectRoot, port, token });
 
-  const firstMains = firstProcs.filter((p) => !/--type=/.test(p.CommandLine || ""));
+  const firstMains = nwProcessTargets(firstProcs || []).mains;
   const mainPid = firstMains.length ? firstMains[0].ProcessId : null;
   const arch = readPeArch(scan.paths.exe);
   const bootstrap = buildNwBootstrap({
     gameRoot: scan.root, projectRoot, gameKey: scan.gameKey, port, token,
     extraEnv: {
-      RMCH_TRANSPORT: "file", RMCH_SEALED: "1",
-      ...(bootTap ? { RMCH_BOOT_TAP: "1" } : {})
+      ...(file ? { RMCH_TRANSPORT: "file" } : {}),
+      ...(policy.sealed ? { RMCH_SEALED: "1" } : {})
     }
   });
 
   const stateDir = path.join(projectRoot, "runtime", "bridge-state", scan.gameKey);
-  mkdirSync(stateDir, { recursive: true });
-  launchLog(projectRoot, scan.gameKey, "attach begin", {
-    procs: firstProcs.length, retries, bootTap
-  });
-  // Stale channel files from a dead bridge would fake a hello — wipe them
-  // unless a live bridge (state.json rewritten within the last seconds) is
-  // already there, in which case this attach only re-adopts its channel.
-  if (!fileBridgeHello(stateDir)) {
-    for (const file of ["commands.jsonl", "events.jsonl"]) {
-      rmSync(path.join(stateDir, file), { force: true });
+  const hello = () => file ? fileBridgeHello(stateDir, clock.now()) : null;
+  if (file) {
+    mkdirSync(stateDir, { recursive: true });
+    launchLog(projectRoot, scan.gameKey, "attach begin", { procs: firstProcs.length, retries, bootTap: false });
+    // Stale channel files from a dead bridge would fake a hello — wipe them
+    // unless a live bridge is already there, in which case only re-adopt it.
+    if (!hello()) {
+      for (const name of ["commands.jsonl", "events.jsonl"]) {
+        rmSync(path.join(stateDir, name), { force: true });
+      }
     }
   }
 
-  const results = [];
+  let results = [];
   let injectedPid = null;
+  let resultMainPid = mainPid;
+  let lastError = null;
   for (let attempt = 1; attempt <= retries && !injectedPid; attempt += 1) {
     // A prior attempt's eval may have succeeded but its result pipe raced us;
     // the hello landing in events.jsonl is the ground truth.
-    if (fileBridgeHello(stateDir)) break;
-    const procs = attempt === 1
-      ? firstProcs
-      : processesUnderRoot(await listProcessesByExeName(exeName), scan.root);
-    if (!procs.length) {
-      throw new AttachError("game exited while waiting to attach");
-    }
-    const renderers = procs.filter((p) => /--type=renderer/.test(p.CommandLine || ""));
-    const pageRenderers = renderers.filter((p) => !/--extension-process/.test(p.CommandLine || ""));
-    const extRenderers = renderers.filter((p) => /--extension-process/.test(p.CommandLine || ""));
-    const targets = [...pageRenderers, ...extRenderers];
-    if (!targets.length) targets.push(...procs.filter((p) => !/--type=/.test(p.CommandLine || "")));
-    for (const target of targets) {
-      const result = await injectAndDeliver({
-        projectRoot, arch, pid: target.ProcessId,
-        dllName: "rmch-mvhook.dll", bootstrap, mode: "crt",
-        // A hung eval (e.g. a context that dies mid-Run) must not eat the
-        // whole retry window: attempts use a shorter fuse than a settled game.
-        timeoutMs: retries > 1 ? 10000 : INJECT_RESULT_TIMEOUT_MS
+    if (hello()) break;
+    try {
+      const procs = attempt === 1 && firstProcs
+        ? firstProcs
+        : processesUnderRoot(await platform.listProcessesByExeName(exeName), scan.root);
+      if (!procs.length) {
+        throw new AttachError(file ? "game exited while waiting to attach"
+          : `no running ${exeName} process found under ${scan.root}`);
+      }
+      const { mains, targets } = nwProcessTargets(procs);
+      if (!file) {
+        // WS summaries historically describe the successful attempt only.
+        results = [];
+        resultMainPid = mains.length ? mains[0].ProcessId : null;
+      }
+      for (const target of targets) {
+        const result = await platform.injectAndDeliver({
+          projectRoot, arch, pid: target.ProcessId,
+          dllName: "rmch-mvhook.dll", bootstrap, mode: "crt", timeoutMs: policy.timeoutMs
+        });
+        results.push({ ...(file ? { attempt } : {}), pid: target.ProcessId, ...result });
+        if (file) launchLog(projectRoot, scan.gameKey, "inject attempt", {
+          attempt, pid: target.ProcessId, ok: result.ok, detail: result.detail
+        });
+        // Every additional injection exposes another foreign DLL. Stop as
+        // soon as one renderer reports success, regardless of transport.
+        if (result.ok) { injectedPid = target.ProcessId; break; }
+      }
+      if (!file && !injectedPid) {
+        throw new AttachError("injection failed: " + results.map((r) => `pid ${r.pid}: ${r.detail}`).join("; "));
+      }
+    } catch (error) {
+      if (file) throw error;
+      lastError = error;
+      if (policy.sealed) launchLog(projectRoot, scan.gameKey, "ws attach attempt failed", {
+        attempt, error: String(error && error.message || error)
       });
-      results.push({ attempt, pid: target.ProcessId, ...result });
-      launchLog(projectRoot, scan.gameKey, "inject attempt", {
-        attempt, pid: target.ProcessId, ok: result.ok, detail: result.detail
-      });
-      if (result.ok) { injectedPid = target.ProcessId; break; }
     }
     if (!injectedPid && attempt < retries) {
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      await clock.sleep(4000);
     }
   }
-  if (!injectedPid && !fileBridgeHello(stateDir)) {
+  if (!file && !injectedPid) throw lastError;
+  if (!injectedPid && !hello()) {
     launchLog(projectRoot, scan.gameKey, "attach failed", {
       attempts: results.length,
       results: results.map((r) => `pid ${r.pid}: ${r.detail}`)
@@ -615,20 +612,22 @@ async function attachNwFile({ scan, projectRoot, port, retries = 1, retryDelayMs
       (retries > 1 ? ` (${retries} attempts — the game may still have been booting; 等登录界面出来后点「附加到运行中」)` : "")
     );
   }
-  launchLog(projectRoot, scan.gameKey, "injection landed, waiting for bridge hello", { pid: injectedPid });
-  await waitForFileBridgeHello(stateDir, retries > 1 ? 60000 : 30000);
-  launchLog(projectRoot, scan.gameKey, "bridge hello received", { pid: injectedPid });
+  if (file) {
+    launchLog(projectRoot, scan.gameKey, "injection landed, waiting for bridge hello", { pid: injectedPid });
+    await waitForFileBridgeHello(stateDir, retries > 1 ? 60000 : 30000, clock);
+    launchLog(projectRoot, scan.gameKey, "bridge hello received", { pid: injectedPid });
+  }
   return {
     game: scan.title,
     gameKey: scan.gameKey,
     root: scan.root,
     engine: scan.engine.id,
-    strategy: "nw-inject-file",
+    strategy: file ? "nw-inject-file" : "nw-inject",
     arch,
-    pid: mainPid,
+    pid: resultMainPid,
     injected: injectedPid ? [injectedPid] : [],
     results,
-    port: null
+    port: file ? null : port
   };
 }
 
@@ -737,13 +736,14 @@ export function cmdStartSpawn(exe, cwd, log, extraEnv) {
 // finishes, so nothing below runs at all. Launch-flow only by contract: a
 // reload discards unsaved progress, so this never runs against a game the
 // user started themselves.
-async function ensureSealedCatalog({ scan, projectRoot, port }) {
+async function ensureSealedCatalog({ scan, projectRoot, port }, { platform, clock }) {
   const stateDir = path.join(projectRoot, "runtime", "bridge-state", scan.gameKey);
   const cachePath = path.join(stateDir, "catalog-cache.json");
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const { sleep } = clock;
+  const hello = () => fileBridgeHello(stateDir, clock.now());
   const waitForCache = async (ms) => {
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline) {
+    const deadline = clock.now() + ms;
+    while (clock.now() < deadline) {
       if (existsSync(cachePath)) return true;
       await sleep(500);
     }
@@ -762,36 +762,32 @@ async function ensureSealedCatalog({ scan, projectRoot, port }) {
     }
   });
   const listTargets = async () => {
-    const procs = processesUnderRoot(await listProcessesByExeName(exeName), scan.root);
-    const renderers = procs.filter((p) => /--type=renderer/.test(p.CommandLine || ""));
-    const pageRenderers = renderers.filter((p) => !/--extension-process/.test(p.CommandLine || ""));
-    const extRenderers = renderers.filter((p) => /--extension-process/.test(p.CommandLine || ""));
-    const targets = [...pageRenderers, ...extRenderers];
-    if (!targets.length) targets.push(...procs.filter((p) => !/--type=/.test(p.CommandLine || "")));
+    const procs = processesUnderRoot(await platform.listProcessesByExeName(exeName), scan.root);
+    const { targets } = nwProcessTargets(procs);
     return { procs, targets };
   };
   const helloSince = (sinceTs) => {
-    const hello = fileBridgeHello(stateDir);
-    return hello && Number(hello.ts || 0) >= sinceTs ? hello : null;
+    const message = hello();
+    return message && Number(message.ts || 0) >= sinceTs ? message : null;
   };
 
   for (let round = 0; round < 2; round += 1) {
     // The reload must be executed by a live bridge — without one there is
     // nothing to order around. Attach first (also covers the race where the
     // launch-time attach's hello never landed).
-    if (!fileBridgeHello(stateDir)) {
+    if (!hello()) {
       const { procs, targets } = await listTargets();
       if (!procs.length) return;
       for (const target of targets) {
-        await injectAndDeliver({
+        await platform.injectAndDeliver({
           projectRoot, arch, pid: target.ProcessId,
           dllName: "rmch-mvhook.dll", bootstrap, mode: "crt", timeoutMs: 25000
         });
-        if (fileBridgeHello(stateDir)) break;
+        if (hello()) break;
       }
-      const helloDeadline = Date.now() + 30000;
-      while (!fileBridgeHello(stateDir) && Date.now() < helloDeadline) await sleep(500);
-      if (!fileBridgeHello(stateDir)) return; // no bridge at all — give up quietly
+      const helloDeadline = clock.now() + 30000;
+      while (!hello() && clock.now() < helloDeadline) await sleep(500);
+      if (!hello()) return; // no bridge at all — give up quietly
     }
 
     // Pre-arm one DLL per renderer BEFORE ordering the reload. The result
@@ -805,7 +801,7 @@ async function ensureSealedCatalog({ scan, projectRoot, port }) {
     const settled = new Map();
     const fire = (pid) => {
       settled.set(pid, false);
-      injectAndDeliver({
+      platform.injectAndDeliver({
         projectRoot, arch, pid, dllName: "rmch-mvhook.dll",
         bootstrap, mode: "crt", timeoutMs: 30000
       }).then(() => settled.set(pid, true), () => settled.set(pid, true));
@@ -815,15 +811,15 @@ async function ensureSealedCatalog({ scan, projectRoot, port }) {
     // ms; the reload must not start before at least one copy is armed.
     await sleep(800);
 
-    const sinceTs = Date.now();
+    const sinceTs = clock.now();
     appendFileSync(path.join(stateDir, "commands.jsonl"), JSON.stringify({
       commandId: `bootcap-${sinceTs}`, ts: sinceTs,
       type: "system.rebootCapture", args: {}
     }) + "\n", "utf8");
 
-    const roundDeadline = Date.now() + 45000;
+    const roundDeadline = clock.now() + 45000;
     let newHello = null;
-    for (let tick = 0; Date.now() < roundDeadline && !newHello; tick += 1) {
+    for (let tick = 0; clock.now() < roundDeadline && !newHello; tick += 1) {
       await sleep(400);
       newHello = helloSince(sinceTs);
       if (newHello) break;
@@ -842,16 +838,43 @@ async function ensureSealedCatalog({ scan, projectRoot, port }) {
   }
 }
 
-export async function launchNwInjectGame({ scan, projectRoot, port = 47412 }) {
+// Keep both spawn mechanisms under the same fallback contract. The wait is
+// supplied by the caller because it owns process discovery and diagnostics.
+export async function spawnNwGameAndWait({ exe, cwd, log, waitForProcess }, {
+  primary = cmdStartSpawn, fallback = shellExecuteSpawn
+} = {}) {
+  primary(exe, cwd, log);
+  log("spawn issued (cmd /c start)");
+  let appeared = await waitForProcess(25000);
+  if (!appeared.length) {
+    log("cmd start produced no process within 25s — falling back to ShellExecute hop chain");
+    // Plain launches intentionally inherit the normal environment. There is
+    // no extraEnv here (the old reference aborted this branch before spawn).
+    fallback(exe, cwd, log);
+    log("spawn issued (ShellExecute hop chain)");
+    appeared = await waitForProcess(35000);
+  }
+  if (!appeared.length) {
+    log("launch failed: no process within 60s (both spawn mechanisms)");
+    throw new AttachError(
+      "game process did not appear within 60s of launch — " +
+      "两种方式都没拉起游戏，可能被杀软拦截；请手动双击启动游戏后用「附加到运行中」"
+    );
+  }
+  return appeared;
+}
+
+async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
+  const { platform, clock } = runtime;
   if (!scan.paths.exe) throw new AttachError("game exe not found in game root");
   const exeName = path.basename(scan.paths.exe);
-  const allByName = await listProcessesByExeName(exeName);
+  const allByName = await platform.listProcessesByExeName(exeName);
   const running = processesUnderRoot(allByName, scan.root);
   if (!running.length && allByName.length && allByName.every((p) => !p.ExecutablePath)) {
     // Every instance is unreadable → the running game is elevated
     // (RUNASADMIN). Clear the flag for next time and fail loudly; silently
     // polling past it is how this used to look like "一直转圈".
-    clearRunAsAdminFlag(scan.paths.exe, (m, e) => launchLog(projectRoot, scan.gameKey, m, e));
+    platform.clearRunAsAdminFlag(scan.paths.exe, (m, e) => launchLog(projectRoot, scan.gameKey, m, e));
     launchLog(projectRoot, scan.gameKey, "launch aborted: running instance is elevated/unreadable");
     throw elevatedInstanceError(exeName);
   }
@@ -859,16 +882,23 @@ export async function launchNwInjectGame({ scan, projectRoot, port = 47412 }) {
     // The shell boots fine plain, but a second instance's fate is the shell's
     // own business — attach to what is already there instead.
     launchLog(projectRoot, scan.gameKey, "launch skipped, already running — attaching");
-    return attachNwFile({ scan, projectRoot, port });
+    return attachNw({ scan, projectRoot, port }, runtime, "existing");
   }
-  const t0 = Date.now();
-  const elapsed = () => Math.round((Date.now() - t0) / 100) / 10;
+  const moduleMonitor = scan.protection && scan.protection.flags.includes("grover-boot") && scan.protection.flags.includes("grover-module-monitor");
+  let compatibilityToken;
+  if (moduleMonitor) {
+    compatibilityToken = getToken(projectRoot);
+    buildBridge(projectRoot);
+    await ensureServer({ projectRoot, port, token: compatibilityToken });
+  }
+  const t0 = clock.now();
+  const elapsed = () => Math.round((clock.now() - t0) / 100) / 10;
   const log = (m, e) => launchLog(projectRoot, scan.gameKey, m, e);
   launchLog(projectRoot, scan.gameKey, "launch begin", { exe: scan.paths.exe });
 
   // A RUNASADMIN compat flag would make the spawned game elevated (plus a UAC
   // prompt nobody expects) — strip it before spawning. Cheap no-op when unset.
-  clearRunAsAdminFlag(scan.paths.exe, log);
+  platform.clearRunAsAdminFlag(scan.paths.exe, log);
 
   // The spawn returns before the shell has started the exe, so the game
   // process shows up a beat later. Primary mechanism: transient `cmd /c
@@ -876,8 +906,6 @@ export async function launchNwInjectGame({ scan, projectRoot, port = 47412 }) {
   // powershell ShellExecute chain, kept for machines where cmd start is
   // blocked. Both are logged; a total absence of process within the combined
   // window means something external (AV) is eating the launches.
-  const procsNow = () => listProcessesByExeName(exeName)
-    .then((list) => processesUnderRoot(list, scan.root));
   // Per-poll error tolerance + transient sightings: a process that is born
   // and dies between two polls is the single most important diagnostic for
   // "AV ate the launch" vs "spawn never happened", so log every pid we ever
@@ -887,12 +915,12 @@ export async function launchNwInjectGame({ scan, projectRoot, port = 47412 }) {
   // that distinction decides "not spawned" vs "spawned but unreadable".
   const sightings = new Set();
   const waitForProcess = async (ms) => {
-    const deadline = Date.now() + ms;
-    while (Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    const deadline = clock.now() + ms;
+    while (clock.now() < deadline) {
+      await clock.sleep(500);
       let raw;
       try {
-        raw = await listProcessesByExeName(exeName);
+        raw = await platform.listProcessesByExeName(exeName);
       } catch (error) {
         log("process poll error", { error: String(error && error.message || error) });
         continue;
@@ -924,38 +952,90 @@ export async function launchNwInjectGame({ scan, projectRoot, port = 47412 }) {
   // ~10-26s in a self-reload loop before giving up and booting the payload).
   const grover = scan.protection && scan.protection.flags
     && scan.protection.flags.includes("grover-boot");
-  cmdStartSpawn(scan.paths.exe, scan.root, log);
-  log("spawn issued (cmd /c start)");
-  let appeared = await waitForProcess(25000);
-  if (!appeared.length) {
-    log("cmd start produced no process within 25s — falling back to ShellExecute hop chain");
-    shellExecuteSpawn(scan.paths.exe, scan.root, log, extraEnv);
-    log("spawn issued (ShellExecute hop chain)");
-    appeared = await waitForProcess(35000);
-  }
-  if (!appeared.length) {
-    log("launch failed: no process within 60s (both spawn mechanisms)");
-    throw new AttachError(
-      "game process did not appear within 60s of launch — " +
-      "两种方式都没拉起游戏，可能被杀软拦截；请手动双击启动游戏后用「附加到运行中」"
-    );
-  }
+  const appearedProcesses = await spawnNwGameAndWait({ exe: scan.paths.exe, cwd: scan.root, log, waitForProcess }, {
+    primary: platform.cmdStartSpawn, fallback: platform.shellExecuteSpawn
+  });
   launchLog(projectRoot, scan.gameKey, "game process appeared", { t: elapsed() });
-  const deadline = Date.now() + 90000;
-  for (;;) {
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    const procs = processesUnderRoot(await listProcessesByExeName(exeName), scan.root);
-    if (procs.some((p) => /--type=renderer/.test(p.CommandLine || ""))) break;
+  const deadline = clock.now() + 90000;
+  let rendererProcesses = moduleMonitor && appearedProcesses.some(p => /--type=renderer/.test(p.CommandLine || "")) ? appearedProcesses : [];
+  while (!rendererProcesses.length) {
+    await clock.sleep(400);
+    const procs = processesUnderRoot(await platform.listProcessesByExeName(exeName), scan.root);
+    if (procs.some((p) => /--type=renderer/.test(p.CommandLine || ""))) { rendererProcesses = procs; break; }
     if (!procs.length) {
       launchLog(projectRoot, scan.gameKey, "launch failed: game exited during boot", { t: elapsed() });
       throw new AttachError("game exited during boot (plain launch, no toolbox flags)");
     }
-    if (Date.now() > deadline) {
+    if (clock.now() > deadline) {
       launchLog(projectRoot, scan.gameKey, "launch failed: no renderer within 90s", { t: elapsed() });
       throw new AttachError("no renderer process appeared within 90s of launch");
     }
   }
   launchLog(projectRoot, scan.gameKey, "renderer appeared", { t: elapsed() });
+
+  let compatibilityPrepared = false;
+  let monitorModules = [];
+  if (moduleMonitor) {
+    const target = nwProcessTargets(rendererProcesses).targets[0];
+    if (target) monitorModules = await platform.listProcessModules(target.ProcessId, readPeArch(scan.paths.exe));
+  }
+  if (monitorModules.some(value => isKnownSangforModule(value))) {
+    // Restore before the native hook: a hidden page may have no animation/V8
+    // activity for the probe to intercept in the first place.
+    const main = nwProcessTargets(rendererProcesses).mains[0];
+    if (main) log("Grover native game window restored", await platform.showNwGameWindow(main.ProcessId));
+    const statusPath = path.join(projectRoot, "runtime", "bridge-state", scan.gameKey, "grover-compat.json");
+    // This cold launch starts the file bridge before attachNw sees its hello.
+    // Discard the previous process's queue before any bridge can consume it.
+    for (const name of ["commands.jsonl", "events.jsonl", "state.json"]) {
+      rmSync(path.join(path.dirname(statusPath), name), { force: true });
+    }
+    rmSync(statusPath, { force: true });
+    const delayedBootstrap = buildNwBootstrap({
+      gameRoot: scan.root, projectRoot, gameKey: scan.gameKey, port, token: compatibilityToken,
+      extraEnv: { RMCH_TRANSPORT: "file" }, pageRealm: true
+    });
+    const delayedBootstrapPath = path.join(path.dirname(statusPath), "grover-delayed-bridge.js");
+    writeFileSync(delayedBootstrapPath, delayedBootstrap, "utf8");
+    const bootstrap = buildGroverCompatibilityBootstrap(statusPath, { delayedBootstrapPath, delayMs: GROVER_COMPAT_SETTLE_MS, matchedModules: monitorModules.filter(value => isKnownSangforModule(value)) });
+    const results = [];
+    for (const target of nwProcessTargets(rendererProcesses).targets) {
+      const result = await platform.injectAndDeliver({
+        projectRoot, arch: readPeArch(scan.paths.exe), pid: target.ProcessId,
+        dllName: "rmch-mvhook.dll", bootstrap, mode: "crt", timeoutMs: 10000
+      });
+      results.push(result);
+      if (result.ok) break;
+    }
+    // Grover can replace its loader renderer between discovery and delivery.
+    // Error 87 means OpenProcess never succeeded: no DLL was installed, so a
+    // single refresh is safe. Never repeat a timed-out or successful delivery.
+    if (results.length && results.every(r => !r.ok && /OpenProcess failed:\s*87/.test(r.detail || ""))) {
+      const fresh = processesUnderRoot(await platform.listProcessesByExeName(exeName), scan.root);
+      const freshTargets = nwProcessTargets(fresh);
+      for (const target of freshTargets.targets) {
+        const modules = await platform.listProcessModules(target.ProcessId, readPeArch(scan.paths.exe));
+        const matched = modules.filter(value => isKnownSangforModule(value));
+        if (!matched.length) continue;
+        if (freshTargets.mains[0]) log("Grover replacement game window restored", await platform.showNwGameWindow(freshTargets.mains[0].ProcessId));
+        const result = await platform.injectAndDeliver({
+          projectRoot, arch: readPeArch(scan.paths.exe), pid: target.ProcessId,
+          dllName: "rmch-mvhook.dll", mode: "crt", timeoutMs: 10000,
+          bootstrap: buildGroverCompatibilityBootstrap(statusPath, {delayedBootstrapPath, delayMs:GROVER_COMPAT_SETTLE_MS, matchedModules:matched})
+        });
+        results.push(result);
+        if (result.ok) break;
+      }
+    }
+    if (!results.some(r => r.ok)) throw new AttachError("Grover startup compatibility could not reach the game page: " + results.map(r => r.detail).join("; "));
+    let compatibility;
+    try { compatibility = JSON.parse(readFileSync(statusPath, "utf8")); } catch (_) {}
+    if (!compatibility || !["applied", "skipped"].includes(compatibility.status)) {
+      throw new AttachError("Grover startup compatibility did not complete its module check");
+    }
+    log("Grover module compatibility", compatibility);
+    compatibilityPrepared = true;
+  }
 
   // DO NOT inject right away. Measured on the NB shell family: an injection
   // landing while the shell is still booting (decrypt + integrity self-check,
@@ -967,10 +1047,22 @@ export async function launchNwInjectGame({ scan, projectRoot, port = 47412 }) {
   // decrypt phase on a warm machine — then run the normal attach.
   launchLog(projectRoot, scan.gameKey, "waiting for shell boot checks to settle", {
     delayMs: LAUNCH_ATTACH_DELAY_MS,
-    groverSettleMs: grover ? GROVER_SETTLE_MS : undefined
+    groverSettleMs: grover ? (compatibilityPrepared ? GROVER_COMPAT_SETTLE_MS : GROVER_SETTLE_MS) : undefined
   });
-  await new Promise((resolve) => setTimeout(resolve, grover ? GROVER_SETTLE_MS : LAUNCH_ATTACH_DELAY_MS));
-  const alive = processesUnderRoot(await listProcessesByExeName(exeName), scan.root);
+  await clock.sleep(compatibilityPrepared ? GROVER_COMPAT_SETTLE_MS : grover ? GROVER_SETTLE_MS : LAUNCH_ATTACH_DELAY_MS);
+  if (compatibilityPrepared) {
+    // The page already owns the delayed bootstrap. Do not race its timer with
+    // a second DLL injection: wait for the same real hello attachNw adopts.
+    const stateDir = path.join(projectRoot, "runtime", "bridge-state", scan.gameKey);
+    const readyDeadline = clock.now() + 15000;
+    while (!fileBridgeHello(stateDir, clock.now()) && clock.now() < readyDeadline) await clock.sleep(250);
+    if (!fileBridgeHello(stateDir, clock.now())) {
+      let detail = "";
+      try { detail = JSON.parse(readFileSync(path.join(stateDir, "grover-compat.json"), "utf8")).error || ""; } catch (_) {}
+      throw new AttachError("Grover compatibility completed, but the delayed game bridge did not become ready within 15s" + (detail ? ": " + detail : ""));
+    }
+  }
+  const alive = processesUnderRoot(await platform.listProcessesByExeName(exeName), scan.root);
   if (!alive.length) {
     launchLog(projectRoot, scan.gameKey, "launch failed: game exited during settle wait", { t: elapsed() });
     throw new AttachError("game exited during boot (before attach)");
@@ -981,25 +1073,50 @@ export async function launchNwInjectGame({ scan, projectRoot, port = 47412 }) {
   // the page on any in-page socket construct (JSONL file channel), while the
   // Enigma-NB box tolerates the standard WebSocket bridge (measured on
   // 三国修仙传 V1.91).
-  const enigmaNb = scan.container === "enigma-nb";
-  const summary = enigmaNb
-    ? await attachNwSealed({ scan, projectRoot, port, retries: 8, retryDelayMs: 4000 })
-    : await attachNwFile({ scan, projectRoot, port, retries: 8, retryDelayMs: 4000 });
+  const summary = await attachNw({ scan, projectRoot, port }, runtime, "launched");
+  const file = summary.strategy === "nw-inject-file";
   launchLog(projectRoot, scan.gameKey, "launch complete", { t: elapsed(), pid: summary.pid });
   // Best-effort: prime catalog-cache.json (the $data* tables the data page
   // lists) when this game has none yet. Never fails the launch — the game is
   // running and bridged either way. File-transport channels only: the WS
   // bridge drives its own capture.
-  if (!enigmaNb) {
+  if (file && !compatibilityPrepared) {
     try {
-      await ensureSealedCatalog({ scan, projectRoot, port });
+      await ensureSealedCatalog({ scan, projectRoot, port }, runtime);
     } catch (_) {}
   }
   return {
     ...summary,
-    strategy: enigmaNb ? "nw-launch-inject" : "nw-launch-inject-file",
+    strategy: file ? "nw-launch-inject-file" : "nw-launch-inject",
     launchedPid: summary.pid
   };
+}
+
+// Internal module interface: callers choose an operation, never a transport,
+// retry count or reload permission. Windows effects and time are the only
+// substitutable dependencies; preparation and file-channel I/O remain real.
+// Tests use this same orchestration with process snapshots and a virtual clock.
+export function createNwAttachment({ platform, clock } = {}) {
+  const runtime = {
+    platform: platform || {
+      listProcessesByExeName, listProcessModules, showNwGameWindow, clearRunAsAdminFlag,
+      cmdStartSpawn, shellExecuteSpawn, injectAndDeliver
+    },
+    clock: clock || {
+      now: () => Date.now(),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    }
+  };
+  return {
+    attach: (options) => attachNw(options, runtime, "attach"),
+    launch: (options) => launchNw(options, runtime)
+  };
+}
+
+const nwAttachment = createNwAttachment();
+
+export async function launchNwInjectGame(options) {
+  return nwAttachment.launch(options);
 }
 
 // --- RGSS attach ------------------------------------------------------------------
@@ -1140,19 +1257,8 @@ export async function attachGame({ gameRoot, projectRoot, port = 47412 }) {
   if (scan.container === "nwjs-sealed" || scan.container === "nwjs-bundled") {
     return attachSealed({ scan, projectRoot, port });
   }
-  if (scan.container === "nb-evalnwbin") {
-    // The bridge must not open its WebSocket (the shell kills the app on any
-    // in-page socket construct) — attach with the JSONL file channel instead.
-    return attachNwFile({ scan, projectRoot, port });
-  }
-  if (scan.container === "enigma-nb") {
-    // This box tolerates the WebSocket bridge (measured on 三国修仙传 V1.91),
-    // but engine singletons appear late behind its validation page — sealed
-    // retry mode, and retry the attach while the page context boots.
-    return attachNwSealed({ scan, projectRoot, port, retries: 5, retryDelayMs: 4000 });
-  }
   if (/^RGSS/i.test(scan.engine.id)) {
     return attachRgss({ scan, projectRoot });
   }
-  return attachNw({ scan, projectRoot, port });
+  return nwAttachment.attach({ scan, projectRoot, port });
 }
