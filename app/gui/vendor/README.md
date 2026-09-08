@@ -1,7 +1,7 @@
 # app/gui/vendor
 
-Vendored browser bundles for the NW.js GUI. RMCH has no npm install step, so the
-GUI loads these as plain `<script>` tags from `app/gui/index.html`.
+Vendored browser bundles for the NW.js GUI. The GUI loads these as plain
+`<script>` tags from `app/gui/index.html`; npm dependencies build the new SFCs.
 
 | File | Version | Origin |
 | --- | --- | --- |
@@ -13,9 +13,10 @@ GUI loads these as plain `<script>` tags from `app/gui/index.html`.
 
 Notes:
 
-- **Vue must be the full build** (`vue.global.prod.js`, not `vue.runtime.*`): the
-  page has no bundler, so components carry string `template`s that the runtime
-  compiles. `tools/gui-check.mjs` asserts the compiler is present.
+- The existing full Vue build is retained, but all application templates are now
+  compiled as SFCs by Vite. They externalize Vue to this same global instance. Keep the npm Vue
+  compiler and this vendored runtime at the same version.
+  `tools/gui-check.mjs` checks all source SFCs and the compiled component registry.
 - **Naive UI and jsoneditor are UMD.** NW.js injects `module`/`exports` into the
   page, which would send both bundles down their `require("vue")` branch and kill
   them, so `index.html` hides those globals while the vendor scripts evaluate and
@@ -30,7 +31,7 @@ Notes:
   CSS-in-JS cannot reach third-party DOM. `tools/gui-check.mjs` asserts the
   sprite path resolves to the actual file and that the bundle exposes
   `window.JSONEditor` with the zh-CN locale inside.
-- All bundles must stay compatible with the NW.js runtime RMCH borrows
-  (NW 0.54 / Chromium 91). Check that before bumping any version — jsoneditor
-  10.x dist is clean (`Object.hasOwn` / `structuredClone` / `.at()` / `static {}`
-  all absent), verify the next one before upgrading.
+- Bundles must work in the official runtime pinned by `nw-runtime.lock.json`
+  (currently NW 0.115.0 / Chromium 152). Run `npm run test:gui-runtime` and the
+  browser UI checks when upgrading. The historical NW 0.54 syntax restriction
+  no longer applies to the toolbox GUI; injected game scripts remain separate.

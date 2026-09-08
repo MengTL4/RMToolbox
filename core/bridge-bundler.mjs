@@ -25,12 +25,15 @@ import vm from "node:vm";
 const PARTS = [
   "00-prelude.js",          // IIFE open + bridge state object
   "05-node-io.js",          // require/fs/path, paths, log + event writers
+  "07-renamed-engine.js",   // live aliases for the TH-renamed MV family
   "08-capture.js",          // JSON save/load tap → live refs for closure-sealed shells
   "10-engine.js",           // TK.$ alias resolution, $game*/$data*, hook targets
   "20-values.js",           // coercion, arg guards, suppression scopes, stats
   "25-battlers.js",         // battler/party/troop access, actorInfo
   "30-catalogs.js",         // item/skill/map catalogs, inventory slots
+  "31-th-inventory.js",     // TH per-actor bags / warehouse / unique equipment
   "40-hooks.js",            // patchMethod + rate/encounter/speed/cost hooks
+  "44-frame-pacing.js",     // FT/TDDP native frame-time compatibility
   "45-vitals-locks.js",     // 上帝模式: HP/MP/TP locking
   "50-value-locks.js",      // 数据锁定: per-frame value writeback
   "55-transport.js",        // WebSocket client + JSONL fallback queue
@@ -38,6 +41,8 @@ const PARTS = [
   "60-commands-core.js",    // ping, runtime.info, trainer options, console
   "62-commands-party.js",   // gold, inventory, party, actors
   "64-commands-world.js",   // switches, variables, maps, events, battle
+  "65-event-tools.js",      // map snapshots, guarded movement, read-only event inspection
+  "65b-event-execution.js",  // complete steps and owned native interpreter execution
   "66-commands-saves.js",   // save slots, save-data tree, value locks
   "67-commands-assets.js",  // decoded game assets (IconSet sheet for the GUI)
   "68-commands-system.js",  // scene push/pop, repair, new game

@@ -7,10 +7,10 @@
 // process involved.
 
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { setupShadowApp } from "../core/shadow-launcher.mjs";
+import { setupShadowApp, setupBundledShadowApp } from "../core/shadow-launcher.mjs";
 
 function makeFile(file, content) {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -120,7 +120,83 @@ function main() {
     assert.equal(readFileSync(path.join(gameRoot3, "loading"), "utf8"), "// ORIGINAL GROVER LOADER\n",
       "grover root-level original must stay untouched");
 
-    console.log("shadow-launcher test: PASS");
+    // Both public entry points must preserve the same filesystem contract,
+    // including root layouts, nested patches and links left by old builds.
+    for (const kind of ["bg", "bundled"]) {
+      for (const layout of ["root", "www"]) {
+        for (const nested of [false, true]) {
+          const key = `${kind}-${layout}-${nested ? "nested" : "flat"}`;
+          const root = path.join(tempRoot, key);
+          const app = path.join(projectRoot, "runtime", "shadow-apps", key);
+          const script = nested ? (layout === "www" ? "www/js/engine.js" : "js/engine.js") : "engine.js";
+          const source = '(function () { var originalMarker = "ORIGINAL"; }.call(this));';
+          const manifest = JSON.stringify({ name: key, main: layout === "www" ? "www/index.html" : "index.html" });
+          makeFile(path.join(root, "Game.exe"), "fake-exe");
+          makeFile(path.join(root, "package.json"), manifest);
+          makeFile(path.join(root, script), source);
+          makeFile(path.join(root, path.dirname(script), "sibling.dat"), "sibling");
+          const saveRel = layout === "www" ? "www/save" : "save";
+          const realSave = path.join(root, saveRel);
+          const oldSave = path.join(app, saveRel);
+          makeFile(path.join(realSave, "file1.rmmzsave"), "REAL-NEWER");
+          makeFile(path.join(oldSave, "file1.rmmzsave"), "shadow-old");
+          makeFile(path.join(realSave, "file2.rmmzsave"), "real-old");
+          makeFile(path.join(oldSave, "file2.rmmzsave"), "SHADOW-NEWER");
+          makeFile(path.join(oldSave, "file3.rmmzsave"), "RESCUED");
+          for (const [file, seconds] of [[path.join(realSave, "file1.rmmzsave"), 200], [path.join(oldSave, "file1.rmmzsave"), 100], [path.join(realSave, "file2.rmmzsave"), 100], [path.join(oldSave, "file2.rmmzsave"), 200]]) utimesSync(file, seconds, seconds);
+          linkSync(path.join(root, "package.json"), path.join(app, "package.json"));
+          if (nested) {
+            const parent = path.join(app, path.dirname(script));
+            mkdirSync(path.dirname(parent), { recursive: true });
+            symlinkSync(path.join(root, path.dirname(script)), parent, "junction");
+          } else {
+            linkSync(path.join(root, script), path.join(app, script));
+          }
+          const scan = { root, layout, manifest: { bgScript: script }, bundled: { scriptRel: script } };
+          const setup = kind === "bg" ? setupShadowApp : setupBundledShadowApp;
+          const result = setup({ projectRoot, scan, gameKey: key });
+          const patchPath = result.bgScriptPath || result.patchedScript;
+          assert.equal(readFileSync(path.join(root, script), "utf8"), source, `${key}: original patch source unchanged`);
+          assert.equal(readFileSync(path.join(root, "package.json"), "utf8"), manifest, `${key}: original manifest unchanged`);
+          assert.ok(readFileSync(patchPath, "utf8").includes("ORIGINAL"));
+          assert.notEqual(readFileSync(patchPath, "utf8"), source);
+          assert.equal(readFileSync(path.join(realSave, "file1.rmmzsave"), "utf8"), "REAL-NEWER");
+          assert.equal(readFileSync(path.join(realSave, "file2.rmmzsave"), "utf8"), "SHADOW-NEWER");
+          assert.equal(readFileSync(path.join(realSave, "file3.rmmzsave"), "utf8"), "RESCUED");
+          writeFileSync(path.join(app, saveRel, "file4.rmmzsave"), "WRITE-THROUGH");
+          assert.equal(readFileSync(path.join(realSave, "file4.rmmzsave"), "utf8"), "WRITE-THROUGH");
+          writeFileSync(path.join(app, "package.json"), "private manifest");
+          assert.equal(readFileSync(path.join(root, "package.json"), "utf8"), manifest, `${key}: manifest copy is independent`);
+          const firstPatch = readFileSync(patchPath, "utf8");
+          setup({ projectRoot, scan, gameKey: key });
+          assert.equal(readFileSync(patchPath, "utf8"), firstPatch, `${key}: rebuild does not accumulate patches`);
+          assert.equal(readFileSync(path.join(realSave, "file4.rmmzsave"), "utf8"), "WRITE-THROUGH", `${key}: rebuilding existing links preserves real saves`);
+        }
+      }
+    }
+    for (const kind of ["bg", "bundled"]) {
+      const key = `source-junction-${kind}`;
+      const root = path.join(tempRoot, key);
+      const shared = path.join(tempRoot, `${key}-shared`);
+      const app = path.join(projectRoot, "runtime", "shadow-apps", key);
+      const source = '(function () { var marker = "SHARED ORIGINAL"; }.call(this));';
+      makeFile(path.join(root, "Game.exe"), "fake");
+      makeFile(path.join(root, "package.json"), "{}");
+      makeFile(path.join(shared, "js", "engine.js"), source);
+      makeFile(path.join(shared, "save", "file1.rmmzsave"), "real-save");
+      symlinkSync(shared, path.join(root, "www"), "junction");
+      mkdirSync(app, { recursive: true });
+      symlinkSync(path.join(root, "www"), path.join(app, "www"), "junction");
+      const setup = kind === "bg" ? setupShadowApp : setupBundledShadowApp;
+      setup({ projectRoot, gameKey: key, scan: { root, layout: "www", manifest: { bgScript: "www/js/engine.js" }, bundled: { scriptRel: "www/js/engine.js" } } });
+      assert.equal(readFileSync(path.join(shared, "js", "engine.js"), "utf8"), source, "source junction never receives patch writes");
+      assert.equal(readFileSync(path.join(shared, "save", "file1.rmmzsave"), "utf8"), "real-save");
+    }
+    const invalidRoot = path.join(tempRoot, "invalid-bundled");
+    makeFile(path.join(invalidRoot, "engine.js"), "no wrapper anchor");
+    assert.throws(() => setupBundledShadowApp({ projectRoot, gameKey: "invalid", scan: { root: invalidRoot, bundled: { scriptRel: "engine.js" } } }), /anchor not found/);
+    assert.equal(existsSync(path.join(projectRoot, "runtime", "shadow-apps", "invalid")), false, "bad patch fails before filesystem rebuild");
+    console.log("shadow-launcher test: PASS (both families, root/www, rescue, old links, private copies and rebuilds)");
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }

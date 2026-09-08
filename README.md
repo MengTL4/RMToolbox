@@ -6,9 +6,9 @@
 支持 **MV / MZ** 和 **XP / VX / VX Ace**（RGSS 系列）：修改器、数据读写、
 存档编辑等核心功能两边基本一致；个别能力因引擎本身差异略有出入
 （RGSS 没有自开关、XP 没有物品图标表、部分角色操作仅 VX Ace 可用）。
-另外支持两类特殊打包的 MZ 游戏：用 **Tauri / WebView2 壳**发行的
-（如「YanBin RPG Maker Builder」系列，《魔物召唤森林》等）——内核是完整的
-MZ，工具箱通过浏览器的 DevTools 协议接入，功能与原生 MZ 基本一致；
+另外支持两类特殊打包的 MV/MZ 游戏：用 **Tauri / WebView2 壳**发行的
+（如「YanBin RPG Maker Builder」系列，《魔物召唤森林》《重装归途》等）——内核为
+MV/MZ，工具箱通过浏览器的 DevTools 协议接入，功能与原生 MZ 基本一致；
 以及**引擎整体混淆加密的「sealed 启动器」游戏**（如《停不下来的轮回》）——
 引擎藏在混淆的 game.js 里、页面上没有任何引擎对象，工具箱启动游戏时
 会通过 DevTools 协议做一次内存扫描，把引擎对象重新发布出来，之后与
@@ -19,6 +19,18 @@ MZ，工具箱通过浏览器的 DevTools 协议接入，功能与原生 MZ 基�
 校验、原生双击也会被杀，工具箱通过影子目录提供 wmic 兼容应答并中和壳的
 自杀路径后再走标准桥接（该家族适配仍在进行中，详见 docs/GROVER-FINDINGS.md）。
 前两类都不支持「附加到运行中」（只能从工具箱启动）。
+
+《重装归途》0.1.33 已适配其角色背包、仓库、独立装备和浏览器存档，
+并实测修改器、战斗、地图与事件工具。浏览器存档备份/恢复需要保持游戏连接。
+该游戏的基础属性加点接口无效；独立弹仓不按普通物品修改，独立装备不支持数量锁。
+新增装备请选择基础装备目录，删除时请选择当前物品中的具体实例。
+
+《末日风暴》1.9.6 已接入其 FT 重命名引擎和原生金币、经验接口，
+并针对高刷新率屏幕自动限制为 60 FPS，保留游戏作者设定的逻辑速度。
+该游戏不支持工具箱的额外加速选项，开启时会明确提示；其他修改器、
+地图、事件、战斗与存档能力按实机验收记录提供。
+该游戏原生结算文字仍显示基础奖励，倍率已作用于实际入账。
+两款游戏的验收和限制见 [适配记录](docs/NEW-GAMES-ADAPTATION.md)。
 
 ![游戏库](docs/screenshots/library.png)
 ![修改器](docs/screenshots/trainer.png)
@@ -56,6 +68,8 @@ MZ，工具箱通过浏览器的 DevTools 协议接入，功能与原生 MZ 基�
 - 资源：经验/金币/掉落倍率、金钱修改、移速加成、游戏加速（按住 Ctrl）
 - 数据：物品/武器/防具/开关/变量编辑与锁定
 - 跑图：穿墙、不遇敌、常时奔跑、地图点击传送
+- 地图工具：当前事件搜索、事件旁传送、需确认的强制坐标传送，以及可缩放/拖动/跟随玩家的网格迷你地图
+- 事件解释器：在公共事件详情内展开，支持运行整个事件或选中完整步骤执行，以及停止后续指令；地图事件共用只读面板，保留条件、原文、搜索、执行位置及快照过期提示
 - 存档：存读档、自动备份、存档数据树编辑
 - 杂项：游戏内界面跳转、卡死修复、控制台（MV/MZ 为 V8，RGSS 为 Ruby）
 
@@ -74,12 +88,16 @@ MZ，工具箱通过浏览器的 DevTools 协议接入，功能与原生 MZ 基�
 
 想自己改代码或跟进开发版：
 
-- 需要 **Node.js ≥ 18** 和一份 **NW.js 0.54 运行时**（[nwjs.io/downloads](https://nwjs.io/downloads/)，
-  sdk 或 normal 版均可，解压到仓库根的 `nwjs/` 目录；也可以在 `config.local.json` 里写
-  `{ "nwRuntimeDonor": "D:\\path\\to\\nw-runtime" }` 指定位置）。
+- 需要 **Node.js ≥ 22.12**，首次执行 `npm ci` 安装锁定版本的构建依赖。
 - 启动 GUI：`powershell -NoProfile -ExecutionPolicy Bypass -File tools\launch-gui.ps1`
-  （首次会自动链接 NW 运行时并构建，然后开窗）。
-- 测试：`npm test`。
+  （自动下载并校验 `nw-runtime.lock.json` 指定的官方 NW.js，再构建和开窗）。
+- 测试：`npm test`（自动构建前端并运行类型检查和回归）。
+  地图/事件协议包含 MV/MZ 和三代 RGSS 夹具；后者需要本机 Ruby。另用 `npm run test:ui-browser` 检查浏览器交互，`npm run test:gui-runtime` 检查实际 NW.js 桌面运行。
+- 本地 Release 打包：`npm run build`，生成 `output/RMToolbox-v<版本>-win-x64.zip`
+  和 `.zip.sha256` 校验文件。解压后双击根目录 `RMToolbox.cmd`，程序在 `app/gui/RMToolbox.exe`。
+
+工具箱使用 NW.js 0.115.0；游戏自身的运行时保持原样。打包不再读取 `nwRuntimeDonor`，
+下载缓存位于 `.cache/nwjs/`，有有效缓存时可以离线构建。
 
 命令行工具（无需 GUI）：
 

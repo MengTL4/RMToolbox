@@ -32,6 +32,8 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
+  statSync,
   rmSync,
   symlinkSync,
   linkSync,
@@ -152,7 +154,9 @@ function buildSuffix({ bridgePath, logPath, gameKey }) {
 // a junction into the real game directory (which would silently overwrite
 // the game's original startup file).
 function linkShadowEntry(source, dest, relSkip) {
-  const stat = lstatSync(source);
+  // The game's source directory may itself be a junction. Follow it when
+  // deciding how to carve the shadow, while inspecting dest without following.
+  const stat = statSync(source);
   if (stat.isDirectory()) {
     if (!relSkip) {
       junctionDir(source, dest);
@@ -182,6 +186,66 @@ function linkShadowEntry(source, dest, relSkip) {
   }
   if (relSkip) return; // carved-out file (shouldn't happen: relSkip only names dirs above)
   linkOrCopyFile(source, dest);
+}
+
+// Save rescue, link construction and private patch copies form one operation.
+// Callers only supply the game-specific source transformation.
+function buildShadowApp({ projectRoot, scan, gameKey, scriptRel, patch }) {
+  const parts = String(scriptRel).split(/[\\/]+/).filter((part) => part && part !== ".");
+  if (path.isAbsolute(scriptRel) || /^[A-Za-z]:/.test(scriptRel) || parts.includes("..") || !parts.length) {
+    throw new Error(`invalid shadow patch path: ${scriptRel}`);
+  }
+  const script = parts.join("/");
+  const sourcePath = path.join(scan.root, ...parts);
+  if (!existsSync(sourcePath)) throw new Error(`shadow patch source not found: ${sourcePath}`);
+  // A missing patch anchor must fail before rebuilding the directory tree.
+  const patched = patch(readFileSync(sourcePath, "utf8"));
+  const shadowBase = path.resolve(projectRoot, SHADOW_ROOT);
+  const appDir = path.resolve(shadowBase, gameKey);
+  const relative = path.relative(shadowBase, appDir);
+  if (!relative || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+    throw new Error(`invalid shadow game key: ${gameKey}`);
+  }
+  const appStat = lstatSync(appDir, { throwIfNoEntry: false });
+  if (appStat && appStat.isSymbolicLink()) throw new Error(`shadow root must be a real directory: ${appDir}`);
+  mkdirSync(appDir, { recursive: true });
+
+  const isWwwLayout = scan.layout ? scan.layout === "www" : existsSync(path.join(scan.root, "www"));
+  const saveRel = isWwwLayout ? path.join("www", "save") : "save";
+  const realSaveDir = path.join(scan.root, saveRel);
+  const shadowSaveDir = path.join(appDir, saveRel);
+  const shadowStat = lstatSync(shadowSaveDir, { throwIfNoEntry: false });
+  if (shadowStat && !shadowStat.isSymbolicLink() && shadowStat.isDirectory()) {
+    // A www junction can make this path resolve into the real game. Only
+    // rescue/remove an independent directory physically inside this shadow.
+    const owned = path.relative(realpathSync(appDir), realpathSync(shadowSaveDir));
+    if (owned && owned !== ".." && !owned.startsWith(".." + path.sep) && !path.isAbsolute(owned)) {
+      mergeSaveFiles(shadowSaveDir, realSaveDir);
+      rmSync(shadowSaveDir, { recursive: true, force: true });
+    }
+  }
+  // Also needed for www layouts when the patch path carves www into a real
+  // directory: create save before linking so future writes still go through.
+  mkdirSync(realSaveDir, { recursive: true });
+
+  for (const entry of readdirSync(scan.root)) {
+    if (entry === "package.json" || SKIP_FILES.has(entry.toLowerCase()) || entry === script) continue;
+    const relSkip = script.startsWith(entry + "/") ? script.slice(entry.length + 1) : null;
+    linkShadowEntry(path.join(scan.root, entry), path.join(appDir, entry), relSkip);
+  }
+  const manifestPath = path.join(appDir, "package.json");
+  if (lstatSync(manifestPath, { throwIfNoEntry: false })) rmSync(manifestPath, { recursive: true, force: true });
+  copyFileSync(path.join(scan.root, "package.json"), manifestPath);
+
+  const patchedPath = path.join(appDir, ...parts);
+  // The parent is private after the carve-out. Unlink the leaf too: an older
+  // build may have left a hardlink to the original script at this location.
+  if (lstatSync(patchedPath, { throwIfNoEntry: false })) rmSync(patchedPath, { recursive: true, force: true });
+  mkdirSync(path.dirname(patchedPath), { recursive: true });
+  writeFileSync(patchedPath, patched, "utf8");
+  const gameExe = path.join(appDir, "Game.exe");
+  if (!existsSync(gameExe)) throw new Error(`shadow Game.exe missing: ${gameExe}`);
+  return { appDir, gameExe, patchedPath };
 }
 
 // Grover bootstrap (scanner flag "grover-boot", 傲世修仙录完结定制版 family).
@@ -288,46 +352,24 @@ function buildGroverBootstrap({ bridgePath, logPath }) {
 }
 
 export function setupShadowApp({ projectRoot, scan, gameKey }) {
-  const appDir = path.join(projectRoot, SHADOW_ROOT, gameKey);
-  mkdirSync(appDir, { recursive: true });
-
   const bgScriptName = scan.manifest && scan.manifest.bgScript;
   if (!bgScriptName) throw new Error("game has no bg-script; shadow strategy does not apply");
-
-  const originalBgScriptPath = path.join(scan.root, bgScriptName);
-  if (!existsSync(originalBgScriptPath)) throw new Error(`bg-script not found: ${originalBgScriptPath}`);
-
-  // Keep saves anchored at the real game root. For "www" layout the www
-  // junction in the pass below already routes www/save to the real tree;
-  // for root layout the top-level save/ entry must exist on the real side
-  // before the pass so it gets junctioned instead of created fresh inside
-  // the shadow (which would fork the player's saves).
-  const isWwwLayout = scan.layout ? scan.layout === "www" : existsSync(path.join(scan.root, "www"));
-  if (!isWwwLayout) {
-    const realSaveDir = path.join(scan.root, "save");
-    const shadowSaveDir = path.join(appDir, "save");
-    const shadowStat = lstatSync(shadowSaveDir, { throwIfNoEntry: false });
-    if (shadowStat && !shadowStat.isSymbolicLink() && shadowStat.isDirectory()) {
-      // Real dir left by earlier shadow runs: merge newer files back first.
-      mergeSaveFiles(shadowSaveDir, realSaveDir);
-      rmSync(shadowSaveDir, { recursive: true, force: true });
-    }
-    mkdirSync(realSaveDir, { recursive: true });
-  }
-
-  const bgPathNorm = bgScriptName.split(/[\\/]+/).filter(Boolean).join("/");
-  for (const entry of readdirSync(scan.root)) {
-    if (entry === "package.json") continue;
-    if (SKIP_FILES.has(entry.toLowerCase())) continue;
-    if (entry === bgPathNorm) continue; // root-level bg-script: patched copy written below
-    const source = path.join(scan.root, entry);
-    const dest = path.join(appDir, entry);
-    const relSkip = bgPathNorm.startsWith(entry + "/") ? bgPathNorm.slice(entry.length + 1) : null;
-    linkShadowEntry(source, dest, relSkip);
-  }
-  copyFileSync(path.join(scan.root, "package.json"), path.join(appDir, "package.json"));
-
   const grover = scan.protection && scan.protection.flags && scan.protection.flags.includes("grover-boot");
+  const shimSource = path.join(projectRoot, "runtime", "bin", "wmic.exe");
+  if (grover && !existsSync(shimSource)) {
+    throw new Error(`grover-boot needs the wmic shim: build it with tools/build-wmic-shim.mjs (${shimSource} missing)`);
+  }
+  const bridgePath = path.join(projectRoot, "runtime", "bridge", "page-bridge.js");
+  const bridgeStateDir = path.join(projectRoot, "runtime", "bridge-state", gameKey);
+  const logPath = path.join(bridgeStateDir, "bg-bridge.log");
+  const result = buildShadowApp({
+    projectRoot, scan, gameKey, scriptRel: bgScriptName,
+    patch(source) {
+      return buildPrelude(scan.root) + (grover ? buildGroverBootstrap({ bridgePath, logPath }) : "")
+        + source + buildSuffix({ bridgePath, logPath, gameKey });
+    }
+  });
+  mkdirSync(bridgeStateDir, { recursive: true });
   if (grover) {
     // grover-boot: keep the shadow manifest byte-identical to the game's —
     // the payload's DRM plugin (Some.js) validates the app manifest and core
@@ -336,34 +378,11 @@ export function setupShadowApp({ projectRoot, scan, gameKey }) {
     // the game's PATH is prepended with it at launch, so cmd.exe (the shell
     // execs `wmic ...` which resolves cwd-then-PATH) finds our shim and never
     // the missing system wmic.
-    const shimSource = path.join(projectRoot, "runtime", "bin", "wmic.exe");
-    if (!existsSync(shimSource)) {
-      throw new Error(`grover-boot needs the wmic shim: build it with tools/build-wmic-shim.mjs (${shimSource} missing)`);
-    }
-    copyFileSync(shimSource, path.join(appDir, "wmic.exe"));
+    const shimPath = path.join(result.appDir, "wmic.exe");
+    if (lstatSync(shimPath, { throwIfNoEntry: false })) rmSync(shimPath, { recursive: true, force: true });
+    copyFileSync(shimSource, shimPath);
   }
-
-  // Regenerate the patched bg-script on every launch so bridge updates apply.
-  const bridgePath = path.join(projectRoot, "runtime", "bridge", "page-bridge.js");
-  const bridgeStateDir = path.join(projectRoot, "runtime", "bridge-state", gameKey);
-  mkdirSync(bridgeStateDir, { recursive: true });
-  const logPath = path.join(bridgeStateDir, "bg-bridge.log");
-  const suffix = buildSuffix({ bridgePath, logPath, gameKey });
-  const patched = grover
-    // The shell's own chain runs, but our bootstrap registers the window
-    // "loaded" listener first: guards + page bridge land in every page load
-    // before bg_script arms its kill timers there.
-    ? buildPrelude(scan.root) + buildGroverBootstrap({ bridgePath, logPath }) + readFileSync(originalBgScriptPath, "utf8") + suffix
-    : buildPrelude(scan.root) + readFileSync(originalBgScriptPath, "utf8") + suffix;
-  const patchedPath = path.join(appDir, bgScriptName);
-  // bg-script may live in a subdirectory (e.g. "bg_script/boot.js"); the
-  // linking pass carved its path out of the shadow, so create it fresh here.
-  mkdirSync(path.dirname(patchedPath), { recursive: true });
-  writeFileSync(patchedPath, patched, "utf8");
-
-  const gameExe = path.join(appDir, "Game.exe");
-  if (!existsSync(gameExe)) throw new Error(`shadow Game.exe missing: ${gameExe}`);
-  return { appDir, gameExe, bgScriptPath: path.join(appDir, bgScriptName) };
+  return { appDir: result.appDir, gameExe: result.gameExe, bgScriptPath: result.patchedPath };
 }
 
 // grover-boot games launch through the ordinary direct spawn below, with one
@@ -494,56 +513,10 @@ export function patchBundledEngineScript(source) {
 }
 
 export function setupBundledShadowApp({ projectRoot, scan, gameKey }) {
-  const appDir = path.join(projectRoot, SHADOW_ROOT, gameKey);
-  mkdirSync(appDir, { recursive: true });
   const scriptRel = scan.bundled && scan.bundled.scriptRel;
   if (!scriptRel) throw new Error("bundled engine script not recorded in scan (scan.bundled.scriptRel)");
-  const scriptRelNorm = scriptRel.split(/[\\/]+/).filter(Boolean).join("/");
-  const originalScriptPath = path.join(scan.root, scriptRelNorm);
-  if (!existsSync(originalScriptPath)) throw new Error(`bundled engine script not found: ${originalScriptPath}`);
-
-  // Root-layout games save in <root>/save: make sure the real dir exists
-  // BEFORE the linking pass so it is junctioned (not shadow-forked) — same
-  // contract as the bg-script shadow above. www layout is covered by the
-  // www junction itself.
-  const isWwwLayout = scan.layout ? scan.layout === "www" : existsSync(path.join(scan.root, "www"));
-  if (!isWwwLayout) {
-    const realSaveDir = path.join(scan.root, "save");
-    const shadowSaveDir = path.join(appDir, "save");
-    const shadowStat = lstatSync(shadowSaveDir, { throwIfNoEntry: false });
-    if (shadowStat && !shadowStat.isSymbolicLink() && shadowStat.isDirectory()) {
-      mergeSaveFiles(shadowSaveDir, realSaveDir);
-      rmSync(shadowSaveDir, { recursive: true, force: true });
-    }
-    mkdirSync(realSaveDir, { recursive: true });
-  }
-
-  // Link pass: the engine script's path is carved out (real directories,
-  // everything else junctioned/hardlinked) so the patched copy written below
-  // never lands in the real game tree.
-  for (const entry of readdirSync(scan.root)) {
-    if (entry === "package.json") continue;
-    if (SKIP_FILES.has(entry.toLowerCase())) continue;
-    if (entry === scriptRelNorm) continue; // root-level script: patched copy written below
-    const source = path.join(scan.root, entry);
-    const dest = path.join(appDir, entry);
-    const relSkip = scriptRelNorm.startsWith(entry + "/") ? scriptRelNorm.slice(entry.length + 1) : null;
-    linkShadowEntry(source, dest, relSkip);
-  }
-  // package.json ships unmodified (a copy, not a hardlink — never write
-  // through into the real tree if a later tweak starts editing it).
-  copyFileSync(path.join(scan.root, "package.json"), path.join(appDir, "package.json"));
-
-  // Regenerate the patched engine script on every launch: the patch follows
-  // bridge updates and never accumulates on the original.
-  const patched = patchBundledEngineScript(readFileSync(originalScriptPath, "utf8"));
-  const patchedPath = path.join(appDir, scriptRelNorm);
-  mkdirSync(path.dirname(patchedPath), { recursive: true });
-  writeFileSync(patchedPath, patched, "utf8");
-
-  const gameExe = path.join(appDir, "Game.exe");
-  if (!existsSync(gameExe)) throw new Error(`shadow Game.exe missing: ${gameExe}`);
-  return { appDir, gameExe, patchedScript: patchedPath };
+  const result = buildShadowApp({ projectRoot, scan, gameKey, scriptRel, patch: patchBundledEngineScript });
+  return { appDir: result.appDir, gameExe: result.gameExe, patchedScript: result.patchedPath };
 }
 
 export function launchBundledShadowGame({ projectRoot, scan, gameKey, profileDir, extraEnv }) {

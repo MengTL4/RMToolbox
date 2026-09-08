@@ -19,6 +19,7 @@
     mapQuery: "",
     transfer: { mapId: null, x: null, y: null },
     battle: null,
+    battleToken: 0,
     loading: { party: false, roster: false, maps: false }
   });
 
@@ -27,6 +28,20 @@
   // returns something. `generation` invalidates in-flight retries when the user
   // switches games; slices ask `isCurrent()` rather than reading the counter.
   var generation = 0;
+  var viewStates = new Map();
+  var battles = new Map();
+  var nextBattle = 0;
+  function noteBattle(inBattle) {
+    var key = trainer.gameKey, session = store.sessionFor(key);
+    if (!key) return;
+    var previous = battles.get(key);
+    if (!previous || (inBattle && (!previous.inBattle || previous.connectedAt !== (session && session.connectedAt)))) {
+      previous = { token: ++nextBattle, connectedAt: session && session.connectedAt };
+      battles.set(key, previous);
+    }
+    previous.inBattle = !!inBattle;
+    trainer.battleToken = previous.token;
+  }
 
   function isCurrent(gen) {
     return gen === generation;
@@ -50,8 +65,9 @@
 
     // Flip a loading flag for the lifetime of a promise.
     tracked: function (flags, key, promise) {
+      var epoch = store.state.selectionEpoch;
       flags[key] = true;
-      return promise.finally(function () { flags[key] = false; });
+      return promise.finally(function () { if (epoch === store.state.selectionEpoch) flags[key] = false; });
     },
 
     noEntries: function (payload) { return !(payload.entries || []).length; },
@@ -71,14 +87,28 @@
   }
 
   function selectGame(gameKey) {
+    if (trainer.gameKey) viewStates.set(trainer.gameKey, {
+      selected: Object.assign({}, store.data.selected), query: Object.assign({}, store.data.query),
+      transfer: Object.assign({}, trainer.transfer), mapQuery: trainer.mapQuery, selfSwitchMap: store.data.selfSwitches.mapId
+    });
     generation += 1;
+    store.state.selectionEpoch += 1;
     var gen = generation;
     var alive = function () { return isCurrent(gen); };
 
     trainer.gameKey = gameKey || null;
+    trainer.battleToken = battles.has(trainer.gameKey) ? battles.get(trainer.gameKey).token : 0;
     resetTrainer();
     store.resetData();
-    if (!trainer.gameKey) return;
+    var saved = viewStates.get(trainer.gameKey);
+    trainer.transfer = saved ? saved.transfer : { mapId: null, x: null, y: null };
+    trainer.mapQuery = saved ? saved.mapQuery : "";
+    if (saved) {
+      Object.assign(store.data.selected, saved.selected);
+      Object.assign(store.data.query, saved.query);
+      store.data.selfSwitches.mapId = saved.selfSwitchMap;
+    }
+    if (!trainer.gameKey || !store.sessionFor(trainer.gameKey)) return;
 
     store.cmd("trainer.options.get", {}).then(function (payload) {
       if (payload && alive()) trainer.options = payload.options || {};
@@ -99,6 +129,7 @@
     ).then(function (p) { if (p && alive()) trainer.maps = p.entries || []; });
 
     store.primeData(alive);
+    if (store.data.selected.actor != null) openActor(store.data.selected.actor);
   }
 
   // Re-pull everything a load / new-game invalidates.
@@ -135,7 +166,7 @@
   }
 
   function setOptions(patch) {
-    return store.cmd("trainer.options.set", { options: patch }).then(function (p) {
+    return store.cmdWarn("trainer.options.set", { options: patch }).then(function (p) {
       if (p) trainer.options = p.options || {};
       return p;
     });
@@ -143,18 +174,19 @@
 
   function openActor(id) {
     return store.cmd("actor.info", { id: id }).then(function (p) {
-      if (p && p.actor) trainer.actor = p.actor;
+      if (p && p.actor && store.data.selected.actor === id) trainer.actor = p.actor;
       return p;
     });
   }
 
   function applyActor(payload) {
-    if (payload && payload.actor) trainer.actor = payload.actor;
+    if (payload && payload.actor && payload.actor.id === store.data.selected.actor) trainer.actor = payload.actor;
     return payload;
   }
 
   // Called by the bridge's state push (see store/library.js init).
   function applyLiveState(payload) {
+    noteBattle(payload.inBattle);
     trainer.live = payload;
     if (payload.gold !== undefined && payload.gold !== null) trainer.gold = payload.gold;
     if (!payload.inBattle) trainer.battle = null;
@@ -170,6 +202,7 @@
     setOptions: setOptions,
     openActor: openActor,
     applyActor: applyActor,
-    applyLiveState: applyLiveState
+    applyLiveState: applyLiveState,
+    noteBattle: noteBattle
   });
 })();

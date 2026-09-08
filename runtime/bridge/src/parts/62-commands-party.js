@@ -7,15 +7,47 @@
   // consistent; the field is the escape hatch for games that removed it.
   // ---------------------------------------------------------------------------
 
-  // Protected games sabotage the engine's own write path (再刷一把 ships
-  // gainItem as a native no-op stub) and amplifier plugins scale the delta, so
-  // after the polite gainItem call we assert the requested count directly.
-  // Equivalent to what gainItem does anyway (container write + map refresh).
-  function writeBackItemCount(party, prop, id, want) {
+  function customInventory(party) {
+    return typeof resolveCustomInventory === "function" ? resolveCustomInventory(party) : null;
+  }
+
+  function inventoryCount(party, prop, id, data) {
+    const custom = customInventory(party);
+    if (custom && data) return custom.count(data);
+    if (data && typeof party.numItems === "function") return Number(party.numItems(data)) || 0;
+    return Number(party[prop] && party[prop][id]) || 0;
+  }
+
+  function changeInventory(party, data, delta) {
+    const custom = customInventory(party);
+    if (custom) {
+      try { return custom.change(data, delta); }
+      finally { refreshMapAndWindows(); }
+    }
+    return party.gainItem(data, delta);
+  }
+
+  function hasEncodedNumberStore(object) {
+    return typeof object.thTyZhNumGain === "function" && typeof object.thTyZhNumGet === "function";
+  }
+
+  // Verify through the engine: custom games may encode container values.
+  // Keep the numeric fallback for stubbed gainItem implementations only.
+  function writeBackItemCount(party, prop, id, want, data) {
+    if (customInventory(party)) {
+      const actual = inventoryCount(party, prop, id, data);
+      if (actual !== want) {
+        throw new Error(`当前物品数量为 ${actual}，未达到目标 ${want}；请检查背包容量或物品类型限制`);
+      }
+      return;
+    }
     const store = party[prop];
     if (!store) return;
-    const now = Number(store[id]) || 0;
+    const now = inventoryCount(party, prop, id, data);
     if (now === want) return;
+    if (hasEncodedNumberStore(party) || (store[id] != null && typeof store[id] !== "number")) {
+      throw new Error("游戏没有应用目标物品数量，已保留游戏的自定义库存数据");
+    }
     if (want > 0) store[id] = want;
     else delete store[id];
     const map = resolveMap();
@@ -55,19 +87,28 @@
   // and fall back to a direct container write — same contract as item.set's
   // gainItem verification. A partial move means the engine clamped (kept).
   function applyGoldDelta(party, delta, absolute) {
-    const fallback = absolute != null ? absolute : Math.max(0, Number(party._gold || 0) + delta);
+    const fallback = absolute != null ? absolute : Math.max(0, (safeGold(party) || 0) + delta);
+    const plainStore = !hasEncodedNumberStore(party) && (party._gold == null || typeof party._gold === "number");
+    const nativeFtGold = typeof isNativeFramePacingTarget === "function" && isNativeFramePacingTarget() &&
+      typeof party.thNewGainGold === "function";
     if (typeof party.gainGold !== "function") {
+      if (!plainStore) throw new Error("游戏缺少金币修改接口，已保留自定义金币数据");
       party._gold = fallback;
       return;
     }
     const before = safeGold(party) || 0;
     try {
-      withRatesSuppressed(() => party.gainGold(delta));
-    } catch (_) {
+      withRatesSuppressed(() => {
+        // FT's native mode is explicit, just like its two-argument gainExp.
+        if (nativeFtGold) party.gainGold(delta, true);
+        else party.gainGold(delta);
+      });
+    } catch (error) {
+      if (!plainStore || nativeFtGold) throw error;
       party._gold = fallback;
       return;
     }
-    if (delta !== 0 && (safeGold(party) || 0) === before) party._gold = fallback;
+    if (plainStore && !nativeFtGold && delta !== 0 && (safeGold(party) || 0) === before) party._gold = fallback;
   }
 
   Object.assign(commandHandlers, {
@@ -110,15 +151,17 @@
       const amount = Math.floor(requireNumber(args.amount, "amount"));
       if (!Number.isFinite(amount) || amount === 0) throw new Error("amount must be a non-zero number");
       const prop = inventorySlot(kind);
-      const want = Math.max(0, (Number(party[prop] && party[prop][id]) || 0) + amount);
-      withRatesSuppressed(() => party.gainItem(data, amount));
-      writeBackItemCount(party, prop, id, want);
-      return { kind, id, amount, count: Number(party[prop] && party[prop][id]) || 0 };
+      const want = Math.max(0, inventoryCount(party, prop, id, data) + amount);
+      withRatesSuppressed(() => changeInventory(party, data, amount));
+      writeBackItemCount(party, prop, id, want, data);
+      return { kind, id, amount, count: inventoryCount(party, prop, id, data) };
     },
 
     // MTool-style inventory view: everything the party currently owns, with counts.
     "item.list": () => {
       const party = requireParty();
+      const custom = customInventory(party);
+      if (custom) return { entries: custom.entries() };
       const entries = [];
       for (const [kind, prop] of INVENTORY_SLOTS) {
         const store = party[prop];
@@ -127,10 +170,10 @@
           // Counts are integers by engine contract; amplifier plugins in some
           // games stash fractions (2.5 件装备) in the container. Rounding here
           // is display-only — the in-memory value is left untouched.
-          const count = Math.round(Number(store[key]) || 0);
-          if (count <= 0) continue;
           const id = Number(key);
           const entry = runtimeDataTable(kind)[id] || ownedItemData(party, kind, id);
+          const count = Math.round(inventoryCount(party, prop, id, entry));
+          if (count <= 0) continue;
           entries.push({ kind, id, name: entry && entry.name || "", count });
         }
       }
@@ -147,13 +190,13 @@
       if (!data) throw new Error(`${kind} ${id} not found`);
       const count = Math.max(0, Math.floor(requireNumber(args.count, "count")));
       const prop = inventorySlot(kind);
-      const current = Number(party[prop] && party[prop][id]) || 0;
+      const current = inventoryCount(party, prop, id, data);
       const delta = count - current;
       // gainItem first so a working engine keeps its bookkeeping; the writeback
       // then pins the exact count when gainItem is stubbed or scaled.
-      if (delta !== 0) withRatesSuppressed(() => party.gainItem(data, delta));
-      writeBackItemCount(party, prop, id, count);
-      return { kind, id, count: Number(party[prop] && party[prop][id]) || 0 };
+      if (delta !== 0) withRatesSuppressed(() => changeInventory(party, data, delta));
+      writeBackItemCount(party, prop, id, count, data);
+      return { kind, id, count: inventoryCount(party, prop, id, data) };
     },
 
     // --- party ----------------------------------------------------------------
@@ -230,7 +273,14 @@
     "actor.exp.add": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       const amount = Math.floor(requireNumber(args.amount, "amount"));
-      if (typeof actor.gainExp === "function") withRatesSuppressed(() => actor.gainExp(amount));
+      if (typeof actor.gainExp === "function") withRatesSuppressed(() => {
+        // FT's gainExp(exp, nativeMode) replaces the stock one-argument API.
+        // Its omitted/false branch calls an unavailable function; true performs the
+        // native EXP update, including its own level bookkeeping.
+        if (typeof isNativeFramePacingTarget === "function" && isNativeFramePacingTarget() &&
+            typeof actor.thTyChangeExp === "function") actor.gainExp(amount, true);
+        else actor.gainExp(amount);
+      });
       else if (typeof actor.changeExp === "function" && typeof actor.currentExp === "function") {
         actor.changeExp(actor.currentExp() + amount, false);
       } else {
@@ -267,12 +317,22 @@
       const paramId = Math.floor(requireNumber(args.paramId, "paramId"));
       if (paramId < 0 || paramId > 7) throw new Error("paramId must be between 0 and 7");
       const value = Math.floor(requireNumber(args.value, "value"));
+      const readParam = () => [
+        typeof actor.param === "function" ? actor.param(paramId) : null,
+        typeof actor.paramPlus === "function" ? actor.paramPlus(paramId) : null,
+        actor._paramPlus && actor._paramPlus[paramId]
+      ];
+      const before = readParam();
       if (typeof actor.addParam === "function") actor.addParam(paramId, value);
       else {
         actor._paramPlus = actor._paramPlus || [0, 0, 0, 0, 0, 0, 0, 0];
         actor._paramPlus[paramId] = Number(actor._paramPlus[paramId] || 0) + value;
       }
       refreshActor(actor);
+      const after = readParam();
+      if (value !== 0 && before.every((entry, index) => entry === after[index])) {
+        throw new Error("游戏没有应用这次数值变化，可能受自定义属性规则或上限限制");
+      }
       refreshMapAndWindows();
       return { actor: actorInfo(actor), paramId, value };
     },
@@ -329,6 +389,9 @@
       const actor = requireActor(requireNumber(args.id, "id"));
       const stateId = Math.floor(requireNumber(args.stateId, "stateId"));
       if (typeof actor.addState !== "function") throw new Error("actor.addState is unavailable");
+      // Each manual command is a new native action. Otherwise removedStates
+      // from a prior remove can make isStateAddable reject a later re-add.
+      if (typeof actor.clearResult === "function") actor.clearResult();
       actor.addState(stateId);
       refreshActor(actor);
       return { actor: actorInfo(actor) };
@@ -338,6 +401,7 @@
       const actor = requireActor(requireNumber(args.id, "id"));
       const stateId = Math.floor(requireNumber(args.stateId, "stateId"));
       if (typeof actor.removeState !== "function") throw new Error("actor.removeState is unavailable");
+      if (typeof actor.clearResult === "function") actor.clearResult();
       actor.removeState(stateId);
       refreshActor(actor);
       return { actor: actorInfo(actor) };

@@ -11,6 +11,7 @@ const { pathToFileURL } = require("url");
 const state = {
   projectRoot: null,
   server: null,
+  sessions: null,
   modules: null,
   bundle: null,
   libraryPath: null,
@@ -76,11 +77,12 @@ async function init(explicitRoot) {
 async function boot() {
   const scanner = await loadModule("core/scanner.mjs");
   const wsServer = await loadModule("core/ws-server.mjs");
-  const launcher = await loadModule("core/launcher.mjs");
-  const attach = await loadModule("core/attach.mjs");
+  const { BridgeSessions } = await loadModule("core/bridge-sessions.mjs");
+  const { gameRuntime } = await loadModule("core/game-runtime.mjs");
   const tokenMod = await loadModule("core/token.mjs");
   const rgssArchive = await loadModule("core/rgss-archive.mjs");
-  state.modules = { scanner, wsServer, launcher, attach, tokenMod, rgssArchive };
+  const saveFiles = await loadModule("core/save-files.mjs");
+  state.modules = { scanner, wsServer, gameRuntime, tokenMod, rgssArchive, saveFiles };
 
   state.libraryPath = path.join(state.projectRoot, "runtime", "gui-library.json");
   try {
@@ -95,18 +97,27 @@ async function boot() {
     port: 47412, token,
     stateDir: path.join(state.projectRoot, "runtime", "bridge-state")
   });
-  server.on("session-open", (gameKey) => {
+  const sessions = new BridgeSessions({ server });
+  state.sessions = sessions;
+  sessions.on("session-open", (gameKey) => {
     guiLog("bridge connected", { gameKey });
     notifySessions();
   });
-  server.on("session-closed", (gameKey) => {
+  sessions.on("session-closed", (gameKey) => {
     guiLog("bridge disconnected", { gameKey });
     notifySessions();
   });
-  server.on("state", (gameKey, gameState) => {
+  sessions.on("changed", notifySessions);
+  sessions.on("state", (gameKey, gameState) => {
     if (state.onState) state.onState(gameKey, gameState);
   });
-  await server.start();
+  try {
+    await server.start();
+  } catch (error) {
+    sessions.dispose();
+    state.sessions = null;
+    throw error;
+  }
   state.server = server;
   guiLog("bridge server listening on 127.0.0.1:47412");
   return describe();
@@ -139,25 +150,7 @@ function notifySessions() {
 }
 
 function listSessions() {
-  const sessions = state.server ? state.server.listSessions() : [];
-  // BridgeSession.describe() flattens its info ({...this.info, alive, state}).
-  const described = sessions.map((session) => ({
-    gameKey: session.gameKey,
-    alive: session.alive,
-    bridgeVersion: session.bridgeVersion,
-    engine: session.engine,
-    connectedAt: session.connectedAt,
-    state: session.state
-  }));
-  // RGSS (file channel) and Tauri (CDP tunnel) sessions live outside the
-  // WebSocket server but must look identical to the page. The nb-evalnwbin
-  // file channel needs no such concat: the server adopts it as a FileSession
-  // itself (stateDir scan), so it already appears in described.
-  const { launcher } = state.modules || {};
-  let all = described;
-  if (launcher && launcher.listRgssSessions) all = all.concat(launcher.listRgssSessions());
-  if (launcher && launcher.listTauriSessions) all = all.concat(launcher.listTauriSessions());
-  return all;
+  return state.sessions ? state.sessions.list() : [];
 }
 
 function saveLibrary() {
@@ -199,55 +192,8 @@ function removeManualRoot(root) {
   saveLibrary();
 }
 
-// Out-of-band sessions (RGSS file channel, Tauri CDP tunnel) bypass the
-// WebSocket server; wire their events into the same GUI sinks here so the
-// page cannot tell the difference.
-function wireExternalSession(session, gameKey, channel) {
-  // A second launch returns the SAME live session (tauri-cdp launch guard);
-  // wiring it twice would double every state/event push into the UI.
-  if (session.__rmchWired) return;
-  session.__rmchWired = true;
-  guiLog("bridge connected", { gameKey, channel });
-  // describe().alive only flips once the bridge hello lands (Tauri: ~250ms
-  // after launch returns, via the outbox poll) — re-push the session list at
-  // that moment or the library card keeps showing 启动并注入 until something
-  // else refreshes it.
-  session.on("hello", () => {
-    notifySessions();
-  });
-  session.on("state", (gameState) => {
-    if (state.onState) state.onState(gameKey, gameState);
-  });
-  session.on("close", () => {
-    guiLog("bridge disconnected", { gameKey });
-    notifySessions();
-  });
-  notifySessions();
-}
-
 async function launch(gameRoot) {
-  // NB evalNWBin shells and Enigma-NB boxes refuse every launch flag, so the
-  // extension launch is fatal to them; "launch" for these games is plain
-  // spawn + DLL attach (the inject machinery lives in the attach module).
-  // grover-boot shells take the same route for a different reason: their
-  // ancestry-verified boot chain freezes the toolbox-shadowed variant, while
-  // the plainly launched real game runs fine (measured: double-click boot to
-  // a playable title screen; the shell's suicide paths fail on their own).
-  const probe = state.modules.scanner.scanGame(gameRoot);
-  const grover = probe.protection && probe.protection.flags
-    && probe.protection.flags.includes("grover-boot");
-  if (probe.container === "nb-evalnwbin" || probe.container === "enigma-nb" || grover) {
-    const summary = await state.modules.attach.launchNwInjectGame({
-      scan: probe,
-      projectRoot: state.projectRoot,
-      port: 47412
-    });
-    guiLog("game launched", { gameKey: summary.gameKey, strategy: summary.strategy, pid: summary.pid });
-    // No session to wire: the bridge server adopts the file channel itself
-    // (FileSession) and announces it through "session-open".
-    return summary;
-  }
-  const summary = await state.modules.launcher.launchGame({
+  const summary = await state.modules.gameRuntime.launch({
     gameRoot,
     projectRoot: state.projectRoot,
     port: 47412
@@ -257,17 +203,13 @@ async function launch(gameRoot) {
     strategy: summary.strategy,
     pid: summary.pid
   });
-  if (summary.rgssSession) wireExternalSession(summary.rgssSession, summary.gameKey, "file");
-  if (summary.tauriSession) wireExternalSession(summary.tauriSession, summary.gameKey, "cdp");
   return summary;
 }
 
-// Attach to an ALREADY-RUNNING game (DLL injection). The bridge dials into the
-// GUI's own WS server (attachGame's ensureServer sees the port in use), so the
-// session shows up through the normal "session-open" event — nothing extra to
-// wire here beyond the RGSS file-channel session, mirroring launch().
+// Session discovery and notifications are owned by BridgeSessions for both
+// launch and attach, including sessions that appear after the call returns.
 async function attach(gameRoot) {
-  const summary = await state.modules.attach.attachGame({
+  const summary = await state.modules.gameRuntime.attach({
     gameRoot,
     projectRoot: state.projectRoot,
     port: 47412
@@ -278,13 +220,6 @@ async function attach(gameRoot) {
     pid: summary.pid || null,
     injected: summary.injected || null
   });
-  const fileSession = summary.session;
-  if (fileSession) {
-    // Only RGSS attach still returns an out-of-band session (nb-evalnwbin
-    // file channels are adopted by the bridge server itself and arrive via
-    // the normal "session-open" event). wireExternalSession dedupes.
-    wireExternalSession(fileSession, summary.gameKey, "file");
-  }
   return summary;
 }
 
@@ -301,117 +236,117 @@ function stop(pid) {
 }
 
 function send(gameKey, type, args) {
-  // RGSS (file channel) and Tauri (CDP tunnel) sessions sit outside the
-  // WebSocket server; route by gameKey first. nb-evalnwbin file channels are
-  // adopted BY the server (FileSession), so they fall through to sendCommand.
-  const launcher = state.modules && state.modules.launcher;
-  if (launcher && launcher.getRgssSession) {
-    const rgss = launcher.getRgssSession(gameKey);
-    if (rgss) return rgss.send(type, args || {});
-  }
-  if (launcher && launcher.getTauriSession) {
-    const tauri = launcher.getTauriSession(gameKey);
-    if (tauri) return tauri.send(type, args || {});
-  }
-  if (!state.server) return Promise.reject(new Error("server not started"));
-  return state.server.sendCommand(gameKey, type, args || {});
+  if (!state.sessions) return Promise.reject(new Error("server not started"));
+  return state.sessions.send(gameKey, type, args);
 }
 
 // --- save backup (zero-dependency: directory copy) ---------------------------
 
 function saveDirOf(gameKey) {
+  const location = saveLocationOf(gameKey);
+  return location && location.saveDir;
+}
+
+function saveLocationOf(gameKey) {
   // Prefer a live bridge answer (handles custom StorageManager layouts),
   // fall back to the scanner's save dir guess.
+  let live = null;
   for (const session of listSessions()) {
+    if (session.gameKey === gameKey && session.state && session.state.saveStorage === "webstorage") {
+      return { saveDir: null, saveStorage: "webstorage" };
+    }
     if (session.gameKey === gameKey && session.state && session.state.saveDir) {
-      return session.state.saveDir;
+      live = { saveDir: session.state.saveDir, saveLocation: session.state.saveLocation };
+      if (live.saveLocation && live.saveLocation.gameRoot) return { ...live, gameRoot: live.saveLocation.gameRoot };
+      break;
     }
   }
   const { scanGame, findSteamLibraries, scanLibrary } = state.modules.scanner;
-  for (const library of findSteamLibraries()) {
-    for (const info of scanLibrary(library)) {
-      if (info.gameKey === gameKey && info.paths.saveDir) return info.paths.saveDir;
+  try {
+    for (const library of findSteamLibraries()) {
+      for (const info of scanLibrary(library)) {
+        if (info.gameKey === gameKey && (live || info.paths.saveDir)) return { saveDir: info.paths.saveDir, ...live, gameRoot: info.root };
+      }
     }
-  }
+  } catch (error) { if (!live) throw error; }
   for (const root of state.library.manualRoots) {
     try {
       const info = scanGame(root);
-      if (info.gameKey === gameKey && info.paths.saveDir) return info.paths.saveDir;
+      if (info.gameKey === gameKey && (live || info.paths.saveDir)) return { saveDir: info.paths.saveDir, ...live, gameRoot: info.root };
     } catch (_) {}
   }
-  return null;
+  return live;
 }
 
-// Only real save files are copied: for RGSS games the save directory is often
-// the game root itself, and an unfiltered copy would drag Game.exe and the
-// archive into every backup. MV/MZ save dirs contain nothing but these
-// extensions anyway, so the filter is a no-op there.
-const SAVE_FILE_EXT_RE = /\.(rpgsave|rmmzsave|rxdata|rvdata|rvdata2)$/i;
+function saveFiles() {
+  return state.modules.saveFiles.createSaveFiles({
+    projectRoot: state.projectRoot,
+    resolveLocation: saveLocationOf
+  });
+}
 
-function backupSaves(gameKey) {
-  const sourceDir = saveDirOf(gameKey);
-  if (!sourceDir || !fs.existsSync(sourceDir)) throw new Error(`save directory not found for "${gameKey}"`);
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
-  const destDir = path.join(state.projectRoot, "backups", gameKey, stamp);
-  fs.mkdirSync(destDir, { recursive: true });
-  let count = 0;
-  for (const entry of fs.readdirSync(sourceDir)) {
-    if (!SAVE_FILE_EXT_RE.test(entry)) continue;
-    const source = path.join(sourceDir, entry);
-    if (fs.statSync(source).isFile()) {
-      fs.copyFileSync(source, path.join(destDir, entry));
-      count += 1;
-    }
+function webStorageBackupFile(gameKey, name) {
+  for (const value of [gameKey, name]) {
+    if (!value || value === "." || value.includes("..") || /[\\/:\x00-\x1f]/.test(value)) throw new Error("invalid backup name");
   }
-  guiLog("save backup created", { gameKey, destDir, files: count });
-  return { gameKey, destDir, files: count };
+  const dir = path.join(state.projectRoot, "backups", gameKey, name);
+  const file = path.join(dir, "webstorage.json");
+  for (const target of [path.join(state.projectRoot, "backups"), path.dirname(dir), dir, file]) {
+    if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) throw new Error("invalid backup link");
+  }
+  return file;
+}
+
+async function usesWebStorage(gameKey) {
+  const live = listSessions().find(session => session.gameKey === gameKey && session.alive);
+  if (!live) return false;
+  return (await send(gameKey, "save.list", {})).storage === "webstorage";
+}
+
+async function backupSaves(gameKey) {
+  let result;
+  if (await usesWebStorage(gameKey)) {
+    const snapshot = await send(gameKey, "save.webstorage.export", {});
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
+    let name = stamp, suffix = 1;
+    while (fs.existsSync(path.dirname(webStorageBackupFile(gameKey, name)))) name = `${stamp}-${suffix++}`;
+    const target = webStorageBackupFile(gameKey, name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, JSON.stringify(snapshot), { flag: "wx" });
+    result = { gameKey, destDir: path.dirname(target), files: snapshot.entries.length, storage: "webstorage" };
+  } else result = saveFiles().backup(gameKey);
+  guiLog("save backup created", result);
+  return result;
 }
 
 function listBackups(gameKey) {
-  const root = path.join(state.projectRoot, "backups", gameKey);
-  if (!fs.existsSync(root)) return [];
-  return fs.readdirSync(root)
-    .map((name) => {
-      const dir = path.join(root, name);
-      let files = 0;
-      let bytes = 0;
-      if (fs.existsSync(dir)) {
-        for (const entry of fs.readdirSync(dir)) {
-          const stat = fs.statSync(path.join(dir, entry));
-          if (stat.isFile()) { files += 1; bytes += stat.size; }
-        }
-      }
-      return { name, dir, files, bytes, ts: fs.statSync(dir).mtime.toISOString() };
-    })
-    .sort((a, b) => b.name.localeCompare(a.name));
+  return saveFiles().listBackups(gameKey).map(entry => {
+    const file = webStorageBackupFile(gameKey, entry.name);
+    if (!fs.existsSync(file)) return entry;
+    const snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (snapshot.format !== "rmch-mv-webstorage-v1" || !Array.isArray(snapshot.entries)) throw new Error("invalid WebStorage backup");
+    return { ...entry, storage: "webstorage", files: snapshot.entries.length, bytes: fs.statSync(file).size };
+  });
 }
 
 // Only ever called with a name listBackups produced, but re-validate anyway —
 // this deletes recursively.
 function deleteBackup(gameKey, name) {
-  const clean = String(name || "");
-  if (!clean || clean !== path.basename(clean) || clean.includes("..")) {
-    throw new Error(`bad backup name: ${name}`);
-  }
-  const dir = path.join(state.projectRoot, "backups", gameKey, clean);
-  if (!fs.existsSync(dir)) throw new Error(`backup not found: ${dir}`);
-  fs.rmSync(dir, { recursive: true, force: true });
-  guiLog("save backup deleted", { gameKey, name: clean });
-  return { gameKey, name: clean, deleted: true };
+  const result = saveFiles().deleteBackup(gameKey, name);
+  guiLog("save backup deleted", { gameKey, name: result.name });
+  return result;
 }
 
-function restoreBackup(gameKey, name) {
-  const backupDir = path.join(state.projectRoot, "backups", gameKey, name);
-  if (!fs.existsSync(backupDir)) throw new Error(`backup not found: ${backupDir}`);
-  const target = saveDirOf(gameKey);
-  if (!target || !fs.existsSync(target)) throw new Error(`save directory not found for "${gameKey}"`);
-  let count = 0;
-  for (const entry of fs.readdirSync(backupDir)) {
-    fs.copyFileSync(path.join(backupDir, entry), path.join(target, entry));
-    count += 1;
-  }
-  guiLog("save backup restored", { gameKey, name, files: count });
-  return { gameKey, name, restored: count };
+async function restoreBackup(gameKey, name) {
+  const file = webStorageBackupFile(gameKey, name);
+  let result;
+  if (fs.existsSync(file)) {
+    if (!await usesWebStorage(gameKey)) throw new Error("请先连接使用浏览器存档的游戏，再恢复这份备份");
+    const snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
+    result = { gameKey, name, ...await send(gameKey, "save.webstorage.import", { snapshot }) };
+  } else result = saveFiles().restore(gameKey, name);
+  guiLog("save backup restored", { gameKey, name, files: result.restored });
+  return result;
 }
 
 function readBridgeLog(gameKey) {
@@ -442,30 +377,12 @@ function openPath(target) {
 // Delete one file from the game's save directory. The bridge can save/load
 // slots but has no delete, so the GUI does it from this side — same directory
 // save.list read from (saveDirOf prefers the live session's answer).
-function deleteSaveFile(gameKey, fileName) {
-  const name = String(fileName || "");
-  if (!/^[\w.()@-]+$/i.test(name) || name.includes("..")) {
-    throw new Error(`bad file name: ${fileName}`);
-  }
-  const dir = saveDirOf(gameKey);
-  if (!dir) throw new Error(`save directory not found for "${gameKey}"`);
-  const target = path.join(dir, name);
-  if (!fs.existsSync(target)) throw new Error(`file not found: ${name}`);
-  fs.unlinkSync(target);
-  // An RGSS shadow copy (live session or leftover) would resurrect the file
-  // on the next save sync, so remove it too. Junctioned subdirectories point
-  // at the real directory, where the unlink above already landed — those
-  // attempts just miss. Best-effort: the real delete already succeeded.
-  const shadowRoot = path.join(state.projectRoot, "runtime", "rgss-shadow", gameKey);
-  try {
-    for (const entry of [".", ...fs.readdirSync(shadowRoot)]) {
-      const sub = entry === "." ? shadowRoot : path.join(shadowRoot, entry);
-      if (!fs.statSync(sub).isDirectory()) continue;
-      fs.rmSync(path.join(sub, name), { force: true });
-    }
-  } catch (_) {}
-  guiLog("save file deleted", { gameKey, name });
-  return { gameKey, name, deleted: true };
+async function deleteSaveFile(gameKey, fileName) {
+  const result = await usesWebStorage(gameKey)
+    ? await send(gameKey, "save.webstorage.delete", { name: fileName })
+    : saveFiles().deleteSave(gameKey, fileName);
+  guiLog("save file deleted", { gameKey, name: result.name });
+  return result;
 }
 
 // Read an image as a data URL. The page needs this instead of a plain file://

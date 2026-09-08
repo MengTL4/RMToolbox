@@ -1,9 +1,15 @@
-# Dependencies (RMCH has none at runtime; this is only for tooling experiments)
+# Dependencies (frontend build and type checking only)
 node_modules/
+.cache/
+app/gui/.nw-runtime.json
+app/gui/credits.html
+app/gui/LICENSE
+app/gui/vk_swiftshader_icd.json
 
 # ---- generated ----------------------------------------------------------------
 # CJS copy of the ESM core, rebuilt by tools/launch-gui.ps1 on every launch.
 app/gui/gui-bundle.cjs
+app/gui/ui/modern.js
 output/
 # Object-file intermediates from tools/build-inject.mjs (the linked exe/DLLs in
 # runtime/inject/bin/<arch>/ ARE committed so releases work without MinGW).
@@ -34,6 +40,9 @@ runtime/rgss-attach/
 runtime/screenshots/
 # ad-hoc dumps from rgss-dump-scripts.mjs and friends
 runtime/_scratch/
+# Local acceptance copies, saves, screenshots and probe output
+/tmp/
+/runtime/zs2-stairs-probe.json
 # save-directory backups
 backups/
 *.log
@@ -41,17 +50,18 @@ config.local.json
 # local agent/tooling session state
 .zcode/
 
-# ---- NW.js runtime, linked/copied from a donor modkit -------------------------
-# local NW.js extract used as the setup donor
+# ---- official pinned NW.js runtime ------------------------------------------
+# Legacy local extract; current setup uses .cache/nwjs instead.
 nwjs/
 app/gui/*.dll
 app/gui/*.exe
 app/gui/*.pak
 app/gui/*.dat
 app/gui/*.bin
-app/gui/locales/
-app/gui/swiftshader/
-app/gui/Dictionaries/
+app/gui/locales
+app/gui/swiftshader
+app/gui/Dictionaries
+app/gui/data/
 app/gui/cache/
 app/gui/debug.log
 

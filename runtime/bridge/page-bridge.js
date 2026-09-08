@@ -180,6 +180,68 @@
     bridge.lastError = String((error && error.stack) || error);
     return bridge.lastError;
   }
+  // TH-renamed MV family (for example 重装归途). Publish live aliases before
+  // hooks and commands resolve engine objects. Loading/new-game replaces the
+  // source globals, so copying their current values would retain stale saves.
+  function publishRenamedEngine() {
+    const thFamily = typeof window.ThGem_Player === "function" && typeof window.ThSce_Map === "function" &&
+      ("$thNewGmPl" in window) && ("$thNewGmPr" in window);
+    const ftFamily = typeof window.Game_Player === "function" && typeof window.Scene_Map === "function" &&
+      ("$ftGmPl" in window) && ("$ftGmPr" in window) && ("$newTkIt" in window);
+    if (!thFamily && !ftFamily) return false;
+    const aliases = thFamily ? {
+      "$gameSystem": "$thNewGmSy", "$gameScreen": "$thNewGmSc",
+      "$gameTimer": "$thNewGmTm", "$gameMessage": "$thNewGmMe",
+      "$gameSwitches": "$thNewGmSw", "$gameVariables": "$thNewGmVr",
+      "$gameSelfSwitches": "$thNewGmSeSw", "$gameActors": "$thNewGmAc",
+      "$gameParty": "$thNewGmPr", "$gameTroop": "$thNewGmTr",
+      "$gameMap": "$thNewGmMp", "$gamePlayer": "$thNewGmPl",
+      "$dataActors": "$thNewDtAc", "$dataClasses": "$thNewDtCs",
+      "$dataSkills": "$thNewDtSk", "$dataItems": "$thNewDtIt",
+      "$dataWeapons": "$thNewDtWp", "$dataArmors": "$thNewDtAr",
+      "$dataEnemies": "$thNewDtEn", "$dataTroops": "$thNewDtTr",
+      "$dataStates": "$thNewDtSt", "$dataMap": "$thNewDtMp",
+      "$dataMapInfos": "$thNewDtMpIf", "BattleManager": "ThBtData"
+    } : {
+      "$gamePlayer": "$ftGmPl", "$gameParty": "$ftGmPr", "$gameActors": "$ftGmAc",
+      "$gameSwitches": "$ftGmSw", "$gameVariables": "$ftGmVr",
+      "$dataActors": "$newTkAc", "$dataClasses": "$newTkCs", "$dataSkills": "$thTkSk",
+      "$dataItems": "$newTkIt", "$dataWeapons": "$thTkWp", "$dataArmors": "$thTkAr",
+      "$dataEnemies": "$newTkEn", "$dataTroops": "$thTkTr", "$dataStates": "$thTkSt",
+      "$dataCommonEvents": "$thTkCom"
+    };
+    if (thFamily) Object.getOwnPropertyNames(window).forEach(function (name) {
+      const match = /^(ThGem_|ThSce_|ThWin_)([A-Za-z0-9_]+)$/.exec(name);
+      if (!match || typeof window[name] !== "function") return;
+      const prefix = { ThGem_: "Game_", ThSce_: "Scene_", ThWin_: "Window_" }[match[1]];
+      aliases[prefix + match[2]] = name;
+    });
+    Object.keys(aliases).forEach(function (name) {
+      const source = aliases[name];
+      // Existing globals belong to the game or its plugins. Never replace them.
+      if (name in window || !(source in window)) return;
+      Object.defineProperty(window, name, {
+        configurable: true,
+        get: function () { return window[source]; },
+        set: function (value) { window[source] = value; }
+      });
+    });
+    const manager = window.SceneManager;
+    if (manager) {
+      const methods = { goto: "thNewGoto", push: "thNewPush", pop: "thNewPop" };
+      Object.keys(methods).forEach(function (name) {
+        const source = methods[name];
+        if (name in manager || typeof manager[source] !== "function") return;
+        Object.defineProperty(manager, name, {
+          configurable: true,
+          get: function () { return manager[source]; },
+          set: function (value) { manager[source] = value; }
+        });
+      });
+    }
+    return true;
+  }
+  publishRenamedEngine();
   // ---------------------------------------------------------------------------
   // Save-contents capture.
   //
@@ -656,6 +718,7 @@
   // --- save directory ---------------------------------------------------------
 
   function saveDirPath() {
+    if (isMvWebStorage()) return null;
     // Prefer the game's own StorageManager directory; fall back to scanning
     // the common layouts (www/save, save).
     try {
@@ -1268,6 +1331,110 @@
     }
     return { total: entries.length, entries };
   }
+  // TH_ItemCore replaces the party's numeric containers with per-actor bags
+  // and a warehouse. Keep the game's own grant/removal methods and its unique
+  // equipment instances; the old _items/numItems API no longer describes it.
+  function resolveCustomInventory(party) {
+    if (!party || typeof party.newGetItem !== "function" || typeof party.thTyZhNumGain !== "function" ||
+        typeof party.thTyZhNumGet !== "function" || !Array.isArray(party._tkCkItem) ||
+        typeof party.members !== "function") return null;
+
+    const prefixes = { I: "item", W: "weapon", A: "armor" };
+    function kindOf(data) {
+      const manager = window.DataManager;
+      if (manager.isItem(data)) return "item";
+      if (manager.isWeapon(data)) return "weapon";
+      if (manager.isArmor(data)) return "armor";
+      // Removing a unique instance removes its database entry too. Its object
+      // still describes the requested operation while the final count is read.
+      if (data && data.wtypeId != null) return "weapon";
+      if (data && data.atypeId != null) return "armor";
+      if (data && data.itypeId != null) return "item";
+      throw new Error("游戏没有识别这个物品");
+    }
+    function owners() {
+      const list = [], seen = new Set();
+      const add = actor => {
+        if (actor && Array.isArray(actor._newItemList) && !seen.has(actor)) { seen.add(actor); list.push(actor); }
+      };
+      for (const actor of party.members()) {
+        add(actor);
+        const id = actor && typeof actor.actorId === "function" ? actor.actorId() : actor && actor._actorId;
+        const pilot = party._cxJsId && party._cxJsId[id];
+        const actors = window.$gameActors;
+        if (pilot && actors && typeof actors.actor === "function") add(actors.actor(pilot));
+      }
+      return list;
+    }
+    function rows() {
+      const result = [];
+      const collect = (list, owner) => list.forEach((token, index) => {
+        const match = /^([IWA])(\d+)$/.exec(String(token));
+        if (!match) return;
+        const kind = prefixes[match[1]], data = runtimeDataTable(kind)[Number(match[2])];
+        if (data) result.push({ kind, data, owner, index, list });
+      });
+      for (const actor of owners()) collect(actor._newItemList, actor);
+      collect(party._tkCkItem, null);
+      return result;
+    }
+    function matches(row, data, kind) {
+      if (row.kind !== kind) return false;
+      if (data.baseItemId && Number(data.baseItemId) !== Number(data.id)) return row.data.id === data.id;
+      return Number(row.data.baseItemId || row.data.id) === Number(data.id);
+    }
+    function count(data) {
+      const kind = kindOf(data);
+      return rows().filter(row => matches(row, data, kind)).length;
+    }
+    return {
+      count,
+      validateLock(data, value) {
+        if (kindOf(data) !== "item" || data.baseItemId && Number(data.baseItemId) !== Number(data.id) || data.meta && data.meta.tkPaoDang) {
+          throw new Error("独立装备和炮弹暂不支持数量锁；普通背包物品可以锁定");
+        }
+        if (!Number.isInteger(value) || value < 0 || value > 1000) throw new Error("这个游戏的物品锁数量必须在 0 到 1000 之间");
+      },
+      entries() {
+        const grouped = new Map();
+        for (const row of rows()) {
+          const key = row.kind + ":" + row.data.id;
+          if (!grouped.has(key)) grouped.set(key, { kind: row.kind, id: row.data.id,
+            name: row.data.name || "", count: 0, baseItemId: row.data.baseItemId || null });
+          grouped.get(key).count += 1;
+        }
+        const order = ["item", "weapon", "armor"];
+        return Array.from(grouped.values()).sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.id - b.id);
+      },
+      change(data, delta) {
+        if (!Number.isInteger(delta) || Math.abs(delta) > 1000) throw new Error("这个游戏每次最多修改 1000 件物品");
+        if (!delta) return count(data);
+        if (data.meta && data.meta.tkPaoDang) throw new Error("炮弹使用独立弹仓规则，暂不支持按普通背包数量修改");
+        const kind = kindOf(data), before = count(data);
+        if (delta > 0 && data.baseItemId && Number(data.baseItemId) !== Number(data.id)) {
+          throw new Error("这是独立装备实例；添加装备时请选择基础装备目录");
+        }
+        if (delta < 0 && rows().some(row => matches(row, data, kind) && row.data.id !== data.id)) {
+          throw new Error("这件基础装备对应独立实例；请从当前物品中选择具体实例删除，避免丢失改造数据");
+        }
+        for (let step = 0; step < Math.abs(delta); step += 1) {
+          const old = count(data);
+          if (delta > 0) party.newGetItem(data, 1);
+          else {
+            const row = rows().find(row => matches(row, data, kind));
+            if (!row) break;
+            if (row.owner) party.gainItem(row.data, -1, false, row.owner);
+            else row.list.splice(row.index, 1); // same operation as the native warehouse UI
+          }
+          const actual = count(data);
+          if (actual !== old + (delta > 0 ? 1 : -1)) {
+            throw new Error(`游戏仅应用了部分变化：当前数量 ${actual}（原数量 ${before}）；请检查背包、仓库容量或游戏物品规则`);
+          }
+        }
+        return count(data);
+      }
+    };
+  }
   // ---------------------------------------------------------------------------
   // Trainer hooks.
   //
@@ -1309,6 +1476,15 @@
     if (!options || typeof options !== "object") return { ...bridge.options };
     const given = (key) => Object.prototype.hasOwnProperty.call(options, key);
 
+    // This target's native updateMain takes no elapsed-time argument. The
+    // generic extra-speed hook cannot accelerate it; do not acknowledge a
+    // setting that has no effect or replace the game's authored Drill gear.
+    if (typeof isNativeFramePacingTarget === "function" && isNativeFramePacingTarget() &&
+        ((given("gameSpeedMulti") && Number(options.gameSpeedMulti) > 1) ||
+         (given("speedHoldCtrl") && toBool(options.speedHoldCtrl)))) {
+      throw new Error("此游戏的原生时间步进暂不支持额外游戏倍速或 Ctrl 加速；游戏原有速度保持不变，其他修改功能可正常使用");
+    }
+
     RATE_OPTIONS.forEach((key) => {
       if (given(key)) bridge.options[key] = clampNumber(options[key], 0, 999, bridge.options[key]);
     });
@@ -1332,10 +1508,7 @@
   // writes these too, so 90-startup re-applies them on a timer.
   function applyWorldOptions() {
     try {
-      const player = resolvePlayer();
-      if (player && Object.prototype.hasOwnProperty.call(player, "_through")) {
-        player._through = !!bridge.options.throughWalls;
-      }
+      patchThrough();
       const followers = resolveFollowers();
       if (followers && "_visible" in followers) {
         followers._visible = !!bridge.options.showFollowers;
@@ -1347,6 +1520,19 @@
     } catch (error) {
       noteError(error);
     }
+  }
+
+  // Events own _through (stairs, doors, scripted movement). Keep the trainer
+  // override in the query so timer ticks and toggles never overwrite it or
+  // persist a cheat flag in the player's save data.
+  function patchThrough() {
+    const player = resolvePlayer();
+    if (!player || typeof player.isThrough !== "function") return false;
+    const owner = Object.getPrototypeOf(player);
+    if (!owner || owner === Object.prototype) return false;
+    return patchMethod(owner, "isThrough", "player.isThrough", function (original, args) {
+      return (this === resolvePlayer() && !!bridge.options.throughWalls) || original.apply(this, args);
+    });
   }
 
   // --- movement / encounters --------------------------------------------------
@@ -1600,7 +1786,21 @@
   function defeatEnemy(battler, source) {
     if (!battler || typeof battler.die !== "function") return false;
     try {
-      battler.die();
+      // Custom die() implementations may update only states, leaving positive
+      // HP behind. Use the native setter as well as the native death state.
+      if (typeof battler.setHp === "function") battler.setHp(0);
+      if (typeof battler.addState === "function" && typeof battler.deathStateId === "function") {
+        battler.addState(battler.deathStateId());
+        // Some engines reject death through ordinary status application even
+        // at zero HP. Forced defeat still needs the native death-state path;
+        // addNewState performs die()/state bookkeeping without that guard.
+        if (typeof battler.isAlive === "function" && battler.isAlive() && typeof battler.addNewState === "function") {
+          battler.addNewState(battler.deathStateId());
+        }
+      } else {
+        battler.die();
+      }
+      if (typeof battler.isAlive === "function" && battler.isAlive()) return false;
       bumpBattleStat("oneHitKill", { source });
       return true;
     } catch (_) {
@@ -1611,12 +1811,15 @@
   // --- master installer -------------------------------------------------------
 
   function patchTrainerHooks() {
+    publishRenamedEngine();
     const hooked = [];
     const track = (ok, label) => { if (ok) hooked.push(label); };
 
     hookKeyboard();
+    track(patchThrough(), "through");
     track(patchMoveSpeed(), "moveSpeed");
     track(patchSceneUpdate(), "sceneUpdate");
+    track(patchNativeFramePacing(), "framePacing");
     track(patchEncounter(), "encounter");
     track(patchGlobalInfoGuard(), "globalInfoGuard");
     patchBattleRewards(track);
@@ -1638,6 +1841,39 @@
     bridge.hookTargets = Array.from(new Set(hooked));
     bridge.hooksPatched = hooked.length > 0;
     return { patched: bridge.hooksPatched, count: hooked.length };
+  }
+  // FT's TH-BaseSet compares playtime (rendered frames / 60) with wall time.
+  // TDDP renders at display refresh rate, so a 144 Hz screen trips its warning
+  // even at the toolbox's default speed. Pace only this observed combination.
+  // Keep the authored Drill gear and TDDP's wall-clock logic accumulator intact.
+  function isNativeFramePacingTarget() {
+    if (!("$ftGmPl" in window) || !("$ftGmPr" in window) || !("$newTkIt" in window) ||
+        typeof window.Game_Player !== "function" || typeof window.Scene_Map !== "function") return false;
+    const plugins = window.$plugins;
+    if (!Array.isArray(plugins) || !["TH-BaseSet", "TDDP_FluidTimestep"].every(function (name) {
+      return plugins.some(function (plugin) { return plugin && plugin.status === true && plugin.name === name; });
+    })) return false;
+    return true;
+  }
+
+  function patchNativeFramePacing() {
+    if (!isNativeFramePacingTarget()) return false;
+    const manager = resolveSceneManager();
+    if (!manager || typeof manager.requestUpdate !== "function" ||
+        !window.performance || typeof window.performance.now !== "function") return false;
+    const interval = 1000 / 60;
+    let last = null;
+    return patchMethod(manager, "update", "SceneManager.update.framePacing", function (original, args) {
+      const now = window.performance.now();
+      if (last !== null && now >= last && now - last < interval - 0.001) {
+        // Use the game's scheduler, including its stopped-state check. Do not
+        // create a second RAF loop or modify global timers / requestAnimationFrame.
+        return this.requestUpdate();
+      }
+      if (last === null || now < last || now - last > 1000) last = now;
+      else last += Math.max(1, Math.floor((now - last + 0.001) / interval)) * interval;
+      return original.apply(this, args);
+    });
   }
   // ---------------------------------------------------------------------------
   // Vitals locks (上帝模式: 无敌 / 锁HP·MP·TP).
@@ -1824,10 +2060,9 @@
   // a switch back. The GUI owns persistence (runtime/locks/<gameKey>.json), the
   // bridge owns the live set — so refreshing the GUI never drops a lock.
   //
-  // Writes go to the backing store slot (party._items[3] = 99) rather than
-  // through gainItem/setValue: this runs 60x a second, and re-entering the
-  // game's own hooks that often is both slow and visible (refresh flicker,
-  // "item obtained" side effects).
+  // Compare decoded values first, then use native methods only on change.
+  // This preserves custom encoding without repeating refresh/obtained hooks
+  // every frame while the locked value is already satisfied.
   // ---------------------------------------------------------------------------
 
   const LOCKABLE_KINDS = Object.freeze(["item", "weapon", "armor", "switch", "variable"]);
@@ -1836,7 +2071,7 @@
   // a plain comparison. lock.set and lock.replace share this.
   function coerceLockValue(kind, value) {
     if (kind === "switch") return !!value;
-    if (kind === "variable") return typeof value === "string" ? value : (Number(value) || 0);
+    if (kind === "variable") return typeof value === "string" ? value : Math.floor(Number(value) || 0);
     return Math.max(0, Math.floor(Number(value) || 0));
   }
 
@@ -1852,6 +2087,16 @@
     return out;
   }
 
+  function validateInventoryLock(kind, id, value) {
+    if (kind !== "item" && kind !== "weapon" && kind !== "armor") return;
+    const party = resolveParty();
+    const custom = party && customInventory(party);
+    if (!custom) return;
+    const data = dataEntryLoose(kind, id, party);
+    if (!data) throw new Error(`${kind} ${id} not found`);
+    custom.validateLock(data, value);
+  }
+
   function applyValueLocks() {
     const locks = bridge.valueLocks;
     if (!locks || bridge.suppressLocks > 0) return;
@@ -1859,7 +2104,15 @@
     try {
       if (locks.gold != null) {
         const party = resolveParty();
-        if (party) party._gold = Math.max(0, Math.floor(locks.gold));
+        if (party) {
+          let want = Math.max(0, Math.floor(locks.gold));
+          if (typeof party.maxGold === "function") {
+            const max = Number(party.maxGold());
+            if (Number.isFinite(max) && max >= 0) want = Math.min(want, max);
+          }
+          const current = safeGold(party) || 0;
+          if (current !== want) applyGoldDelta(party, want - current, want);
+        }
       }
 
       for (const [kind, prop] of INVENTORY_SLOTS) {
@@ -1868,10 +2121,18 @@
         if (!ids.length) continue;
         const party = resolveParty();
         const store = party && party[prop];
-        if (!store) continue;
+        if (!party || (!store && !customInventory(party))) continue;
         for (const id of ids) {
           const want = Math.max(0, Math.floor(Number(table[id]) || 0));
-          if (Number(store[id]) !== want) store[id] = want;
+          validateInventoryLock(kind, Number(id), want);
+          const data = dataEntryLoose(kind, Number(id), party);
+          const current = inventoryCount(party, prop, id, data);
+          if (current !== want) {
+            if (data && typeof party.gainItem === "function") {
+              withRatesSuppressed(() => changeInventory(party, data, want - current));
+            }
+            writeBackItemCount(party, prop, id, want, data);
+          }
         }
       }
 
@@ -1893,7 +2154,10 @@
     const data = store && store._data;
     if (!data) return;
     for (const id of ids) {
-      if (data[id] !== table[id]) data[id] = table[id];
+      const current = typeof store.value === "function" ? store.value(Number(id)) : data[id];
+      if (current === table[id]) continue;
+      if (typeof store.setValue === "function") store.setValue(Number(id), table[id]);
+      else data[id] = table[id];
     }
   }
   // ---------------------------------------------------------------------------
@@ -2176,6 +2440,7 @@
       map: currentMapInfo(),
       party: partyBattleMembers().map(actorInfo),
       saveDir: saveDirPath(),
+      saveStorage: isMvWebStorage() ? "webstorage" : "filesystem",
       inBattle: isInBattle(),
       options: { ...bridge.options },
       hooks: {
@@ -2256,15 +2521,47 @@
   // consistent; the field is the escape hatch for games that removed it.
   // ---------------------------------------------------------------------------
 
-  // Protected games sabotage the engine's own write path (再刷一把 ships
-  // gainItem as a native no-op stub) and amplifier plugins scale the delta, so
-  // after the polite gainItem call we assert the requested count directly.
-  // Equivalent to what gainItem does anyway (container write + map refresh).
-  function writeBackItemCount(party, prop, id, want) {
+  function customInventory(party) {
+    return typeof resolveCustomInventory === "function" ? resolveCustomInventory(party) : null;
+  }
+
+  function inventoryCount(party, prop, id, data) {
+    const custom = customInventory(party);
+    if (custom && data) return custom.count(data);
+    if (data && typeof party.numItems === "function") return Number(party.numItems(data)) || 0;
+    return Number(party[prop] && party[prop][id]) || 0;
+  }
+
+  function changeInventory(party, data, delta) {
+    const custom = customInventory(party);
+    if (custom) {
+      try { return custom.change(data, delta); }
+      finally { refreshMapAndWindows(); }
+    }
+    return party.gainItem(data, delta);
+  }
+
+  function hasEncodedNumberStore(object) {
+    return typeof object.thTyZhNumGain === "function" && typeof object.thTyZhNumGet === "function";
+  }
+
+  // Verify through the engine: custom games may encode container values.
+  // Keep the numeric fallback for stubbed gainItem implementations only.
+  function writeBackItemCount(party, prop, id, want, data) {
+    if (customInventory(party)) {
+      const actual = inventoryCount(party, prop, id, data);
+      if (actual !== want) {
+        throw new Error(`当前物品数量为 ${actual}，未达到目标 ${want}；请检查背包容量或物品类型限制`);
+      }
+      return;
+    }
     const store = party[prop];
     if (!store) return;
-    const now = Number(store[id]) || 0;
+    const now = inventoryCount(party, prop, id, data);
     if (now === want) return;
+    if (hasEncodedNumberStore(party) || (store[id] != null && typeof store[id] !== "number")) {
+      throw new Error("游戏没有应用目标物品数量，已保留游戏的自定义库存数据");
+    }
     if (want > 0) store[id] = want;
     else delete store[id];
     const map = resolveMap();
@@ -2304,19 +2601,28 @@
   // and fall back to a direct container write — same contract as item.set's
   // gainItem verification. A partial move means the engine clamped (kept).
   function applyGoldDelta(party, delta, absolute) {
-    const fallback = absolute != null ? absolute : Math.max(0, Number(party._gold || 0) + delta);
+    const fallback = absolute != null ? absolute : Math.max(0, (safeGold(party) || 0) + delta);
+    const plainStore = !hasEncodedNumberStore(party) && (party._gold == null || typeof party._gold === "number");
+    const nativeFtGold = typeof isNativeFramePacingTarget === "function" && isNativeFramePacingTarget() &&
+      typeof party.thNewGainGold === "function";
     if (typeof party.gainGold !== "function") {
+      if (!plainStore) throw new Error("游戏缺少金币修改接口，已保留自定义金币数据");
       party._gold = fallback;
       return;
     }
     const before = safeGold(party) || 0;
     try {
-      withRatesSuppressed(() => party.gainGold(delta));
-    } catch (_) {
+      withRatesSuppressed(() => {
+        // FT's native mode is explicit, just like its two-argument gainExp.
+        if (nativeFtGold) party.gainGold(delta, true);
+        else party.gainGold(delta);
+      });
+    } catch (error) {
+      if (!plainStore || nativeFtGold) throw error;
       party._gold = fallback;
       return;
     }
-    if (delta !== 0 && (safeGold(party) || 0) === before) party._gold = fallback;
+    if (plainStore && !nativeFtGold && delta !== 0 && (safeGold(party) || 0) === before) party._gold = fallback;
   }
 
   Object.assign(commandHandlers, {
@@ -2359,15 +2665,17 @@
       const amount = Math.floor(requireNumber(args.amount, "amount"));
       if (!Number.isFinite(amount) || amount === 0) throw new Error("amount must be a non-zero number");
       const prop = inventorySlot(kind);
-      const want = Math.max(0, (Number(party[prop] && party[prop][id]) || 0) + amount);
-      withRatesSuppressed(() => party.gainItem(data, amount));
-      writeBackItemCount(party, prop, id, want);
-      return { kind, id, amount, count: Number(party[prop] && party[prop][id]) || 0 };
+      const want = Math.max(0, inventoryCount(party, prop, id, data) + amount);
+      withRatesSuppressed(() => changeInventory(party, data, amount));
+      writeBackItemCount(party, prop, id, want, data);
+      return { kind, id, amount, count: inventoryCount(party, prop, id, data) };
     },
 
     // MTool-style inventory view: everything the party currently owns, with counts.
     "item.list": () => {
       const party = requireParty();
+      const custom = customInventory(party);
+      if (custom) return { entries: custom.entries() };
       const entries = [];
       for (const [kind, prop] of INVENTORY_SLOTS) {
         const store = party[prop];
@@ -2376,10 +2684,10 @@
           // Counts are integers by engine contract; amplifier plugins in some
           // games stash fractions (2.5 件装备) in the container. Rounding here
           // is display-only — the in-memory value is left untouched.
-          const count = Math.round(Number(store[key]) || 0);
-          if (count <= 0) continue;
           const id = Number(key);
           const entry = runtimeDataTable(kind)[id] || ownedItemData(party, kind, id);
+          const count = Math.round(inventoryCount(party, prop, id, entry));
+          if (count <= 0) continue;
           entries.push({ kind, id, name: entry && entry.name || "", count });
         }
       }
@@ -2396,13 +2704,13 @@
       if (!data) throw new Error(`${kind} ${id} not found`);
       const count = Math.max(0, Math.floor(requireNumber(args.count, "count")));
       const prop = inventorySlot(kind);
-      const current = Number(party[prop] && party[prop][id]) || 0;
+      const current = inventoryCount(party, prop, id, data);
       const delta = count - current;
       // gainItem first so a working engine keeps its bookkeeping; the writeback
       // then pins the exact count when gainItem is stubbed or scaled.
-      if (delta !== 0) withRatesSuppressed(() => party.gainItem(data, delta));
-      writeBackItemCount(party, prop, id, count);
-      return { kind, id, count: Number(party[prop] && party[prop][id]) || 0 };
+      if (delta !== 0) withRatesSuppressed(() => changeInventory(party, data, delta));
+      writeBackItemCount(party, prop, id, count, data);
+      return { kind, id, count: inventoryCount(party, prop, id, data) };
     },
 
     // --- party ----------------------------------------------------------------
@@ -2479,7 +2787,14 @@
     "actor.exp.add": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       const amount = Math.floor(requireNumber(args.amount, "amount"));
-      if (typeof actor.gainExp === "function") withRatesSuppressed(() => actor.gainExp(amount));
+      if (typeof actor.gainExp === "function") withRatesSuppressed(() => {
+        // FT's gainExp(exp, nativeMode) replaces the stock one-argument API.
+        // Its omitted/false branch calls an unavailable function; true performs the
+        // native EXP update, including its own level bookkeeping.
+        if (typeof isNativeFramePacingTarget === "function" && isNativeFramePacingTarget() &&
+            typeof actor.thTyChangeExp === "function") actor.gainExp(amount, true);
+        else actor.gainExp(amount);
+      });
       else if (typeof actor.changeExp === "function" && typeof actor.currentExp === "function") {
         actor.changeExp(actor.currentExp() + amount, false);
       } else {
@@ -2516,12 +2831,22 @@
       const paramId = Math.floor(requireNumber(args.paramId, "paramId"));
       if (paramId < 0 || paramId > 7) throw new Error("paramId must be between 0 and 7");
       const value = Math.floor(requireNumber(args.value, "value"));
+      const readParam = () => [
+        typeof actor.param === "function" ? actor.param(paramId) : null,
+        typeof actor.paramPlus === "function" ? actor.paramPlus(paramId) : null,
+        actor._paramPlus && actor._paramPlus[paramId]
+      ];
+      const before = readParam();
       if (typeof actor.addParam === "function") actor.addParam(paramId, value);
       else {
         actor._paramPlus = actor._paramPlus || [0, 0, 0, 0, 0, 0, 0, 0];
         actor._paramPlus[paramId] = Number(actor._paramPlus[paramId] || 0) + value;
       }
       refreshActor(actor);
+      const after = readParam();
+      if (value !== 0 && before.every((entry, index) => entry === after[index])) {
+        throw new Error("游戏没有应用这次数值变化，可能受自定义属性规则或上限限制");
+      }
       refreshMapAndWindows();
       return { actor: actorInfo(actor), paramId, value };
     },
@@ -2578,6 +2903,9 @@
       const actor = requireActor(requireNumber(args.id, "id"));
       const stateId = Math.floor(requireNumber(args.stateId, "stateId"));
       if (typeof actor.addState !== "function") throw new Error("actor.addState is unavailable");
+      // Each manual command is a new native action. Otherwise removedStates
+      // from a prior remove can make isStateAddable reject a later re-add.
+      if (typeof actor.clearResult === "function") actor.clearResult();
       actor.addState(stateId);
       refreshActor(actor);
       return { actor: actorInfo(actor) };
@@ -2587,6 +2915,7 @@
       const actor = requireActor(requireNumber(args.id, "id"));
       const stateId = Math.floor(requireNumber(args.stateId, "stateId"));
       if (typeof actor.removeState !== "function") throw new Error("actor.removeState is unavailable");
+      if (typeof actor.clearResult === "function") actor.clearResult();
       actor.removeState(stateId);
       refreshActor(actor);
       return { actor: actorInfo(actor) };
@@ -2675,6 +3004,11 @@
     "map.list": () => mapList(),
 
     "map.transfer": (args) => {
+      // New UI requests carry a freshness token. Keep the legacy console wire
+      // format usable, but enforce scene safety for every transfer.
+      if (args.mapToken) etCheck(args);
+      const busy = etBusy();
+      if (busy) throw new Error(busy);
       const player = requirePlayer();
       const mapId = requireId(args.mapId, "mapId");
       const mapInfoTable = runtimeDataTable("mapInfo");
@@ -2685,11 +3019,14 @@
       }
       const x = Math.floor(requireNumber(args.x, "x"));
       const y = Math.floor(requireNumber(args.y, "y"));
+      if (x < 0 || y < 0) throw new Error("坐标不能为负数");
+      if (mapId === requireMap()._mapId && !etValid(etMap(),x,y)) throw new Error("目标坐标超出当前地图范围");
       const direction = hasValue(args.direction) ? Math.floor(requireNumber(args.direction, "direction")) : 2;
       const fade = hasValue(args.fade) ? Math.floor(requireNumber(args.fade, "fade")) : 0;
       if (typeof player.reserveTransfer === "function") {
         player.reserveTransfer(mapId, x, y, direction, fade);
       } else if (typeof player.locate === "function") {
+        if (mapId !== requireMap()._mapId) throw new Error("当前引擎不支持跨地图传送");
         player.locate(x, y);
       } else {
         throw new Error("player transfer is unavailable");
@@ -2699,17 +3036,17 @@
     },
 
     "map.through.set": (args) => {
-      const player = requireThroughCapablePlayer();
-      player._through = !!args.value;
-      bridge.options.throughWalls = player._through;
-      return { through: player._through };
+      requireThroughCapablePlayer();
+      bridge.options.throughWalls = !!args.value;
+      patchThrough();
+      return { through: bridge.options.throughWalls };
     },
 
     "map.through.toggle": () => {
-      const player = requireThroughCapablePlayer();
-      player._through = !player._through;
-      bridge.options.throughWalls = player._through;
-      return { through: player._through };
+      requireThroughCapablePlayer();
+      bridge.options.throughWalls = !bridge.options.throughWalls;
+      patchThrough();
+      return { through: bridge.options.throughWalls };
     },
 
     "player.location": () => {
@@ -2828,15 +3165,413 @@
     }
   });
 
-  // Some games strip _through entirely; failing loudly beats setting a field the
-  // engine never reads.
+  // The override requires the engine's collision query, not a writable field.
   function requireThroughCapablePlayer() {
     const player = requirePlayer();
-    if (!Object.prototype.hasOwnProperty.call(player, "_through")) {
-      throw new Error("player through field is unavailable");
+    if (typeof player.isThrough !== "function" || !patchThrough()) {
+      throw new Error("player through query is unavailable");
     }
     return player;
   }
+  // Read-only event tools. Never evaluate a command or a script condition.
+  const eventToolIds = new WeakMap();
+  let eventToolNextId = 0;
+  function etId(object) {
+    if (!object || typeof object !== "object") return "none";
+    if (!eventToolIds.has(object)) eventToolIds.set(object, String(++eventToolNextId));
+    return eventToolIds.get(object);
+  }
+  function etMap() {
+    const map = requireMap();
+    const info = currentMapInfo();
+    const token = info.mapId + ":" + etId(map) + ":" + etId(window.$dataMap || map._events);
+    return { map, info, token };
+  }
+  function etCheck(args) {
+    const ctx = etMap();
+    if (!args.mapToken || args.mapToken !== ctx.token) throw new Error("地图已变化，请刷新后重试");
+    return ctx;
+  }
+  function etEvents(map) { return (map._events || []).filter(Boolean); }
+  function etEventRow(event) {
+    const data = typeof event.event === "function" ? event.event() : null;
+    const page = Number(event._pageIndex);
+    return { eventId: event._eventId, name: data && data.name || "", x: event._x, y: event._y,
+      pageIndex: Number.isFinite(page) ? page : -1, pages: data && data.pages ? data.pages.length : 0,
+      erased: !!event._erased, through: !!event._through, priority: event._priorityType,
+      trigger: event._trigger, eventToken: [etId(event), page, event._x, event._y, !!event._erased].join(":") };
+  }
+  function etBusy() {
+    const map = requireMap(), player = requirePlayer(), manager = resolveSceneManager(), scene = manager && manager._scene;
+    const sceneMap = resolveSceneMap();
+    if (!scene || !sceneMap || !(scene instanceof sceneMap)) return "当前不是可操作的地图场景";
+    if (isInBattle()) return "战斗中不能传送";
+    if (window.$gameMessage && window.$gameMessage.isBusy && window.$gameMessage.isBusy()) return "对话中不能传送";
+    if (map.isEventRunning && map.isEventRunning()) return "剧情事件执行中不能传送";
+    if (player.isTransferring && player.isTransferring()) return "正在转场";
+    if (manager.isSceneChanging && manager.isSceneChanging()) return "正在切换场景";
+    if (scene.isBusy && scene.isBusy()) return "场景忙碌";
+    if (player.isInVehicle && player.isInVehicle()) return "乘坐载具时暂不支持此传送";
+    if (player.canMove && !player.canMove()) return "玩家当前不可移动";
+    return null;
+  }
+  function etCell(ctx, x, y) {
+    if (typeof ctx.map.isPassable !== "function") return -1;
+    try { return [2, 4, 6, 8].reduce((mask, direction, i) => mask | (ctx.map.isPassable(x, y, direction) ? 1 << i : 0), 0); }
+    catch (_) { return -1; }
+  }
+  function etValid(ctx, x, y) { return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < ctx.info.width && y < ctx.info.height; }
+  function etVacant(ctx, x, y) {
+    return !etEvents(ctx.map).some(e => !e._erased && !e._through && (e.isNormalPriority ? e.isNormalPriority() : e._priorityType === 1) && e._x === x && e._y === y);
+  }
+  function etMove(args) {
+    if (typeof exActive === 'function' && exActive()) throw new Error('工具事件执行中不能另外传送');
+    const ctx = etCheck(args), busy = etBusy();
+    if (busy) throw new Error(busy);
+    let x = Number(args.x), y = Number(args.y);
+    if (args.eventId != null) {
+      const event = etEvents(ctx.map).find(e => e._eventId === Number(args.eventId));
+      if (!event || event._erased || event._pageIndex < 0) throw new Error("事件已消失或没有生效页");
+      const row = etEventRow(event);
+      if (row.eventToken !== args.eventToken) throw new Error("事件位置或事件页已变化，请刷新");
+      x = row.x; y = row.y;
+      if (!args.force) {
+        const candidates = [[x,y+1],[x-1,y],[x+1,y],[x,y-1]].map(p => [
+          ctx.map.roundX ? ctx.map.roundX(p[0]) : p[0], ctx.map.roundY ? ctx.map.roundY(p[1]) : p[1]
+        ]);
+        const near = candidates.find(p => etValid(ctx,p[0],p[1]) && etCell(ctx,p[0],p[1]) > 0 && etVacant(ctx,p[0],p[1]));
+        if (!near) throw new Error("事件旁没有已知可通行空格，可单独选择强制到事件坐标");
+        x = near[0]; y = near[1];
+      }
+    }
+    if (!etValid(ctx,x,y)) throw new Error("目标坐标超出当前地图范围");
+    if (args.force && args.confirmed !== true) throw new Error("强制传送需要明确确认");
+    if (!args.force && (etCell(ctx,x,y) <= 0 || !etVacant(ctx,x,y))) throw new Error("落点不可通行、被占用或通行信息未知");
+    const player = requirePlayer();
+    if (typeof player.locate !== "function") throw new Error("当前引擎不支持定位");
+    player.locate(x,y);
+    return {mapId: ctx.info.mapId, x, y};
+  }
+  function etRaw(value, depth) {
+    if (depth > 8) return "[深层参数已省略]";
+    if (typeof value === "string") return value.length > 16000 ? value.slice(0,16000) + "[截断]" : value;
+    if (value == null || typeof value === "number" || typeof value === "boolean") return value;
+    if (Array.isArray(value)) {
+      const out = value.slice(0,1000).map(v => etRaw(v,depth+1));
+      if (value.length > 1000) out.push("[数组剩余参数已截断]");
+      return out;
+    }
+    if (typeof value === "object") {
+      const out = Object.create(null), keys = Object.keys(value);
+      keys.slice(0,100).forEach(key => { out[key] = etRaw(value[key],depth+1); });
+      if (keys.length > 100) out.$truncated = "剩余属性已截断";
+      return out;
+    }
+    return String(value);
+  }
+  function etHash(value) {
+    const text = JSON.stringify(value); let hash = 2166136261;
+    for (let i=0;i<text.length;i++) hash = Math.imul(hash ^ text.charCodeAt(i),16777619);
+    return (hash >>> 0).toString(16);
+  }
+  function etRunning() {
+    const map = requireMap(), rows = [], seen = new Set();
+    function visit(interpreter, label, depth) {
+      if (!interpreter || seen.has(interpreter) || depth > 16) return;
+      seen.add(interpreter);
+      if (Array.isArray(interpreter._list) && interpreter._index < interpreter._list.length) {
+        rows.push({id: etId(interpreter) + ":" + etId(interpreter._list), name: label, index: interpreter._index || 0,
+          eventId: interpreter._eventId || 0, interpreter});
+      }
+      visit(interpreter._childInterpreter, label + " / 子事件", depth + 1);
+    }
+    visit(map._interpreter,"地图主事件",0);
+    etEvents(map).forEach(event => visit(event._interpreter,"地图事件 #" + event._eventId,0));
+    (map._commonEvents || []).forEach(event => visit(event._interpreter,"公共事件 #" + event._commonEventId,0));
+    return rows;
+  }
+  function etReadSource(args) {
+    const ctx = etCheck(args), source = args.source || {kind:args.kind,id:args.id,pageIndex:args.pageIndex,runId:args.runId};
+    let list, conditions = {}, pages = [], activePage = null, name = "", index = null;
+    if (source.kind === "running") {
+      const running = etRunning().find(row => row.id === source.runId);
+      if (!running) throw new Error("事件已结束或执行身份已变化");
+      list = running.interpreter._list; name = running.name; index = running.index;
+    } else if (source.kind === "common") {
+      const event = runtimeDataTable("commonEvent")[Number(source.id)];
+      if (!event) throw new Error("公共事件不存在");
+      list = event.list; name = event.name;
+    } else if (source.kind === "map") {
+      const event = etEvents(ctx.map).find(e => e._eventId === Number(source.id));
+      if (!event) throw new Error("地图事件已不存在");
+      const data = event.event(); activePage = event._pageIndex;
+      pages = data.pages.map((p,i) => ({index:i, conditions:etRaw(p.conditions,0), active:i===activePage}));
+      const pageIndex = source.pageIndex == null ? Math.max(0,activePage) : Number(source.pageIndex);
+      const page = data.pages[pageIndex];
+      if (!page) throw new Error("事件页不存在");
+      list = page.list; conditions = etRaw(page.conditions,0); name = data.name;
+    } else throw new Error("未知事件来源");
+    if (!Array.isArray(list)) throw new Error("事件指令不可读取");
+    if (list.length > 20000) throw new Error("事件超过 20000 条指令，暂不读取以避免阻塞游戏");
+    const commands = list.map(c => ({code:c.code,indent:c.indent || 0,parameters:etRaw(c.parameters,0)}));
+    const revision = etHash([commands,conditions,activePage]);
+    const values = {};
+    const switches = resolveSwitches(), variables = resolveVariables(), self = resolveSelfSwitches();
+    [conditions.switch1Id,conditions.switch2Id].filter(Boolean).forEach(id => { values["switch:"+id] = switches && switches.value ? switches.value(id) : null; });
+    if (conditions.variableId) values["variable:"+conditions.variableId] = variables && variables.value ? etRaw(variables.value(conditions.variableId),0) : null;
+    if (conditions.selfSwitchValid) values.selfSwitch = self && self.value ? self.value([ctx.info.mapId,Number(source.id),conditions.selfSwitchCh]) : null;
+    const party = resolveParty();
+    if (conditions.itemValid) {
+      const item = runtimeDataTable("item")[conditions.itemId];
+      values.item = party && party.hasItem && item ? !!party.hasItem(item) : null;
+    }
+    if (conditions.actorValid) values.actor = party && party.members ? party.members().some(actor => actor && actor.actorId && actor.actorId() === conditions.actorId) : null;
+    return {mapToken:ctx.token, source, name, pages, activePage, conditions, values, revision, commands, total:commands.length,index};
+  }
+  Object.assign(commandHandlers, {
+    "map.inspect": () => {
+      const ctx = etMap();
+      return Object.assign({},ctx.info,{mapToken:ctx.token,busy:etBusy(),events:etEvents(ctx.map).map(event => {
+        try { return etEventRow(event); } catch (_) { return {eventId:event._eventId,name:"读取失败",erased:true,error:"事件数据无法读取"}; }
+      }), capabilities:{grid:typeof ctx.map.isPassable === "function",events:true,reader:true,running:true}});
+    },
+    "map.grid": args => {
+      const ctx = etCheck(args), offset = Math.max(0,Math.floor(Number(args.offset)||0));
+      const total = ctx.info.width * ctx.info.height, count = Math.min(2048,Math.max(1,Number(args.count)||1024));
+      if (!Number.isFinite(total) || total > 4000000) throw new Error("地图尺寸不可读取或过大");
+      const cells=[];
+      for(let i=offset;i<Math.min(total,offset+count);i++) cells.push(etCell(ctx,i%ctx.info.width,Math.floor(i/ctx.info.width)));
+      return {mapToken:ctx.token,offset,total,cells};
+    },
+    "map.move": etMove,
+    "events.running": args => { const ctx=etCheck(args); return {mapToken:ctx.token,entries:etRunning().map(row => ({id:row.id,name:row.name,index:row.index,eventId:row.eventId}))}; },
+    "events.read": args => {
+      const result=etReadSource(args), offset=Math.max(0,Math.floor(Number(args.offset)||0));
+      if (args.revision && args.revision!==result.revision) throw new Error("事件内容已变化，请重新读取");
+      result.commands=result.commands.slice(offset,offset+Math.min(300,Math.max(1,Number(args.count)||200)));
+      result.offset=offset; return result;
+    },
+    "events.status": args => { const result=etReadSource(args); return {revision:result.revision,activePage:result.activePage,index:result.index,mapToken:result.mapToken}; }
+  });
+  // Owned executions use the game's idle main interpreter, never a timer-driven
+  // imitation of its wait/scene machinery. Only our update call gets a context.
+  let exSession = null, exContext = null, exSequence = 0;
+  const exPatched = new WeakMap(), exStopSignal = {};
+  const exEnds = {102:404,111:412,112:413,301:604};
+  const exContinuations = {101:401,105:405,108:408,205:505,302:605,355:655,357:657};
+  const exMarkers = new Set([401,402,403,404,405,408,411,412,413,505,601,602,603,604,605,655,657]);
+  function exScript(command) {
+    const p=command.parameters||[],code=command.code;
+    return [355,356,357].includes(code) || (code===111 && p[0]===12) || (code===122 && p[3]===4) ||
+      (code===205 && p[1] && Array.isArray(p[1].list) && p[1].list.some(move=>move.code===45));
+  }
+  function exEffectsPending(session) { return Array.from(session.effects).some(target=>target.isMoveRouteForcing && target.isMoveRouteForcing()); }
+  function exMain() { const map=requireMap(); return map._interpreter; }
+  function exActive() { return exSession && !['completed','stopped','failed'].includes(exSession.state); }
+  function exPublic() {
+    if (!exSession) return {execution:null};
+    const {id,eventId,name,start,end,state,reason,index,commandEventId,stopRequested}=exSession;
+    return {execution:{id,eventId,name,start,end,state,reason,index,commandEventId,stopRequested}};
+  }
+  function exSteps(list) {
+    const steps=[];
+    function endAt(start) {
+      const first=list[start], depth=first.indent || 0, ending=exEnds[first.code];
+      if (ending) {
+        if(first.code===301 && ![601,602,603].includes(list[start+1] && list[start+1].code)) return start+1;
+        for(let i=start+1;i<list.length;i++) {
+          if(list[i].code===ending && (list[i].indent||0)===depth) return i+1;
+          if((list[i].indent||0)<depth) throw Error('事件结构缺少结束指令');
+        }
+        // Battle processing without result branches is a single command.
+        if(first.code===301 && (!list[start+1] || ![601,602,603].includes(list[start+1].code))) return start+1;
+        throw Error('事件结构缺少结束指令');
+      }
+      let end=start+1;
+      while(exContinuations[first.code] && list[end] && list[end].code===exContinuations[first.code] && (list[end].indent||0)===depth) end++;
+      if(first.code===101 && list[end] && [102,103,104].includes(list[end].code) && (list[end].indent||0)===depth) end=endAt(end);
+      return end;
+    }
+    for(let i=0;i<list.length;) {
+      if(list[i].code===0) { i++; continue; }
+      let end=i+1, reason=null;
+      try {
+        if((list[i].indent||0)!==0 || exMarkers.has(list[i].code)) throw Error('只能执行完整结构，不能单独执行内部行或续行');
+        end=endAt(i);
+      } catch(error) { reason=error.message; }
+      steps.push({start:i,end,code:list[i].code,reason}); i=end;
+    }
+    return steps;
+  }
+  function exUnsupported(list, interpreter) {
+    const stack=[], labels=new Set(list.filter(c=>c.code===118).map(c=>String(c.parameters[0])));
+    for(const [i,c] of list.entries()) {
+      const p=c.parameters||[], depth=c.indent||0, code=c.code;
+      if(exEnds[code] && (code!==301 || [601,602,603].includes(list[i+1] && list[i+1].code))) stack.push({code,depth});
+      if([404,412,413,604].includes(code)) {
+        const top=stack.pop();
+        if(!top || exEnds[top.code]!==code || top.depth!==depth) return '事件结构不完整';
+      }
+      if(code===113 && !stack.some(entry=>entry.code===112)) return '跳出循环缺少所属循环';
+      if(code===119 && !labels.has(String(p[0]))) return '标签跳转超出所选步骤范围';
+      if(code===123 || code===214 || (code===111 && (p[0]===2 || (p[0]===6 && p[1]===0))) ||
+        ([203,205,212,213].includes(code) && p[0]===0) ||
+        (code===122 && p[3]===3 && p[4]===5 && p[5]===0)) return '该步骤需要地图事件调用上下文';
+      if(code!==0 && !exMarkers.has(code) && typeof interpreter['command'+code]!=='function') return '当前引擎不支持指令 #'+code;
+    }
+    if(stack.length) return '事件结构不完整';
+    return null;
+  }
+  function exDefinition(id, interpreter) {
+    const table=runtimeDataTable('commonEvent'), event=table[id];
+    if(!event || !Array.isArray(event.list)) throw Error('公共事件不存在或无法读取');
+    const dependencies={}, originals={}, visiting=new Set(); let script=false, count=0;
+    function capture(eventId) {
+      if(visiting.has(eventId)) throw Error('递归公共事件调用暂不支持选步执行');
+      if(dependencies[eventId]) return;
+      const entry=table[eventId]; if(!entry || !Array.isArray(entry.list)) throw Error('调用的公共事件不存在：#'+eventId);
+      count+=entry.list.length; if(count>20000) throw Error('事件及其调用超过 20000 条指令');
+      visiting.add(eventId);
+      const text=JSON.stringify(entry.list); originals[eventId]=text;
+      const list=JSON.parse(text);
+      dependencies[eventId]=list;
+      for(const c of list) {
+        if(exScript(c)) script=true;
+        if(c.code===117) capture(Number(c.parameters[0]));
+      }
+      visiting.delete(eventId);
+    }
+    // Analyze each selectable root separately, so an unrelated unsupported step
+    // never prevents executing a plain gold or text command.
+    return {event, table, dependencies, originals, capture, hasScript:()=>script};
+  }
+  function exPlan(id, start, whole=false, rootHash=null, knownStep=null) {
+    const interpreter=exMain();
+    if(!interpreter || !['update','executeCommand','setup','isRunning'].every(k=>typeof interpreter[k]==='function')) throw Error('当前游戏的事件执行接口不受支持');
+    const def=exDefinition(id,interpreter), list=def.event.list;
+    if(list.length>20000) throw Error('事件超过 20000 条指令');
+    const step=whole ? {start:0,end:list.length} : knownStep || exSteps(list).find(s=>s.start===Number(start));
+    if(!step || step.reason) throw Error(step && step.reason || '请选中完整事件步骤');
+    const chosen=JSON.parse(JSON.stringify(list.slice(step.start,step.end)));
+    let scripts=false;
+    for(const c of chosen) {
+      if(c.code===117) def.capture(Number(c.parameters[0]));
+      if(exScript(c)) scripts=true;
+    }
+    for(const sequence of [chosen,...Object.values(def.dependencies)]) {
+      const problem=exUnsupported(sequence,interpreter); if(problem) throw Error(problem);
+    }
+    const revision=etHash([rootHash || etHash(list),def.originals]);
+    const script=scripts||def.hasScript(), preview=script?JSON.stringify({commands:chosen,calledEvents:def.dependencies},null,2):'';
+    if(preview.length>131072) throw Error('脚本确认内容超过 128K 字符，暂不支持执行');
+    return {id,name:def.event.name||'',...step,revision,script,preview,list:chosen,dependencies:def.dependencies,interpreter};
+  }
+  function exFinish(state, reason='') { if(exSession) { exSession.state=state; exSession.reason=reason; } }
+  function exInstall(interpreter) {
+    const prototype=Object.getPrototypeOf(interpreter);
+    if(exPatched.has(prototype)) {
+      const installed=exPatched.get(prototype);
+      if(prototype.update!==installed.update || prototype.executeCommand!==installed.execute || prototype.command117!==installed.common) throw Error('游戏替换了事件执行接口，请重新注入后重试');
+      return;
+    }
+    const originalUpdate=prototype.update, originalExecute=prototype.executeCommand, originalCommon=prototype.command117;
+    if(typeof originalUpdate!=='function' || typeof originalExecute!=='function') throw Error('自定义解释器无法接管工具执行');
+    function update() {
+      if(!exActive() || this!==exSession.interpreter) return originalUpdate.apply(this,arguments);
+      if(exContext) return; // Modal re-entry must not resume the same interpreter.
+      const session=exSession; session.budget=200; exContext=session;
+      session.state=session.stopRequested?'stopping':'running';
+      try {
+        originalUpdate.apply(this,arguments);
+        if(!this.isRunning()) exFinish(session.stopRequested?'stopped':'completed');
+        else if(this._list!==session.root) exFinish('failed','游戏替换了本次执行，状态无法继续核实');
+        else if(this._waitCount>0 || this._waitMode || this._childInterpreter || exEffectsPending(session)) session.state=session.stopRequested?'stopping':'waiting';
+      } catch(error) {
+        if(this._list===session.root) { this.clear ? this.clear() : this.terminate(); }
+        exFinish(error===exStopSignal?'stopped':'failed',error===exStopSignal?'':String(error.message||error));
+      } finally { exContext=null; }
+    }
+    function execute() {
+      const session=exContext;
+      if(!session || !exActive()) return originalExecute.apply(this,arguments);
+      if(!session.lists.has(this._list)) {
+        if(session.scriptConfirmed && this!==session.interpreter) return originalExecute.apply(this,arguments);
+        throw Error('运行中的指令来源已改变');
+      }
+      const command=this.currentCommand();
+      if((session.stopRequested || (this===session.interpreter && (!command || command.code===115 || this._index>=this._list.length-1))) && exEffectsPending(session)) return false;
+      if(session.stopRequested) throw exStopSignal;
+      if(--session.budget<0) return false;
+      const origin=session.lists.get(this._list);
+      session.index=origin.offset+this._index; session.commandEventId=origin.id;
+      const target=command && command.code===205 && this.character ? this.character(command.parameters[0]) : null;
+      const result=originalExecute.apply(this,arguments);
+      if(target && target.isMoveRouteForcing && target.isMoveRouteForcing()) session.effects.add(target);
+      return result;
+    }
+    prototype.update=update; prototype.executeCommand=execute;
+    prototype.command117=function() {
+      if(!exContext || !exActive()) return originalCommon.apply(this,arguments);
+      const params=Array.isArray(arguments[0])?arguments[0]:this._params;
+      const id=Number(params[0]), list=exContext.dependencies[id];
+      if(!list) {
+        if(exContext.scriptConfirmed) return originalCommon.apply(this,arguments);
+        throw Error('公共事件调用不在已验证范围内');
+      }
+      const child=new this.constructor((this._depth||0)+1);
+      child.setup(list,0);
+      if(child.setEventInfo)child.setEventInfo({eventType:'common_event',commonEventId:id});
+      this._childInterpreter=child; return true;
+    };
+    exPatched.set(prototype,{update,execute,common:prototype.command117});
+  }
+  function exStart(args, whole=false) {
+    etCheck(args);
+    if(exActive()) throw Error('该游戏已有工具事件在运行');
+    const busy=etBusy(); if(busy) throw Error(busy.replace(/不能传送/g,'不能启动事件'));
+    const temp=resolveTemp();
+    if(temp && ((temp.isCommonEventReserved && temp.isCommonEventReserved()) || temp._commonEventId>0)) throw Error('游戏已有待执行的公共事件');
+    const plan=exPlan(Number(args.id),Number(args.start),whole);
+    if(args.revision!==plan.revision) throw Error('事件内容已变化，请重读步骤');
+    if(plan.script && args.confirmed!==true) throw Error('脚本或插件命令需要确认原文后执行');
+    exInstall(plan.interpreter);
+    const root=plan.list.concat([{code:0,indent:0,parameters:[]}]), lists=new Map([[root,{id:plan.id,offset:plan.start}]]);
+    for(const [id,list] of Object.entries(plan.dependencies)) lists.set(list,{id:Number(id),offset:0});
+    exSession={id:'execution:'+Date.now()+':'+(++exSequence),eventId:plan.id,name:plan.name,start:plan.start,end:plan.end,
+      state:'accepted',reason:'',index:plan.start,commandEventId:plan.id,stopRequested:false,scriptConfirmed:plan.script && args.confirmed===true,interpreter:plan.interpreter,root,lists,effects:new Set(),dependencies:plan.dependencies};
+    try {
+      plan.interpreter.setup(root,0);
+      if(plan.interpreter.setEventInfo)plan.interpreter.setEventInfo({eventType:'common_event',commonEventId:plan.id});
+    } catch(error) { exFinish('failed',error.message); throw error; }
+    return exPublic();
+  }
+  Object.assign(commandHandlers,{
+    'events.steps':args=>{
+      etCheck(args); const id=Number(args.id), event=runtimeDataTable('commonEvent')[id];
+      if(!event || !Array.isArray(event.list)) throw Error('公共事件不存在');
+      if(event.list.length>20000) throw Error('事件超过 20000 条指令');
+      const rootHash=etHash(event.list);
+      const steps=exSteps(event.list).map(step=>{
+        if(step.reason) return step;
+        try { const plan=exPlan(id,step.start,false,rootHash,step); return {...step,revision:plan.revision,script:plan.script}; }
+        catch(error) { return {...step,reason:error.message}; }
+      });
+      let whole; try {const plan=exPlan(id,0,true);whole={revision:plan.revision,script:plan.script};}catch(error){whole={reason:error.message};}
+      return {mapToken:args.mapToken,id,name:event.name,readerRevision:etReadSource({mapToken:args.mapToken,kind:'common',id}).revision,steps,whole};
+    },
+    'events.preview':args=>{etCheck(args);const plan=exPlan(Number(args.id),Number(args.start),args.whole===true);if(plan.revision!==args.revision)throw Error('事件内容已变化，请重读');return {preview:plan.preview};},
+    'events.execute':args=>exStart(args,args.whole===true),
+    'events.execution':()=>{
+      if(exActive() && exMain()!==exSession.interpreter) exFinish('failed','游戏重载了执行上下文，无法继续核实');
+      return exPublic();
+    },
+    'events.stop':args=>{
+      if(!exSession || args.executionId!==exSession.id) throw Error('执行身份已变化，请刷新');
+      if(exActive()) {exSession.stopRequested=true;exSession.state='stopping';}
+      return exPublic();
+    },
+    'commonEvent.run':args=>exStart(args,true)
+  });
   // ---------------------------------------------------------------------------
   // Commands: save slots, the runtime save-data tree, value locks.
   //
@@ -2847,11 +3582,62 @@
   // editor possible at all.
   // ---------------------------------------------------------------------------
 
+  function isMvWebStorage() {
+    const storage = window.StorageManager;
+    return !!(storage && typeof storage.webStorageKey === "function" &&
+      typeof storage.isLocalMode === "function" && !storage.isLocalMode());
+  }
+
+  function requireMvWebStorage() {
+    if (!isMvWebStorage()) throw new Error("this game does not use MV WebStorage saves");
+    return window.StorageManager;
+  }
+
+  function webSaveKeys() {
+    const storage = requireMvWebStorage();
+    const max = webSaveMaxSlots();
+    const keys = new Set([storage.webStorageKey(0)]);
+    for (let id = 1; id <= max; id += 1) keys.add(storage.webStorageKey(id));
+    return keys;
+  }
+
+  function webSaveMaxSlots() {
+    const manager = window.DataManager;
+    return Math.max(1, Number(manager && typeof manager.maxSavefiles === "function" && manager.maxSavefiles()) || 20);
+  }
+
+  function webSaveSnapshot() {
+    const entries = [];
+    for (const key of webSaveKeys()) {
+      const value = localStorage.getItem(key);
+      if (value !== null) entries.push({ key, value });
+    }
+    return { format: "rmch-mv-webstorage-v1", title: window.$dataSystem && window.$dataSystem.gameTitle || null, entries };
+  }
+
   Object.assign(commandHandlers, {
 
     // --- save slots -----------------------------------------------------------
 
     "save.list": () => {
+      if (isMvWebStorage()) {
+        const storage = window.StorageManager;
+        const info = window.DataManager.loadGlobalInfo() || [];
+        const entries = [];
+        for (const key of webSaveKeys()) {
+          const value = localStorage.getItem(key);
+          if (value === null) continue;
+          const match = /^RPG File([1-9]\d*)$/.exec(key);
+          let slot = match ? Number(match[1]) : null;
+          if (slot === null && key !== storage.webStorageKey(0)) {
+            const max = webSaveMaxSlots();
+            for (let id = 1; id <= max; id += 1) if (storage.webStorageKey(id) === key) { slot = id; break; }
+          }
+          entries.push({ name: key, slot, size: value.length,
+            mtime: slot !== null && info[slot] && info[slot].timestamp ? new Date(info[slot].timestamp).toISOString() : null });
+        }
+        return { dir: null, storage: "webstorage", entries };
+      }
       const dir = saveDirPath();
       const entries = [];
       try {
@@ -2866,15 +3652,94 @@
       return { dir, entries };
     },
 
-    "save.save": (args) => {
+    "save.save": async (args) => {
       const id = requireId(args.id === undefined ? 1 : args.id, "save id");
       const dataManager = requireDataManager("saveGame");
-      if (!dataManager.saveGame(id)) throw new Error("saveGame returned false");
-      // Without global info the title screen's slot list stays stale.
-      try {
-        if (typeof dataManager.saveGlobalInfo === "function") dataManager.saveGlobalInfo();
-      } catch (_) {}
+      if (isMvWebStorage() && id > webSaveMaxSlots()) throw new Error("save id exceeds this game's slot limit");
+      const system = resolveSystem();
+      if (system && typeof system.onBeforeSave === "function") system.onBeforeSave();
+      // MV returns a boolean; MZ resolves without a value on success. Both
+      // implementations write their own slot metadata. Calling MV's
+      // saveGlobalInfo() without its required array can corrupt that metadata.
+      const saved = dataManager.saveGame(id);
+      const asynchronous = !!(saved && typeof saved.then === "function");
+      const result = await saved;
+      if (result === false || (!asynchronous && !result)) throw new Error("saveGame returned false");
       return { id, saved: true };
+    },
+
+    "save.webstorage.export": () => webSaveSnapshot(),
+
+    "save.webstorage.import": (args) => {
+      requireMvWebStorage();
+      const snapshot = args.snapshot;
+      if (!snapshot || snapshot.format !== "rmch-mv-webstorage-v1" || !Array.isArray(snapshot.entries) ||
+          snapshot.title !== (window.$dataSystem && window.$dataSystem.gameTitle || null)) {
+        throw new Error("invalid MV WebStorage backup");
+      }
+      const allowed = webSaveKeys();
+      const seen = new Set();
+      for (const entry of snapshot.entries) {
+        if (!entry || typeof entry.key !== "string" || typeof entry.value !== "string" ||
+            !allowed.has(entry.key) || seen.has(entry.key)) {
+          throw new Error("invalid save key in MV WebStorage backup");
+        }
+        seen.add(entry.key);
+        const json = window.LZString.decompressFromBase64(entry.value);
+        if (!json) throw new Error(`invalid compressed save: ${entry.key}`);
+        const parsed = JSON.parse(json);
+        const global = entry.key === window.StorageManager.webStorageKey(0);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) !== global) {
+          throw new Error(`invalid save structure: ${entry.key}`);
+        }
+      }
+      const previous = snapshot.entries.map(entry => ({ key: entry.key, value: localStorage.getItem(entry.key) }));
+      try {
+        for (const entry of snapshot.entries) localStorage.setItem(entry.key, entry.value);
+      } catch (error) {
+        for (const entry of previous) {
+          if (entry.value === null) localStorage.removeItem(entry.key);
+          else localStorage.setItem(entry.key, entry.value);
+        }
+        throw error;
+      }
+      // Plugins may cache the decoded global index between operations.
+      if (window.DataManager) window.DataManager._globalInfo = null;
+      return { restored: snapshot.entries.length };
+    },
+
+    "save.webstorage.delete": (args) => {
+      const storage = requireMvWebStorage();
+      const name = String(args.name || "");
+      const known = webSaveKeys();
+      if (!known.has(name) || name === storage.webStorageKey(0) || localStorage.getItem(name) === null) {
+        throw new Error("save slot not found");
+      }
+      const original = localStorage.getItem(name);
+      const originalBackup = localStorage.getItem(name + "bak");
+      const globalKey = storage.webStorageKey(0);
+      const originalGlobal = localStorage.getItem(globalKey);
+      const info = JSON.parse(JSON.stringify(window.DataManager.loadGlobalInfo() || []));
+      const match = /^RPG File([1-9]\d*)$/.exec(name);
+      let id = match && match[1];
+      if (!id) for (let slot = 1; slot <= webSaveMaxSlots(); slot += 1) {
+        if (storage.webStorageKey(slot) === name) { id = slot; break; }
+      }
+      try {
+        localStorage.removeItem(name);
+        localStorage.removeItem(name + "bak");
+        if (id) delete info[Number(id)];
+        window.DataManager.saveGlobalInfo(info);
+        window.DataManager._globalInfo = null;
+      } catch (error) {
+        localStorage.setItem(name, original);
+        if (originalBackup !== null) localStorage.setItem(name + "bak", originalBackup);
+        if (originalGlobal === null) localStorage.removeItem(globalKey);
+        else localStorage.setItem(globalKey, originalGlobal);
+        window.DataManager._globalInfo = null;
+        throw error;
+      }
+      return { name, deleted: true };
     },
 
     "save.load": (args) => {
@@ -2882,6 +3747,10 @@
       const dataManager = requireDataManager("loadGame");
       const enterMap = (ok) => {
         if (!ok) throw new Error(`loadGame(${id}) failed`);
+        // Message windows are temporary UI, not part of save contents. A load
+        // discards the current interaction before constructing the map scene.
+        const message = window.$gameMessage;
+        if (message && typeof message.clear === "function") message.clear();
         try {
           const system = resolveSystem();
           if (system && typeof system.onAfterLoad === "function") system.onAfterLoad();
@@ -2894,7 +3763,9 @@
       // MV returns a boolean synchronously; MZ returns a promise.
       const attempt = () => {
         const loaded = dataManager.loadGame(id);
-        return loaded && typeof loaded.then === "function" ? loaded : Promise.resolve(loaded);
+        return loaded && typeof loaded.then === "function"
+          ? loaded.then(result => result === undefined ? true : result)
+          : Promise.resolve(loaded);
       };
       // Some custom engines (傲世修仙录定制版 family) sit at the title with the
       // database NOT resident — window.$dataSystem is null until their own
@@ -2953,6 +3824,10 @@
       if (!json.trim()) throw new Error("json is empty");
       const contents = jsonEx.parse(json);
       if (!contents || typeof contents !== "object") throw new Error("parsed contents is not an object");
+      const message = window.$gameMessage;
+      if (args.reload !== false && message && typeof message.isBusy === "function" && message.isBusy()) {
+        throw new Error("请等待当前对话或选项结束后，再应用存档数据");
+      }
 
       // extractSaveContents swaps every $game* global at once, so the running
       // scene is left holding stale references; reload the map the same way
@@ -3001,6 +3876,7 @@
         return { kind, id, enabled: false, value: null };
       }
       const value = coerceLockValue(kind, args.value);
+      validateInventoryLock(kind, id, value);
       table[id] = value;
       return { kind, id, enabled: true, value };
     },
@@ -3021,6 +3897,7 @@
     // Bulk restore, used when the GUI reconnects and replays a saved lock set.
     "lock.replace": (args) => {
       const incoming = args.locks || {};
+      const next = {};
       LOCKABLE_KINDS.forEach((kind) => {
         const table = Object.create(null);
         const source = incoming[kind];
@@ -3028,14 +3905,17 @@
           for (const key of Object.keys(source)) {
             const id = Math.floor(Number(key));
             if (!Number.isFinite(id)) continue;
-            table[id] = coerceLockValue(kind, source[key]);
+            const value = coerceLockValue(kind, source[key]);
+            validateInventoryLock(kind, id, value);
+            table[id] = value;
           }
         }
-        bridge.valueLocks[kind] = table;
+        next[kind] = table;
       });
-      bridge.valueLocks.gold = incoming.gold == null
+      next.gold = incoming.gold == null
         ? null
         : Math.max(0, Math.floor(Number(incoming.gold) || 0));
+      Object.assign(bridge.valueLocks, next);
       return { locks: snapshotValueLocks() };
     }
   });

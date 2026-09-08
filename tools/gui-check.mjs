@@ -1,35 +1,33 @@
 // Pre-flight check for the NW.js GUI page scripts.
 //
 // The GUI only runs inside NW.js, where a bad template shows up as a blank
-// window. This loads every ui/*.js file in a vm sandbox (real Vue from the
-// vendored bundle, stubs for naive-ui and the Node glue) and then compiles each
-// component template with Vue's own compiler — so template typos fail here
-// instead of at runtime.
+// window. Load the production Vite output with real Vue, check source SFCs and
+// store references, then verify that generated output matches a fresh build.
 //
 //   node tools/gui-check.mjs
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
-import { MODULES as GUI_BUNDLED_MODULES, assembleGuiBundle } from "../core/gui-bundler.mjs";
+import { assembleGuiBundle } from "../core/gui-bundler.mjs";
 import { assembleBridgeBody, BANNER as BRIDGE_BANNER } from "../core/bridge-bundler.mjs";
+import { buildFrontend } from "./gui-frontend.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const guiDir = path.join(projectRoot, "app", "gui");
-
-// The GUI's embedded Node is 16.1 (NW 0.54), older than the dev machine's.
-// Node APIs younger than that in a bundled core module only blow up when a
-// user clicks the button (cpSync broke shadow launches), so check up front.
-const TOO_NEW_NODE_APIS = [
-  [/\bcpSync\b/, "fs.cpSync (Node 16.7+, GUI 是 16.1)"],
-];
-for (const mod of [...GUI_BUNDLED_MODULES, "app/gui/host.cjs"]) {
-  const source = readFileSync(path.join(projectRoot, mod), "utf8");
-  for (const [pattern, label] of TOO_NEW_NODE_APIS) {
-    if (pattern.test(source)) fail(`${mod} 使用了 ${label}`);
-  }
+function sourceFiles(dir) {
+  return readdirSync(dir, {withFileTypes: true}).flatMap(entry => entry.isDirectory()
+    ? sourceFiles(path.join(dir, entry.name)) : /\.(vue|js|ts)$/.test(entry.name) ? [path.join(dir, entry.name)] : []);
 }
+const frontendSources = [...sourceFiles(path.join(guiDir, 'src')), ...sourceFiles(path.join(guiDir, 'ui/store'))];
+// Build before diagnostic SFC parsing: Vue caches parsed template ASTs, and a
+// development-mode parse would otherwise contaminate the production comparison.
+const expectedFrontend = await buildFrontend(projectRoot, false);
+const {parse: parseSfc} = await import('@vue/compiler-sfc');
+
+// Native Node/Chromium compatibility is exercised in test-gui-runtime.mjs
+// against the exact official runtime lock, rather than a historical API ban.
 
 // Load order comes from app/gui/index.html itself, so the two cannot drift.
 const indexHtml = readFileSync(path.join(guiDir, "index.html"), "utf8");
@@ -112,7 +110,7 @@ const sandbox = {
   naive: deepStub("naive"),
   JSONEditor: deepStub("JSONEditor"),
   require: (id) => {
-    if (id === "./host.cjs") return deepStub("guiServer");
+    if (id === "./host.cjs") return new Proxy({}, { get: (_, key) => deepStub('guiServer.' + String(key)) });
     throw new Error("unexpected require(" + id + ") from a page script");
   },
   document: {
@@ -134,16 +132,6 @@ function runFile(relativePath) {
 
 // --- vendor bundle checks (text-level; no DOM needed) ------------------------
 
-// NW.js 0.54 = Chromium 91. Syntax newer than that is a blank window, and the
-// only symptom is a one-line SyntaxError in runtime/gui.log, so check up front.
-const TOO_NEW_SYNTAX = [
-  ["static{", "ES2022 class static blocks (Chromium 94+)"],
-  ["static {", "ES2022 class static blocks (Chromium 94+)"],
-  ["Object.hasOwn", "Object.hasOwn (Chromium 93+)"],
-  [".at(", "Array/String.prototype.at (Chromium 92+)"],
-  ["structuredClone", "structuredClone (Chromium 98+)"],
-];
-
 const VENDOR_BUNDLES = [
   "vendor/vue.global.prod.js",
   "vendor/naive-ui.prod.js",
@@ -152,9 +140,8 @@ const VENDOR_BUNDLES = [
 
 for (const bundle of VENDOR_BUNDLES) {
   const source = readFileSync(path.join(guiDir, bundle), "utf8");
-  for (const [needle, label] of TOO_NEW_SYNTAX) {
-    if (source.includes(needle)) fail(`${bundle} contains ${label} — Chromium 91 cannot parse it`);
-  }
+  try { new vm.Script(source, { filename: bundle }); }
+  catch (error) { fail(`${bundle}: ${error.message}`); }
 }
 
 // The page reaches for these on the naive-ui namespace; a version bump that
@@ -194,7 +181,7 @@ if (!jsoneditorSource.includes(".JSONEditor=")) {
   fail(JSONEDITOR_JS + " has no UMD global branch (.JSONEditor=) — window.JSONEditor would stay undefined");
 }
 if (!jsoneditorSource.includes("zh-CN")) {
-  fail(JSONEDITOR_JS + " has no zh-CN locale — ui/parts/json-editor.js asks for it");
+  fail(JSONEDITOR_JS + " has no zh-CN locale — RmJsonEditor.vue asks for it");
 }
 
 const jsoneditorCss = readFileSync(path.join(guiDir, JSONEDITOR_CSS), "utf8");
@@ -293,8 +280,9 @@ if (!storeObject) {
   fail("ui/store/core.js did not create RMCH.store");
 } else {
   const referenced = new Map();
-  for (const script of SCRIPTS) {
-    const source = readFileSync(path.join(guiDir, script), "utf8");
+  for (const file of frontendSources) {
+    const script = path.relative(guiDir, file);
+    const source = readFileSync(file, "utf8");
     for (const match of source.matchAll(/\bstore\.([A-Za-z_$][\w$]*)/g)) {
       if (!referenced.has(match[1])) referenced.set(match[1], script);
     }
@@ -309,7 +297,17 @@ if (!storeObject) {
   }
 }
 
-// --- compile every template -------------------------------------------------
+// --- verify source templates and compiled component registration ------------
+
+let templates = 0;
+for (const file of frontendSources.filter(file => file.endsWith('.vue'))) {
+  const {descriptor, errors} = parseSfc(readFileSync(file, 'utf8'), {filename: file});
+  if (descriptor.template) {
+    templates++;
+    errors.push(...tagBalanceErrors(descriptor.template.content));
+  }
+  for (const error of errors) fail(path.relative(guiDir, file) + ': ' + (error.message || error));
+}
 
 
 const components = new Map();
@@ -353,27 +351,35 @@ for (const [name, component] of components) {
   compiled += 1;
 }
 
-console.log(compiled + " templates compiled, " + renderOnly + " render-function components skipped");
+console.log(templates + ' SFC templates checked, ' + renderOnly + ' compiled/render components registered');
+if (compiled) fail('Runtime string templates remain; move them to .vue');
+if (components.size !== frontendSources.filter(file => file.endsWith('.vue')).length) fail('A source component is missing from the integration registry');
 
 // Sanity: the shell's five views must all exist and be components.
-for (const expected of ["Library", "Trainer", "Console", "Saves", "Log"]) {
+for (const expected of ["Library", "Trainer", "Data", "DataItems", "DataFlags", "DataActors", "DataMap", "DataEvents", "DataTree", "Console", "Saves", "Log"]) {
   if (!RMCH.views || !RMCH.views[expected]) fail("missing RMCH.views." + expected);
 }
 
-// Freshness: the generated bundles are committed, so core/ or bridge part
-// edits without a rebuild would silently ship old sources in the GUI. Fail
-// npm test when the on-disk bundles differ from a fresh assembly.
+// Generated artifacts must match their sources before they can be packaged.
+// The CJS/frontend outputs are ignored by Git; the game bridge is tracked.
 function checkGeneratedFresh(name, file, expected) {
   if (!existsSync(file)) {
     fail(name + " missing: " + file + " — run node tools/gui-build.mjs and bridge-build");
     return;
   }
   if (readFileSync(file, "utf8") !== expected) {
+    if (process.env.RMCH_DEBUG) {
+      const actual = readFileSync(file, 'utf8');
+      let offset = 0;
+      while (offset < actual.length && actual[offset] === expected[offset]) offset++;
+      console.error(JSON.stringify({name, offset, actual: actual.slice(offset, offset + 240), expected: expected.slice(offset, offset + 240)}));
+    }
     fail(name + " is stale against its sources — run node tools/gui-build.mjs && node tools/rmch.mjs bridge-build, then commit");
   }
 }
 checkGeneratedFresh("gui-bundle.cjs",
   path.join(guiDir, "gui-bundle.cjs"), assembleGuiBundle(projectRoot));
+checkGeneratedFresh("modern.js", path.join(guiDir, "ui", "modern.js"), expectedFrontend);
 checkGeneratedFresh("page-bridge.js",
   path.join(projectRoot, "runtime", "bridge", "page-bridge.js"),
   BRIDGE_BANNER + assembleBridgeBody(projectRoot));

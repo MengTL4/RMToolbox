@@ -209,6 +209,7 @@
   // --- save directory ---------------------------------------------------------
 
   function saveDirPath() {
+    if (isMvWebStorage()) return null;
     // Prefer the game's own StorageManager directory; fall back to scanning
     // the common layouts (www/save, save).
     try {

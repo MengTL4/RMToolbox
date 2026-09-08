@@ -9,9 +9,42 @@
 
   function refreshSessions() {
     try {
-      state.sessions = server.listSessions();
+      updateSessions(server.listSessions());
     } catch (_) {
-      state.sessions = [];
+      updateSessions([]);
+    }
+  }
+
+  function updateSessions(sessions) {
+    var key = store.trainer.gameKey;
+    var previous = store.sessionFor(key);
+    // Host callbacks may reuse their array/records. Keep a reactive snapshot so
+    // a reconnect cannot mutate our previous state without notifying Vue.
+    state.sessions = sessions.map(function (session) { return Object.assign({}, session); });
+    var next = store.sessionFor(key);
+    if (key && (!!previous !== !!next || (previous && next && previous.connectedAt !== next.connectedAt))) {
+      store.selectGame(key);
+    }
+  }
+
+  async function operate(game, kind, run) {
+    var key = game.gameKey;
+    if (state.busy[key]) return null;
+    state.busy[key] = kind;
+    state.operations[key] = { kind: kind, status: "pending", text: kind === "stopping" ? "正在结束游戏…" : "正在等待游戏连接，部分游戏需要约一分钟…" };
+    try {
+      var summary = await run();
+      if (summary && summary.pid) state.pids[key] = summary.pid;
+      if (kind === "stopping") delete state.pids[key];
+      state.operations[key] = { kind: kind, status: "success", text: kind === "stopping" ? "游戏已停止" : "接入步骤已完成，正在确认连接…" };
+      return summary;
+    } catch (error) {
+      state.operations[key] = { kind: kind, status: "error", text: error.message };
+      store.fail(game.title + "：" + error.message);
+      return null;
+    } finally {
+      delete state.busy[key];
+      refreshSessions();
     }
   }
 
@@ -62,55 +95,23 @@
     // A Tauri launch takes several seconds (boot grace before the CDP link);
     // ignore extra clicks while one is in flight instead of piling up
     // concurrent launches.
-    if (state.busy[game.gameKey]) return null;
-    state.busy[game.gameKey] = "launching";
-    try {
-      var summary = await server.launch(game.root);
-      state.pids[summary.gameKey] = summary.pid;
-      store.ok(summary.game + " 已启动（策略 " + summary.strategy + "，pid " + summary.pid + "）");
-      return summary;
-    } catch (error) {
-      store.fail("启动失败 " + game.title + "：" + error.message);
-      return null;
-    } finally {
-      delete state.busy[game.gameKey];
-      refreshSessions();
-    }
+    return operate(game, "launching", function () { return server.launch(game.root); });
   }
 
   // Attach to a game the user started themselves. The summary carries the main
   // process pid (NW) or the game pid (RGSS) so the stop button keeps working.
   async function attach(game) {
-    state.busy[game.gameKey] = "attaching";
-    try {
-      var summary = await server.attach(game.root);
-      if (summary.pid) state.pids[summary.gameKey] = summary.pid;
-      store.ok(summary.game + " 已附加（策略 " + summary.strategy + "）");
-      return summary;
-    } catch (error) {
-      store.fail("附加失败 " + game.title + "：" + error.message);
-      return null;
-    } finally {
-      delete state.busy[game.gameKey];
-      refreshSessions();
-    }
+    return operate(game, "attaching", function () { return server.attach(game.root); });
   }
 
   async function stop(game) {
+    if (state.busy[game.gameKey]) return null;
     var pid = state.pids[game.gameKey];
     if (!pid) {
       store.warn(game.title + "：本次会话没有记录它的 PID（可能不是从这里启动的）");
       return;
     }
-    state.busy[game.gameKey] = "stopping";
-    try {
-      await server.stop(pid);
-      delete state.pids[game.gameKey];
-      store.info(game.title + " 已停止");
-    } finally {
-      delete state.busy[game.gameKey];
-      refreshSessions();
-    }
+    return operate(game, "stopping", function () { return server.stop(pid); });
   }
 
   async function init() {
@@ -119,11 +120,7 @@
       onState: function (gameKey, payload) {
         if (gameKey === store.trainer.gameKey && payload) store.applyLiveState(payload);
       },
-      onSessions: function (sessions) {
-        state.sessions = sessions;
-        // A bridge that dropped invalidates the trainer's selection.
-        if (store.trainer.gameKey && !store.sessionFor(store.trainer.gameKey)) store.selectGame(null);
-      }
+      onSessions: updateSessions
     });
 
     var initial = server.getLog();

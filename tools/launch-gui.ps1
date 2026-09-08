@@ -1,5 +1,5 @@
 # Launch the RMCH GUI (NW.js window). Runs the Node setup (setup-gui.mjs)
-# first if the runtime is missing — never setup-gui.ps1, whose Chinese-path
+# to verify the pinned runtime — never setup-gui.ps1, whose Chinese-path
 # handling breaks under PowerShell 5.1.
 param(
   [switch]$Setup
@@ -8,15 +8,13 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $GuiDir = Join-Path $ProjectRoot "app\gui"
-# The donor runtime binary is renamed on link-in (core/setup-gui-runtime.mjs)
+# The official runtime binary is renamed during setup (core/setup-gui-runtime.mjs)
 # so the GUI never shares the games' Game.exe process name.
 $GuiExe = Join-Path $GuiDir "RMToolbox.exe"
 
-if (-not (Test-Path -LiteralPath $GuiExe) -or $Setup) {
-  & node (Join-Path $ProjectRoot "tools\setup-gui.mjs") $(if ($Setup) { "--force" })
-  if ($LASTEXITCODE -ne 0) {
-    throw "gui setup failed (exit $LASTEXITCODE)"
-  }
+& node (Join-Path $ProjectRoot "tools\setup-gui.mjs") $(if ($Setup) { "--force" })
+if ($LASTEXITCODE -ne 0) {
+  throw "gui setup failed (exit $LASTEXITCODE)"
 }
 if (-not (Test-Path -LiteralPath $GuiExe)) {
   throw "GUI runtime missing after setup: $GuiExe"

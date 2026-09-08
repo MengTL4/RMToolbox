@@ -4,7 +4,7 @@
 // rasterizes the icon itself: every shape is a signed-distance field,
 // rendered at 4x and box-downsampled for antialiasing, then encoded as a
 // plain RGBA PNG with zlib (node: built in). The glyph is the same Lucide
-// "sliders" geometry the in-app brand mark uses (ui/icons.js), so the window
+// "sliders" geometry the in-app brand mark uses (src/shell/RmIcon.vue), so the window
 // icon and the sider brand read as one mark.
 //
 // Re-run after changing the design:  node tools/bake-icon.mjs

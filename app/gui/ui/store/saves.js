@@ -7,9 +7,9 @@
   var store = window.RMCH.store;
   var server = store.server;
 
-  function backupSaves(gameKey) {
+  async function backupSaves(gameKey) {
     try {
-      var result = server.backupSaves(gameKey);
+      var result = await server.backupSaves(gameKey);
       store.ok("已备份 " + result.files + " 个文件 → " + result.destDir);
       return result;
     } catch (error) {
@@ -28,9 +28,9 @@
     }
   }
 
-  function restoreBackup(gameKey, name) {
+  async function restoreBackup(gameKey, name) {
     try {
-      var result = server.restoreBackup(gameKey, name);
+      var result = await server.restoreBackup(gameKey, name);
       store.ok("已恢复 " + result.restored + " 个文件（" + name + "）");
       return result;
     } catch (error) {
@@ -52,9 +52,9 @@
 
   // The bridge has no slot-delete command; files are local, so the Node side
   // unlinks them from the same directory save.list read.
-  function deleteSaveFile(gameKey, name) {
+  async function deleteSaveFile(gameKey, name) {
     try {
-      server.deleteSaveFile(gameKey, name);
+      await server.deleteSaveFile(gameKey, name);
       store.ok("已删除 " + name);
       return true;
     } catch (error) {

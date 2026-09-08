@@ -11,6 +11,10 @@ core/            ESM 核心模块
   scanner.mjs        引擎(MV/MZ/XP/VX/Ace/RM2k) + 保护等级(L0-L4) + 布局识别（L4=nb-shell，只识别不注入；
                      bundled-engine 合体单脚本游戏识别为 container=nwjs-bundled）
   launcher.mjs       注入启动（策略自动选择，RGSS 分发到 rgss-launcher）
+  game-runtime.mjs   GUI/CLI 共用启动与附加入口；特殊壳裸启动路由集中于此
+  bridge-sessions.mjs 桥接会话登记、列表、命令归属与事件通知
+  jsonl-reader.mjs   文件通道增量读取：字节偏移、UTF-8 解码、完整行
+  save-files.mjs     存档备份/恢复/删除、已知影子副本协调与 RGSS 回流
   tauri-cdp.mjs      Tauri(WebView2) 壳 MZ：exe 副本打 CDP 补丁 + 启动 + 会话（evaluate 轮询传输）
   sealed-seed.mjs    sealed 启动器 MZ：CDP 堆扫描(Runtime.queryObjects)发布引擎对象 + initialize 保鲜补丁 + reload 看门狗
   cdp-client.mjs     零依赖 CDP 客户端库（/json 列表 + RFC6455 + Runtime.evaluate）
@@ -27,17 +31,24 @@ core/            ESM 核心模块
   ws-server.mjs      零依赖 RFC6455 WebSocket 服务器（127.0.0.1:47412，token 鉴权）
   bridge-bundler.mjs runtime/bridge/src/parts → page-bridge.js 组装（含构建期语法校验）
   gui-bundler.mjs    ESM core → app/gui/gui-bundle.cjs（NW 窗口 require 不支持 ESM）
-  setup-gui-runtime.mjs  NW 运行时 donor 链接/拷贝
-app/gui/         NW.js GUI（运行时二进制链接为 RMToolbox.exe，窗口图标 icon.png）
+  setup-gui-runtime.mjs  官方 NW 运行时下载、SHA-256 校验与安装
+app/gui/         NW.js GUI（官方运行时重命名为 RMToolbox.exe，窗口图标 icon.png）
   index.html         页面骨架（vendor 加载 + UMD 屏蔽）
-  host.cjs           Node 上下文宿主（BridgeServer / scanner / launcher / 备份 / 锁文件）
+  host.cjs           Node 上下文宿主（BridgeServer / game-runtime / 备份 / 锁文件）
   gui-bundle.cjs     core/*.mjs 的 CJS 打包（生成物，勿手改）
   vendor/            vendored vue.global.prod.js + naive-ui.prod.js + jsoneditor/
-  ui/                Vue 3 + Naive UI 前端
-    store/             状态与动作（core / library / trainer / data / locks / saves）
-    parts/             通用组件（virtual-list / entry-list / picker / delta / json-editor）
-    panels/            「修改器」的卡片（RMCH.parts.*）
-    views/             每个页签一个（RMCH.views.*）
+  ui/                启动保护、主题、Naive 兼容层与挂载点
+    modern.js          Vite 编译的完整前端（生成物，勿手改）
+    store/             现有业务状态切片（core / library / trainer / data / locks / saves）
+  src/               TypeScript 入口与 Vue 单文件组件
+    main.ts            统一模块入口、共享 store 初始化、集成注册表
+    host.ts            NW 原生宿主类型边界与加载检查
+    state/drafts.ts    按游戏/字段隔离的类型化草稿状态
+    shell/             应用外壳、图标、主题容器
+    components/        Delta 数值编辑、InjectionGuide 注入提示
+    parts/             列表、选择器、图标缓存与 JSON 编辑器
+    panels/            修改器卡片
+    views/             游戏库、修改器、数据及其子页、存档、控制台、日志
 runtime/bridge/  注入游戏的通用 bridge（同时就是 --load-extension 的扩展目录）
   manifest.json      扩展清单（manifest_version 2）
   content.js         content script：把 page-bridge.js 注入页面上下文
@@ -87,15 +98,22 @@ tools/           CLI（rmch.mjs / send.mjs / serve.mjs）、setup/launch 脚本�
 ## 构建与测试
 
 ```powershell
-npm test                                 # ws-server 合同 + bridge harness + shadow-launcher + rgss marshal/archive
+npm ci                                   # Node >= 22.12；按 package-lock.json 安装构建工具
+npm run gui:build                        # 生成 core CJS 和 Vite 前端 bundle
+npm run typecheck                        # TypeScript / .vue 类型检查
+npm run gui:setup                        # 安装 nw-runtime.lock.json 指定的官方 NW.js
+npm run test:gui-runtime                 # 真实 NW 无窗口冒烟，不连接真实游戏
+npm test                                 # 自动构建前端，再跑类型检查、宿主边界及完整回归
                                          # + attach 单元 + 注入自测 + tauri-cdp/nb-shell fixture + GUI 预检
 npm run test:rgss                        # 只跑 RGSS 单元测试（设 RMCH_RGSS_SAMPLES 环境变量可启用真实归档用例）
 npm run test:inject                      # 只跑 attach 单元测试 + 注入自测（预构建二进制已入库，无编译器也能跑）
 npm run build:inject                     # 重建 runtime/inject/bin（需要 MSYS2 MinGW 工具链，见下）
 node tools/gui-check.mjs                 # 只跑 GUI 预检（模板编译 / store 引用 / vendor 校验）
+node tools/smoke-runtime-readonly.mjs <gameRoot> [--bundle] [--attach]
+                                         # 只读实机冒烟（ping / runtime.info / catalog / 会话关闭；不改存档）
 node tools/m2-acceptance.mjs <gameRoot>  # 全链路验收（启动→连接→命令→退出）
 node tools/rgss-probe.mjs <gameRoot>     # RGSS 冒烟测试（注入→启动→连桥→读写数据）
-node tools/pack-release.mjs              # 构建 output/RMToolbox-v<version>-win-x64.zip
+npm run build                           # 检查、构建、安装官方 NW、实测 staging、生成 ZIP + SHA256
 ```
 
 注意：`output/release/RMToolbox/` 是打包的 staging 目录，**每次打包都被整个删掉重建**
@@ -112,24 +130,35 @@ pacman -S mingw-w64-i686-gcc mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-lld
 四个游戏的验收记录见 [ACCEPTANCE.md](ACCEPTANCE.md)。RGSS（XP/VX/VX Ace）支持的
 完整实现细节、踩坑记录与实测矩阵见 [RGSS-HANDOVER.md](RGSS-HANDOVER.md)。
 
-## GUI 技术栈（Vue 3 + Naive UI，无构建步骤）
+## GUI 技术栈（Vue 3 + Naive UI，渐进引入 TypeScript / Vite）
 
-界面用 **Vue 3.5** + **Naive UI 2.35**，两个包以浏览器 bundle 形式 vendored 在
-`app/gui/vendor/`（零 npm 依赖、无构建步骤）：页面用普通 `<script>` 标签加载它们，
-组件写在 `app/gui/ui/` 下、模板是字符串由 Vue 运行时编译。Naive UI 是 CSS-in-JS，
-所以**没有手写的组件样式**——所有视觉 token 在 `app/gui/ui/theme.js`（深/浅双主题，
-右上角切换、记在 localStorage）；`app/gui/styles.css` 只剩文档级排版（html/body、滚动条、
-几个 flex 容器）。
+界面保留 **Vue 3.5.13 + Naive UI 2.35.0**，运行时 bundle 位于 `app/gui/vendor/`。
+**全部 28 个应用组件已迁入 `app/gui/src/` 的 `.vue` 文件**：24 个模板在构建期编译，
+另 4 个保留渲染函数。页面之间直接 `import` 组件，已移除旧的字符串模板和 22 个注册脚本。
+`main.ts` 统一引入状态切片和组件，Vite 输出 `ui/modern.js`；HTML 只负责 vendor、启动保护、
+完整前端 bundle 和挂载点。Vue 被声明为外部依赖，继续使用同一份全局 Vue 和 store。
+`RMCH.parts/views` 保留为挂载与回归测试的集成入口，组件不再依赖这个注册表寻找其他组件。
+宿主接口和按游戏隔离的草稿状态已使用 TypeScript；其余业务切片和多数 SFC 的脚本仍使用
+JavaScript，保持 `allowJs` 互操作，后续按业务逐个补全类型。这里不代表整个项目已全量类型化。
+`npm run gui:build` 同时构建核心 CJS 与前端。`npm test` 的 `pretest` 自动刷新前端构建。
+主题 token 在 `ui/theme.js`，布局样式在 `styles.css`，保留深浅主题。
 
-三个必须知道的约束（细节见 `app/gui/vendor/README.md`）：
+前端调用原生代码统一经 `src/host.ts` 获取宿主，使用 `window.require` 保持 NW 页面的路径解析，
+避免 Vite 将 Node 宿主打进浏览器包。引擎命令载荷保持动态协议，类型边界返回 `unknown`，
+不伪造所有游戏都返回同一种数据。`test-gui-host-boundary.mjs` 对照真实 CJS 导出核验接口。
 
-- **GUI 内嵌 Node 是 16.1**（不是开发机的系统 Node）：`fs.cpSync`（16.7+）之类的 API
-  在 CLI 测试里全绿、在 GUI 里点了按钮才炸。被打包进 gui-bundle 的 core 模块只能
-  用 16.1 就有的 API；另外 16.1 的 `rmSync(link)` 删不掉 junction（EISDIR），要
-  `rmSync(link, {recursive:true})`（不穿透，只删链接）。`gui-check.mjs` 会扫描
-  bundle 模块里的已知超新 API。
-- **Naive UI 锁 2.35.0**：借用的 NW.js 运行时是 0.54 = Chromium 91，2.36+ 的 bundle
-  带 ES2022 的 class `static {}` 块，Chromium 91 直接 SyntaxError（整个窗口白屏）。
+`npm run test:ui-browser` 覆盖 14 个页面/子页 × 2 个主题 × 2 个尺寸，共 56 组渲染，
+并验证两种注入入口、手动进入修改器、草稿/应用、断线/重连和 JSON 编辑器挂载。
+这是受控宿主验证，不启动真实游戏。`npm run build` 对 staging 做真实 NW 冒烟后压缩，
+再逐文件对比 ZIP 与 staging 的 SHA-256；校验成功才替换上一份 ZIP，并生成 `.zip.sha256`。
+
+运行时与边界：
+
+- **GUI 固定 NW.js 0.115.0 / Node 26.7.0 / Chromium 152.0.7977.42**，版本、官方 URL 和
+  SHA-256 记录在根目录 `nw-runtime.lock.json`。下载失败或哈希不匹配会停止安装；缓存亦会复核。
+  不再从本机游戏或 modkit 借运行时。游戏 NW.js 与 RGSS Ruby 1.8 兼容边界独立，注入脚本仍须兼容它们。
+- **Naive UI 暂留 2.35.0**：此次先更新宿主与构建链，组件库升级另行验证。
+  `test:gui-runtime` 在锁定 NW 中验证原生文件读写、CJS 宿主、临时端口桥接、SFC 渲染与提交行为。
 - **Naive UI 和 jsoneditor 都是 UMD**，而 NW.js 会把 `module`/`exports` 注入页面，会让它们走
   `require("vue")` 分支挂掉；`index.html` 在加载 vendor 期间临时屏蔽这几个全局变量。
 - **jsoneditor 10.4.3（完整版，含 ace + ajv）** vendored 在 `app/gui/vendor/jsoneditor/`；
@@ -326,8 +355,68 @@ WS 会话的 cmd 一旦超时即被剔除（给收养/重连让位）；已有�
 必须先应答一次应用层 `ping` 探测（8s）才允许转正顶替，否则安静丢弃。
 
 RGSS 不走 WS：`runtime/rgss-shadow/<gameKey>/` 里的 `rmch-cmd.jsonl` / `rmch-res.jsonl`
-append-only 文件对，双方各自记录读偏移。bridge.rb 镜像同一套命令词汇（同名同 payload），
-GUI 前端零感知；host.cjs 的 `send()`/`listSessions()` 按 gameKey 路由到对应通道。
+append-only 文件对。bridge.rb 镜像同一套命令词汇（同名同 payload）。RGSS 与 MV/MZ
+文件通道共用 `JsonlReader`，各自解释消息；RGSS 从头读取 hello，MV/MZ 收养时从文件末尾
+开始，跳过历史事件。读取器保留未完成的 UTF-8 字符和行；观察到截断或文件替换时重置。
+同一文件在两次轮询之间截断后又长到原偏移以上，仍无法仅凭文件大小判断，协议应使用追加写入。
+
+### 启动入口与会话归属
+
+`gameRuntime.launch/attach` 是 GUI/CLI 共用的入口。它在 launcher 和 attach 之上集中选择
+特殊壳的裸启动路线；attach 内部仍可调用 launcher 完成接管重启，保持 GUI 打包依赖无环。
+低层 `launchGame` 对不适用的壳保留防御性拒绝，直接使用低层入口的脚本行为不变。
+
+NW 路线由 `attach.mjs` 内的 `createNwAttachment` module 完整编排。它的 interface 只有
+启动与附加两种意图；目标排序、准备、重试与成功确认由 implementation 持有。内部 seam
+只替换 Windows 进程操作与时间，测试仍使用真实 bridge 构建、PE 解析和 JSONL 文件。
+生产入口不接受重载许可；只有本次实际启动的文件通道游戏才进入目录捕获流程。
+点「启动」时发现已运行实例，也与手动附加一样不会因此触发捕获重载。
+
+当前传输选择按游戏壳和操作集中记录，结构改动保留已有实测行为：
+
+| 游戏壳 | 手动附加 | 启动时发现已运行 | 本次新启动 |
+| --- | --- | --- | --- |
+| nb-evalnwbin | 文件 | 文件 | 文件 |
+| enigma-nb | WS + sealed 重试 | 文件 | WS + sealed 重试 |
+| Grover | 普通 WS | 文件 | 文件 |
+
+WS 以 DLL 报告执行成功为附加完成，文件路线还要确认新鲜 hello；这些成功条件不合并。
+`tools/test-nw-attachment.mjs` 穿过真实编排验证上述矩阵、成功即停和启动回退，替代原来只测
+spawn 子步骤的回退测试。改变传输矩阵仍需要对应家族的实机证据。
+
+`BridgeSessions.list/send` 及其通知是宿主访问桥接会话的 interface。RGSS/CDP 在建立会话时
+向 `externalSessions` 登记，由登记处统一接线与清理；宿主不再识别返回值中的会话字段。
+命令查找保持 RGSS → CDP → BridgeServer 的既有顺序，列表仍保留各来源的顺序和内容。
+WS/文件接管、存活探测、RGSS 存档转换、CDP 本地存档列表继续由各 adapter 负责。
+CLI 启动 Tauri 后关闭其进程内会话的行为保持不变。
+
+### 存档文件与影子副本
+
+`save-files.mjs` module 集中主机侧备份、合并恢复、删除及 RGSS 回流；host 保留既有
+interface 和存档目录查询优先级。Ruby bridge 继续拥有槽位解析、游戏内保存和加载，
+并随状态报告 `saveLocation`（真实游戏根、存档目录、槽位文件名）。RGSS 启动过程将这份
+定位留在影子目录的 `.rmch-save-location.json`，供异常退出后的下次启动救援使用。
+没有定位信息时，只保守回流根目录及一级目录的 `SaveN` 文件；不能把 `Data/` 中同为
+`.rxdata` / `.rvdata*` 的数据库和脚本归档当存档。
+
+回流按修改时间较新者优先；同时间而内容不同，保留真实存档并在终端及 `runtime/gui.log`
+报告冲突。复制失败会保留源文件，启动时的救援失败会阻止清除旧影子目录。
+恢复备份保留备份之外的槽位，并更新对应独立影子副本；删除同样协调已知副本，旧副本不能
+在退出或下次启动时复活。游戏随后主动保存的新内容仍然有效。退出回流在进程停止后执行。
+`tools/test-save-files.mjs` 使用真实临时文件验证中文槽位、冲突、恢复/删除后的回流，以及
+硬链接和 junction；有 Ruby 时还直接加载完整 bridge 验证槽位定位。
+
+### 影子目录构建
+
+bg-script 与 bundled 引擎的构建入口共用 `shadow-launcher.mjs` 内的 `buildShadowApp`。
+该 implementation 持有存档救援 → 存档目录就位 → 链接/补丁路径隔离 → 写独立副本的次序。
+即使补丁位于 `www` 内、导致 `www` 本身不能作为 junction，`www/save` 也仍指向真实存档。
+旧硬链接和 junction 在写补丁或 manifest 前被解除；原游戏补丁路径经过 junction 时，
+也只在影子目录中拆分。两种补丁内容、Grover 备用 shim、各自的 profile 生命周期保持独立。
+
+改动这些路径时运行 `npm test`；新增测试包含共享路由、启动回退、会话生命周期和 JSONL
+分段读取，后两者也通过实际通道的命令回环验证。实机只读冒烟见
+`tools/smoke-runtime-readonly.mjs`，与会改金币或存档的完整验收脚本分开使用。
 
 ## 目录数据（关键设计）
 
@@ -343,3 +432,20 @@ GUI 前端零感知；host.cjs 的 `send()`/`listSessions()` 按 gameKey 路由�
   模式切换，两个主按钮（`更新数据` / `应用至游戏`）通过 teleport 塞进 jsoneditor 自己的菜单栏。
 - per-game profiles（`runtime/bridge/profiles/`）：游戏专属命令，通用核心不加载任何 profile
   也能跑全功能。
+
+### 目录图标
+
+`RMCH.iconset.useGame` 是目录图标 module 的 interface。EntryList、Picker 和 GameIcon
+绑定游戏后读取可用状态与图片；本地读取、桥接回退、请求合并、缓存和失败后 15 秒主动重试
+由 module 自己推进，调用方无需组合 ensure / version / state。最后一个显示方离开时
+停止重试，重新进入时恢复；切换游戏目录、引擎或桥接会话会使用新的缓存身份，旧异步结果
+不会覆盖当前图标。RGSS1 按名称取图及其失败恢复也在同一 module 内。
+`tools/test-game-icons.mjs` 使用真实 Vue 与三个调用方，替换时间和图片来源，验证整条恢复链。
+
+### 当前游戏与编辑草稿
+
+页头是当前游戏选择的唯一入口，修改器、数据、存档与控制台共用选择；断开时保留目标，重新连接后刷新实时数据。`selectionEpoch` 标记选择及连接变化，命令结果和确认框不得跨 epoch 写入新上下文。主机会话回调复制快照，避免复用数组时漏掉响应式更新。
+
+`store.useDraft` 按游戏与字段保存本窗口中的编辑值；字段包含条目或角色身份，实时状态与编辑草稿分开保存。数值加减只改草稿，Enter 或应用才提交；开关仍即时提交，但等待实际回执后显示新状态。游戏库的操作状态属于具体游戏，启动、附加、停止互斥。
+
+完整界面决策与验收范围见 `docs/UI-REDESIGN.md`。`npm test` 包含交互回归；可另用 `npm run test:ui-browser` 运行真实浏览器的受控数据渲染与点击验证，要求 Node 22+ 和本机 Chrome。该工具不连接真实游戏，截图输出至 `runtime/screenshots/ui-review/`。

@@ -81,6 +81,11 @@
     "map.list": () => mapList(),
 
     "map.transfer": (args) => {
+      // New UI requests carry a freshness token. Keep the legacy console wire
+      // format usable, but enforce scene safety for every transfer.
+      if (args.mapToken) etCheck(args);
+      const busy = etBusy();
+      if (busy) throw new Error(busy);
       const player = requirePlayer();
       const mapId = requireId(args.mapId, "mapId");
       const mapInfoTable = runtimeDataTable("mapInfo");
@@ -91,11 +96,14 @@
       }
       const x = Math.floor(requireNumber(args.x, "x"));
       const y = Math.floor(requireNumber(args.y, "y"));
+      if (x < 0 || y < 0) throw new Error("坐标不能为负数");
+      if (mapId === requireMap()._mapId && !etValid(etMap(),x,y)) throw new Error("目标坐标超出当前地图范围");
       const direction = hasValue(args.direction) ? Math.floor(requireNumber(args.direction, "direction")) : 2;
       const fade = hasValue(args.fade) ? Math.floor(requireNumber(args.fade, "fade")) : 0;
       if (typeof player.reserveTransfer === "function") {
         player.reserveTransfer(mapId, x, y, direction, fade);
       } else if (typeof player.locate === "function") {
+        if (mapId !== requireMap()._mapId) throw new Error("当前引擎不支持跨地图传送");
         player.locate(x, y);
       } else {
         throw new Error("player transfer is unavailable");
@@ -105,17 +113,17 @@
     },
 
     "map.through.set": (args) => {
-      const player = requireThroughCapablePlayer();
-      player._through = !!args.value;
-      bridge.options.throughWalls = player._through;
-      return { through: player._through };
+      requireThroughCapablePlayer();
+      bridge.options.throughWalls = !!args.value;
+      patchThrough();
+      return { through: bridge.options.throughWalls };
     },
 
     "map.through.toggle": () => {
-      const player = requireThroughCapablePlayer();
-      player._through = !player._through;
-      bridge.options.throughWalls = player._through;
-      return { through: player._through };
+      requireThroughCapablePlayer();
+      bridge.options.throughWalls = !bridge.options.throughWalls;
+      patchThrough();
+      return { through: bridge.options.throughWalls };
     },
 
     "player.location": () => {
@@ -234,12 +242,11 @@
     }
   });
 
-  // Some games strip _through entirely; failing loudly beats setting a field the
-  // engine never reads.
+  // The override requires the engine's collision query, not a writable field.
   function requireThroughCapablePlayer() {
     const player = requirePlayer();
-    if (!Object.prototype.hasOwnProperty.call(player, "_through")) {
-      throw new Error("player through field is unavailable");
+    if (typeof player.isThrough !== "function" || !patchThrough()) {
+      throw new Error("player through query is unavailable");
     }
     return player;
   }

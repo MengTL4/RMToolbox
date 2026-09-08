@@ -11,10 +11,13 @@
 
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { appendFileSync, existsSync, openSync, readSync, closeSync, statSync, lstatSync, mkdirSync, readdirSync, copyFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { prepareRgssGame, RgssError } from "./rgss.mjs";
 import { rgssContentsCode } from "./rgss-savecode.mjs";
+import { externalSessions } from "./bridge-sessions.mjs";
+import { JsonlReader } from "./jsonl-reader.mjs";
+import { reconcileRgssSaves, recordRgssSaveLocation } from "./save-files.mjs";
 
 export class RgssLaunchError extends Error {}
 
@@ -24,70 +27,24 @@ const POLL_INTERVAL_MS = 40;
 
 // Live sessions by gameKey, so the GUI host can route commands to them the
 // same way it routes WebSocket sessions for MV/MZ.
-const rgssSessions = new Map();
-
 export function getRgssSession(gameKey) {
-  return rgssSessions.get(gameKey) || null;
+  return externalSessions.get("rgss", gameKey);
 }
 
 export function listRgssSessions() {
-  return [...rgssSessions.values()].map((session) => session.describe());
+  return externalSessions.list("rgss");
 }
 
-// In-game saves land in the shadow copy (that is the game's cwd). Anything not
-// anchored back would vanish with the next shadow rebuild, so when the game
-// exits, copy save files back into the real game directory. Custom save
-// systems may use a subdirectory (e.g. SaveData/) — when that subdirectory is
-// a real directory in the shadow rather than a junction to the original,
-// sync one level down as well.
-const SAVE_FILE_RE = /^save\d+\.(rxdata|rvdata|rvdata2)$/i;
-
-// removeSynced deletes each shadow file once the real directory holds an
-// up-to-date copy. Without it a save deleted from the real directory while
-// the game is not running would be resurrected by the next launch's rescue
-// sync, because its shadow copy was still sitting there.
-function syncSaveDir(shadowDir, realDir, { removeSynced = false } = {}) {
-  let copied = 0;
-  let entries = [];
-  try {
-    entries = readdirSync(shadowDir);
-  } catch (_) {
-    return copied;
+function syncSavesBack(shadowRoot, gameRoot, options = {}) {
+  const result = reconcileRgssSaves({ shadowRoot, gameRoot, ...options });
+  if (result.conflicts.length || result.errors.length) {
+    const message = `RGSS 存档回流：${result.conflicts.length} 个同时间冲突（保留真实存档），${result.errors.length} 个文件失败。`;
+    console.warn(message, result);
+    // GUI users have no terminal; retain the report in the shared GUI log.
+    const projectRoot = path.resolve(shadowRoot, "..", "..", "..");
+    try { appendFileSync(path.join(projectRoot, "runtime", "gui.log"), `[${new Date().toISOString()}] ${message} ${JSON.stringify(result)}\n`); } catch (_) {}
   }
-  for (const entry of entries) {
-    if (!SAVE_FILE_RE.test(entry)) continue;
-    const source = path.join(shadowDir, entry);
-    const target = path.join(realDir, entry);
-    try {
-      const sourceStat = statSync(source);
-      if (!sourceStat.isFile()) continue;
-      const targetStat = existsSync(target) ? statSync(target) : null;
-      if (!(targetStat && targetStat.size === sourceStat.size && targetStat.mtimeMs >= sourceStat.mtimeMs)) {
-        mkdirSync(realDir, { recursive: true });
-        copyFileSync(source, target);
-        copied += 1;
-      }
-      // Shadow-root files are hardlinks or shadow-only copies, so removing
-      // them never touches the real file; junctioned subdirectories never
-      // reach this function (syncSavesBack skips them).
-      if (removeSynced) rmSync(source, { force: true });
-    } catch (_) {}
-  }
-  return copied;
-}
-
-function syncSavesBack(shadowRoot, gameRoot, { removeSynced = false } = {}) {
-  let copied = syncSaveDir(shadowRoot, gameRoot, { removeSynced });
-  try {
-    for (const entry of readdirSync(shadowRoot)) {
-      const sub = path.join(shadowRoot, entry);
-      const stat = lstatSync(sub);
-      // Junctions point into the real game already — writes pass through.
-      if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
-      copied += syncSaveDir(sub, path.join(gameRoot, entry), { removeSynced });
-    }
-  } catch (_) {}
-  return copied;
+  return result;
 }
 
 class RgssSession extends EventEmitter {
@@ -100,8 +57,7 @@ class RgssSession extends EventEmitter {
     this.pid = pid;
     this.cmdPath = path.join(dir, "rmch-cmd.jsonl");
     this.resPath = path.join(dir, "rmch-res.jsonl");
-    this.resOffset = 0;
-    this.buffer = "";
+    this.reader = new JsonlReader(this.resPath);
     this.nextId = 1;
     this.pending = new Map();
     this.hello = null;
@@ -156,22 +112,8 @@ class RgssSession extends EventEmitter {
 
   poll() {
     try {
-      if (!existsSync(this.resPath)) return;
-      const size = statSync(this.resPath).size;
-      if (size <= this.resOffset) return;
-      const fd = openSync(this.resPath, "r");
-      const length = size - this.resOffset;
-      const chunk = Buffer.allocUnsafe(length);
-      readSync(fd, chunk, 0, length, this.resOffset);
-      closeSync(fd);
-      this.resOffset = size;
-      this.buffer += chunk.toString("utf8");
-
-      let newline = this.buffer.indexOf("\n");
-      while (newline !== -1) {
-        const line = this.buffer.slice(0, newline).trim();
-        this.buffer = this.buffer.slice(newline + 1);
-        newline = this.buffer.indexOf("\n");
+      for (const text of this.reader.readLines()) {
+        const line = text.trim();
         if (line) this.handleLine(line);
       }
     } catch (_) {
@@ -258,7 +200,8 @@ export async function launchRgssGame({ gameRoot, projectRoot, gameKey, onLaunch 
   // if the previous run died before its exit-time sync.
   const shadowRoot = path.join(projectRoot, "runtime", "rgss-shadow", resolvedKey);
   if (existsSync(shadowRoot)) {
-    syncSavesBack(shadowRoot, gameRoot);
+    const recovered = syncSavesBack(shadowRoot, gameRoot);
+    if (recovered.errors.length) throw new RgssLaunchError("存档回流失败，已保留影子目录；请查看 runtime/gui.log 后重试。");
     rmSync(shadowRoot, { recursive: true, force: true });
   }
 
@@ -278,11 +221,18 @@ export async function launchRgssGame({ gameRoot, projectRoot, gameKey, onLaunch 
   }
 
   const session = new RgssSession({ dir: prepared.shadowRoot, gameKey: resolvedKey });
-
-  const unregister = () => {
-    if (rgssSessions.get(resolvedKey) === session) rgssSessions.delete(resolvedKey);
-  };
-  session.on("close", unregister);
+  let recordedSaveLocation = "";
+  session.on("state", state => {
+    if (state && state.saveLocation) {
+      const encoded = JSON.stringify(state.saveLocation);
+      if (encoded === recordedSaveLocation) return;
+      try {
+        recordRgssSaveLocation(prepared.shadowRoot, state.saveLocation);
+        recordedSaveLocation = encoded;
+      }
+      catch (error) { console.warn("Could not retain RGSS save location:", error.message); }
+    }
+  });
 
   const connected = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -320,13 +270,13 @@ export async function launchRgssGame({ gameRoot, projectRoot, gameKey, onLaunch 
     throw error;
   }
 
-  rgssSessions.set(resolvedKey, session);
+  externalSessions.register("rgss", session);
   child.on("exit", () => {
     // Clean exit: anchor the saves, then drop the shadow copies so a file the
     // user deletes later is not resurrected from the stale shadow. Abnormal
     // toolbox deaths skip this entirely, which is exactly the case the
     // launch-time rescue above covers.
-    syncSavesBack(prepared.shadowRoot, gameRoot, { removeSynced: true });
+    syncSavesBack(prepared.shadowRoot, gameRoot, { saveLocation: session.state && session.state.saveLocation, removeSynced: true });
     session.close();
   });
 
@@ -339,7 +289,8 @@ export async function launchRgssGame({ gameRoot, projectRoot, gameKey, onLaunch 
       try {
         child.kill();
       } catch (_) {}
-      syncSavesBack(prepared.shadowRoot, gameRoot, { removeSynced: true });
+      // The exit handler runs after the process has stopped writing. Syncing
+      // immediately after kill() races the final in-game save.
       session.close();
     }
   };
@@ -354,11 +305,6 @@ export async function launchRgssGame({ gameRoot, projectRoot, gameKey, onLaunch 
  */
 export async function adoptRgssSession({ dir, gameKey, pid }) {
   const session = new RgssSession({ dir, gameKey, pid });
-  const unregister = () => {
-    if (rgssSessions.get(gameKey) === session) rgssSessions.delete(gameKey);
-  };
-  session.on("close", unregister);
-
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       session.close();
@@ -370,7 +316,7 @@ export async function adoptRgssSession({ dir, gameKey, pid }) {
     });
   });
 
-  rgssSessions.set(gameKey, session);
+  externalSessions.register("rgss", session);
   return session;
 }
 
