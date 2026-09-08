@@ -79,9 +79,9 @@
 《重装归途》与《末日风暴》的完整验收和限制见
 [适配记录](docs/NEW-GAMES-ADAPTATION.md)。
 
-![游戏库](docs/screenshots/library.png?v=2)
-![修改器](docs/screenshots/trainer.png?v=2)
-![数据页](docs/screenshots/data-items.png?v=2)
+![游戏库](docs/screenshots/library.png?v=3)
+![修改器](docs/screenshots/trainer.png?v=3)
+![数据页](docs/screenshots/data-items.png?v=3)
 
 ## 下载
 
