@@ -23,7 +23,24 @@ var ROUTE_LABELS = {
   "shadow-engine-publish": "合体引擎专用"
 };
 
-function routeLabel(id) { return ROUTE_LABELS[id] || id || "不可用"; }
+// Labels come from the launch-route catalogue (core/launch-routes.mjs) via the
+// plan the host returns; the local map is only a fallback for ids an older host
+// does not describe yet.
+function routeLabel(id, plan) {
+  var entries = (plan && plan.candidates) || [];
+  for (var i = 0; i < entries.length; i += 1) {
+    if (entries[i].id === id && entries[i].label) return entries[i].label;
+  }
+  return ROUTE_LABELS[id] || id || "不可用";
+}
+
+function routeHint(id, plan) {
+  var entries = (plan && plan.candidates) || [];
+  for (var i = 0; i < entries.length; i += 1) {
+    if (entries[i].id === id) return [entries[i].mechanismLabel, entries[i].reason].filter(Boolean).join(" · ");
+  }
+  return "";
+}
 
 export default {
     name: "LibraryView",
@@ -44,6 +61,11 @@ export default {
       var connectedCount = computed(function () {
         return store.state.games.filter(function (game) { return !!store.sessionFor(game.gameKey); }).length;
       });
+      // A connected bridge does not mean the game is on screen yet: heavy RGSS
+      // games stay black for a minute while loading, so the card says so.
+      function statusFor(game) {
+        return store.sessionStatus(store.sessionFor(game.gameKey));
+      }
       function unavailable(game) {
         if (!game.paths.exe) return "未找到游戏启动程序";
         if (game.engine.id === "RM2K" || game.container === "nb-shell") return "当前版本暂不支持连接此游戏";
@@ -84,16 +106,16 @@ export default {
         var entries = plan.candidates || [];
         if (!entries.length) return [];
         return [{
-          label: plan.preferred ? "自动（" + routeLabel(plan.preferred) + "）" : "自动",
+          label: plan.preferred ? "自动（" + routeLabel(plan.preferred, plan) + "）" : "自动",
           value: "auto"
         }].concat(entries.map(function (entry) {
-          return { label: routeLabel(entry.id), value: entry.id };
+          return { label: routeLabel(entry.id, plan), value: entry.id };
         }));
       }
       function routeTitle(game) {
         var plan = routePlan(game);
         if (!plan.selected) return plan.error || "没有可用路线";
-        return routeLabel(plan.preferred || plan.selected);
+        return routeLabel(plan.preferred || plan.selected, plan);
       }
       function chooseRoute(game, value) {
         state.routeChoices[game.gameKey] = value;
@@ -131,11 +153,12 @@ export default {
         connectedCount: connectedCount,
         unavailable: unavailable, takeover: takeover, attach: attach, stop: stop, retry: retry,
         routePlan: routePlan, routeChoice: routeChoice, routeOptions: routeOptions,
-        routeTitle: routeTitle, chooseRoute: chooseRoute, routeLabel: routeLabel,
+        routeTitle: routeTitle, chooseRoute: chooseRoute, routeLabel: routeLabel, routeHint: routeHint,
         pickFolder: pickFolder,
         removeGame: removeGame,
         icon: RMCH.icon,
         sessionFor: store.sessionFor,
+        statusFor: statusFor,
         protectionTag: store.protectionTag
       };
     },
@@ -189,8 +212,16 @@ export default {
           </n-flex>
         </n-flex>
         <n-flex align="center" :size="8" :wrap="true">
-          <n-tag size="small" :bordered="false" :type="sessionFor(game.gameKey) ? 'success' : 'default'">
-            {{ state.busy[game.gameKey] ? "处理中" : sessionFor(game.gameKey) ? "已连接" : "未连接" }}
+          <n-tooltip v-if="statusFor(game).hint" trigger="hover">
+            <template #trigger>
+              <n-tag size="small" :bordered="false" :type="state.busy[game.gameKey] ? 'default' : statusFor(game).type">
+                {{ state.busy[game.gameKey] ? "处理中" : statusFor(game).label }}
+              </n-tag>
+            </template>
+            {{ statusFor(game).hint }}
+          </n-tooltip>
+          <n-tag v-else size="small" :bordered="false" :type="state.busy[game.gameKey] ? 'default' : statusFor(game).type">
+            {{ state.busy[game.gameKey] ? "处理中" : statusFor(game).label }}
           </n-tag>
           <n-tooltip><template #trigger><n-text depth="3" style="font-size:12px">{{ game.engine.id }}</n-text></template>
             {{ protectionTag(game.protection.level).label }} · {{ game.container || "标准游戏" }}
@@ -201,7 +232,7 @@ export default {
                     :disabled="!!state.busy[game.gameKey]" @update:value="value => chooseRoute(game, value)"/>
           <n-tooltip v-else-if="(routePlan(game).candidates || []).length === 1" trigger="hover">
             <template #trigger><n-tag size="small" :bordered="false" type="info">{{ routeTitle(game) }}</n-tag></template>
-            当前游戏只有这一条安全启动路线
+            {{ routeHint(routePlan(game).preferred || routePlan(game).selected, routePlan(game)) || "当前游戏只有这一条安全启动路线" }}
           </n-tooltip>
           <n-tooltip v-if="!sessionFor(game.gameKey) && unavailable(game)" trigger="hover">
             <template #trigger>

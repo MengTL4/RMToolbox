@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { LaunchPlanError, LAUNCH_ROUTES, planLaunch } from "../core/launch-plan.mjs";
+import { ROUTES, ATTACH_ROUTES, routeLabel, routeMechanismText, preflightOf } from "../core/launch-routes.mjs";
 
 const exe = "C:/games/Test/Game.exe";
 
@@ -91,4 +92,36 @@ assert.equal(rejected.selected, null);
 assert.match(rejected.error, /shadow/);
 assert.throws(() => { throw new LaunchPlanError(rejected); }, LaunchPlanError);
 
-console.log("test-launch-plan: route classification and overrides passed");
+
+// One catalogue, one vocabulary: every strategy string the toolbox can report
+// (launch routes and attach-side strategies alike) has a Chinese name and a
+// mechanism, so the GUI dropdown, the plan and the log cannot drift apart.
+for (const id of [...Object.keys(ROUTES), ...Object.keys(ATTACH_ROUTES)]) {
+  assert.notEqual(routeLabel(id), id, `route ${id} must be named in the catalogue`);
+  assert.ok(routeMechanismText(id).length > 0, `route ${id} must declare a mechanism`);
+}
+
+// 运行副本 is a mechanism, not a route a user picks: the copy-based routes say
+// so instead of each inventing its own name for the same trick.
+assert.deepEqual(ROUTES["rgss-script"].alsoUses, ["copy"]);
+assert.deepEqual(ROUTES["evb-unpack-rgss-script"].alsoUses, ["copy", "script"]);
+assert.equal(ROUTES.shadow.mechanism, "copy");
+assert.match(routeMechanismText("evb-unpack-rgss-script"), /解包/);
+
+// Candidates carry their label and mechanism so the GUI needs no second map.
+{
+  const plan = planLaunch(nw({ manifest: { bgScript: "loading" } }));
+  const shadow = plan.candidates.find((entry) => entry.id === "shadow");
+  assert.equal(shadow.label, "影子目录");
+  assert.equal(shadow.mechanismLabel, "运行副本");
+  assert.equal(plan.selectedLabel, "影子目录");
+}
+
+// The static half of preflight is decided by the catalogue, not inline.
+assert.equal(preflightOf(nw(), "shadow").ok, false);
+assert.match(preflightOf(nw(), "shadow").reason, /bg-script/);
+assert.equal(preflightOf(nw({ manifest: { bgScript: "loading" } }), "shadow").ok, true);
+assert.equal(preflightOf(nw({ paths: {} }), "extension").ok, false);
+assert.equal(preflightOf(nw({ paths: {} }), "rgss-script").ok, true, "RGSS preflight is a runtime question");
+
+console.log("test-launch-plan: route classification, overrides and catalogue naming passed");

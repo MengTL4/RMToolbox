@@ -19,7 +19,8 @@ import {
   buildPatchedExe,
   TauriLaunchError
 } from "../core/tauri-cdp.mjs";
-import { scanGame, injectionStrategy } from "../core/scanner.mjs";
+import { scanGame } from "../core/scanner.mjs";
+import { planLaunch } from "../core/launch-plan.mjs";
 
 const ANCHOR = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
 
@@ -97,7 +98,7 @@ function main() {
     assert.equal(scan.paths.saveDir, path.join(gameRoot, "save"));
     assert.equal(scan.saveDirKnown, true);
     assert.ok(scan.protection.flags.includes("tauri-webview2"));
-    assert.equal(injectionStrategy(scan).id, "tauri-cdp");
+    assert.equal(planLaunch(scan).selected, "tauri-cdp");
 
     // Without the arc dirs the shallow probe window still catches this small
     // exe, but confidence drops — and a dir with NO markers stays unknown.

@@ -219,8 +219,10 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
 
 ## 注入策略（均不改游戏原文件）
 
-路线选择由 [LAUNCH-ROUTE-DESIGN.md](LAUNCH-ROUTE-DESIGN.md) 和 `core/launch-plan.mjs` 统一规划。
-先区分递送方式，再由对应运行时适配器确认 bridge hello、运行时对象和存档路径；不要把“进程出现”或“DLL 返回成功”单独当成适配完成。
+路线选择由 [LAUNCH-ROUTE-DESIGN.md](LAUNCH-ROUTE-DESIGN.md)、`core/launch-plan.mjs`（判定）和
+`core/launch-routes.mjs`（唯一路线目录：id / 中文名 / 投递机制 / preflight）统一规划。
+先按游戏壳选出启动路线（机制只是路线的属性），再由对应运行时适配器确认 bridge hello、运行时对象和存档路径；
+不要把“进程出现”或“DLL 返回成功”单独当成适配完成。
 
 - **策略 A（extension）**：原版 Game.exe + `--load-extension=<bridge扩展>`（MV/MZ 默认）。
   附带私有 `--user-data-dir=runtime/profiles/<gameKey>`（持久、按游戏隔离）——大量游戏

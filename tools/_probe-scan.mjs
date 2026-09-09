@@ -1,4 +1,5 @@
-import { scanGame, injectionStrategy } from "../core/scanner.mjs";
+import { scanGame } from "../core/scanner.mjs";
+import { planLaunch } from "../core/launch-plan.mjs";
 
 const scan = scanGame(process.argv[2]);
 console.log(JSON.stringify({
@@ -10,4 +11,4 @@ console.log(JSON.stringify({
   exe: scan.paths.exe,
   layout: scan.layout
 }, null, 2));
-console.log("strategy:", JSON.stringify(injectionStrategy(scan)));
+console.log("launch plan:", JSON.stringify(planLaunch(scan), null, 2));

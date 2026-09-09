@@ -78,7 +78,10 @@ async function boot() {
   const scanner = await loadModule("core/scanner.mjs");
   const wsServer = await loadModule("core/ws-server.mjs");
   const { BridgeSessions } = await loadModule("core/bridge-sessions.mjs");
-  const { gameRuntime } = await loadModule("core/game-runtime.mjs");
+  const { GameRuntime } = await loadModule("core/game-runtime.mjs");
+  // Route attempts (including a fallback after a failed one) belong in the
+  // shared GUI log — they are the first thing asked for when a launch fails.
+  const gameRuntime = new GameRuntime({ log: (message, extra) => guiLog(message, extra) });
   const tokenMod = await loadModule("core/token.mjs");
   const rgssArchive = await loadModule("core/rgss-archive.mjs");
   const saveFiles = await loadModule("core/save-files.mjs");
