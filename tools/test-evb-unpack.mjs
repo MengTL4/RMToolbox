@@ -4,7 +4,7 @@
 // parseEvbTree / extractEvb / ensureEvbUnpacked against it. No real packed
 // game needed. See core/evb-unpack.mjs for the format walk this mirrors.
 
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { detectEvb, parseEvbTree, extractEvb, extractEvbAsync, ensureEvbUnpacked, ensureEvbUnpackedAsync, EvbError } from "../core/evb-unpack.mjs";
@@ -128,6 +128,20 @@ try {
     readFileSync(path.join(first.dir, "Game.exe")).equals(GAME_EXE), first.dir);
   const second = ensureEvbUnpacked(packed);
   check("ensureEvbUnpacked reuses", second.extracted === false && second.dir === first.dir, JSON.stringify(second));
+
+  // A stale Game.exe is not enough to prove completion: simulate an interrupted
+  // extraction that wrote only the first table entry, then require the next
+  // launch to refill the missing tree and write the completion marker.
+  const partialPacked = path.join(tmp, "Partial Game.exe");
+  writeFileSync(partialPacked, buildEvbImage());
+  const partialDir = partialPacked.replace(/\.exe$/i, "") + "_unpacked";
+  writeFileSync(path.join(tmp, "partial-marker.txt"), "keep the fixture root writable");
+  mkdirSync(partialDir, { recursive: true });
+  writeFileSync(path.join(partialDir, "Game.exe"), Buffer.from("partial"));
+  const repaired = ensureEvbUnpacked(partialPacked);
+  check("partial extraction is repaired", repaired.extracted === true &&
+    readFileSync(path.join(partialDir, "readme.txt")).equals(README), JSON.stringify(repaired));
+  check("completion marker is written", readFileSync(path.join(partialDir, ".rmch-evb-complete.json"), "utf8").includes('"files":2'), "");
 
   // The GUI path must yield while copying a packed image, even when the image
   // contains only small files. This keeps NW responsive during real 40k-file

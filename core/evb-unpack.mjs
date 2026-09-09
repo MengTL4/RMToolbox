@@ -22,7 +22,7 @@
 // Legacy (pre-8) interleaved table+content images are not supported; the
 // walk bails out with EvbError when the table stops making sense.
 
-import { openSync, closeSync, readSync, mkdirSync, existsSync, statSync, symlinkSync, fstatSync, writeSync } from "node:fs";
+import { openSync, closeSync, readSync, mkdirSync, existsSync, statSync, symlinkSync, fstatSync, writeSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import path from "node:path";
 
 export class EvbError extends Error {}
@@ -32,6 +32,47 @@ const NODE_TYPE_FILE = 2;
 const NODE_TYPE_FOLDER = 3;
 const FOLDER_ALTNAMES = { "%DEFAULT FOLDER%": "" };
 const MAX_NODES = 2_000_000;
+const COMPLETE_MARKER = ".rmch-evb-complete.json";
+
+function sourceStamp(exePath) {
+  const stat = statSync(exePath);
+  return { size: stat.size, mtimeMs: stat.mtimeMs };
+}
+
+function completionPath(outDir) {
+  return path.join(outDir, COMPLETE_MARKER);
+}
+
+// Game.exe is written near the start of the EVB table. Its presence therefore
+// only proves that extraction began, not that the graphics/audio tree is there.
+// Reuse a directory only after an atomic completion record written at the very
+// end of a successful extraction, and only for the same source executable.
+function isCompleteExtraction(exePath, outDir) {
+  if (!existsSync(path.join(outDir, "Game.exe"))) return false;
+  try {
+    const marker = JSON.parse(readFileSync(completionPath(outDir), "utf8"));
+    const source = sourceStamp(exePath);
+    return marker && marker.version === 1 && marker.sourceSize === source.size &&
+      marker.sourceMtimeMs === source.mtimeMs && Number(marker.files) > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+function markCompleteExtraction(exePath, outDir, result) {
+  const source = sourceStamp(exePath);
+  const marker = {
+    version: 1,
+    sourceSize: source.size,
+    sourceMtimeMs: source.mtimeMs,
+    files: result.files,
+    bytes: result.bytes,
+    completedAt: new Date().toISOString()
+  };
+  const temporary = completionPath(outDir) + `.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(temporary, JSON.stringify(marker) + "\n", "utf8");
+  renameSync(temporary, completionPath(outDir));
+}
 
 /**
  * Read the PE section table of an executable (enough for shell detection).
@@ -361,16 +402,19 @@ function writeFileSyncSilently(outFd, buf, length) {
  * saves the game wrote through the EVB overlay stay visible to the toolbox
  * (and vice versa).
  *
- * Reuse is decided by "Game.exe exists in the output dir" — cheap and right
- * in practice: a partial extraction lacks it, a complete one has it.
+ * Reuse requires an atomic completion marker tied to the source executable.
+ * Game.exe alone is insufficient because EVB writes it near the start of the
+ * table and an interrupted extraction can leave a believable but unusable
+ * directory behind.
  */
 export function ensureEvbUnpacked(exePath, { onProgress } = {}) {
   const outDir = exePath.replace(/\.exe$/i, "") + "_unpacked";
-  if (existsSync(path.join(outDir, "Game.exe"))) {
+  if (isCompleteExtraction(exePath, outDir)) {
     linkSaveDir(exePath, outDir);
     return { dir: outDir, extracted: false };
   }
   const result = extractEvb(exePath, outDir, { onProgress });
+  markCompleteExtraction(exePath, outDir, result);
   linkSaveDir(exePath, outDir);
   return { dir: outDir, extracted: true, files: result.files, bytes: result.bytes };
 }
@@ -378,11 +422,12 @@ export function ensureEvbUnpacked(exePath, { onProgress } = {}) {
 /** Async, repaint-safe launcher entry used by the GUI for large EVB images. */
 export async function ensureEvbUnpackedAsync(exePath, { onProgress } = {}) {
   const outDir = exePath.replace(/\.exe$/i, "") + "_unpacked";
-  if (existsSync(path.join(outDir, "Game.exe"))) {
+  if (isCompleteExtraction(exePath, outDir)) {
     linkSaveDir(exePath, outDir);
     return { dir: outDir, extracted: false };
   }
   const result = await extractEvbAsync(exePath, outDir, { onProgress });
+  markCompleteExtraction(exePath, outDir, result);
   linkSaveDir(exePath, outDir);
   return { dir: outDir, extracted: true, files: result.files, bytes: result.bytes };
 }
