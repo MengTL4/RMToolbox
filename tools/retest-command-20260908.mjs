@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {getToken} from '../core/token.mjs';
+const session=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+const token=getToken(session.projectRoot||process.env.RMCH_COMPARE_PROJECT||path.resolve(import.meta.dirname,'..'));
+const socket=new WebSocket(`ws://127.0.0.1:${session.port}/client?token=${encodeURIComponent(token)}`);
+const timer=setTimeout(()=>{console.error('command timed out');process.exit(1);},35000);
+socket.onopen=()=>socket.send(JSON.stringify({t:'send',id:'manual-'+Date.now(),gameKey:session.gameKey,type:process.argv[3],args:JSON.parse(process.argv[4]||'{}')}));
+socket.onmessage=e=>{const r=JSON.parse(String(e.data));if(r.t==='result'){console.log(JSON.stringify(r.ok?r.payload:{error:r.error}));clearTimeout(timer);socket.close();process.exit(r.ok?0:1);}};
+socket.onerror=()=>{console.error('bridge connection failed');process.exit(1);};

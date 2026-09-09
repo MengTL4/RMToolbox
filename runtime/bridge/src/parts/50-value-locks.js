@@ -45,6 +45,15 @@
     custom.validateLock(data, value);
   }
 
+  function storedInventoryId(kind, raw) {
+    if (kind !== "item" && kind !== "weapon" && kind !== "armor") return Math.floor(Number(raw));
+    const text = String(raw);
+    const prefix = { item: "I", weapon: "W", armor: "A" }[kind];
+    if (prefix && new RegExp(`^${prefix}\\d+$`).test(text)) return text;
+    const number = Number(raw);
+    return Number.isFinite(number) ? Math.floor(number) : null;
+  }
+
   function applyValueLocks() {
     const locks = bridge.valueLocks;
     if (!locks || bridge.suppressLocks > 0) return;
@@ -71,15 +80,17 @@
         const store = party && party[prop];
         if (!party || (!store && !customInventory(party))) continue;
         for (const id of ids) {
+          const itemId = storedInventoryId(kind, id);
+          if (itemId == null) continue;
           const want = Math.max(0, Math.floor(Number(table[id]) || 0));
-          validateInventoryLock(kind, Number(id), want);
-          const data = dataEntryLoose(kind, Number(id), party);
-          const current = inventoryCount(party, prop, id, data);
+          validateInventoryLock(kind, itemId, want);
+          const data = dataEntryLoose(kind, itemId, party);
+          const current = inventoryCount(party, prop, itemId, data);
           if (current !== want) {
             if (data && typeof party.gainItem === "function") {
               withRatesSuppressed(() => changeInventory(party, data, want - current));
             }
-            writeBackItemCount(party, prop, id, want, data);
+            writeBackItemCount(party, prop, itemId, want, data);
           }
         }
       }

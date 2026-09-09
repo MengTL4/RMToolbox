@@ -278,6 +278,18 @@ static void disableHooks() {
   if (fpNewFromUtf8Local) MH_DisableHook((LPVOID)fpNewFromUtf8Local);
 }
 
+static bool installLoggedHook(LPVOID target, LPVOID detour, LPVOID* original) {
+  if (!target) return false;
+  dbgLog(DBG, "hook create begin %p", target);
+  MH_STATUS status = MH_CreateHook(target, detour, original);
+  dbgLog(DBG, "hook create result %p: %d", target, (int)status);
+  if (status != MH_OK) return false;
+  dbgLog(DBG, "hook enable begin %p", target);
+  status = MH_EnableHook(target);
+  dbgLog(DBG, "hook enable result %p: %d", target, (int)status);
+  return status == MH_OK;
+}
+
 static DWORD WINAPI workerThreadBody(LPVOID) {
   HANDLE pipe = pipeConnect(15000);
   if (pipe == INVALID_HANDLE_VALUE) {
@@ -311,31 +323,27 @@ static DWORD WINAPI workerThreadBody(LPVOID) {
     return 0;
   }
 
+  dbgLog(DBG, "minhook initialize begin");
   if (MH_Initialize() != MH_OK) {
     pipeSendResult(pipe, false, "minhook-init-failed");
     CloseHandle(pipe);
     return 0;
   }
+  dbgLog(DBG, "minhook initialized");
 
   // Hook Function::Call (primary, fires every frame) plus whichever
   // NewFromUtf8 overloads exist as a fallback trigger.
   int hooks = 0;
-  if (fpFunctionCall &&
-      MH_CreateHook((LPVOID)fpFunctionCall, (LPVOID)&detourFunctionCall,
-                    (LPVOID*)&g_origCall) == MH_OK &&
-      MH_EnableHook((LPVOID)fpFunctionCall) == MH_OK) {
+  if (installLoggedHook((LPVOID)fpFunctionCall, (LPVOID)&detourFunctionCall,
+                    (LPVOID*)&g_origCall)) {
     hooks++;
   }
-  if (fpNewFromUtf8Maybe &&
-      MH_CreateHook((LPVOID)fpNewFromUtf8Maybe, (LPVOID)&detourNewFromUtf8<0>,
-                    (LPVOID*)&g_origMaybe) == MH_OK &&
-      MH_EnableHook((LPVOID)fpNewFromUtf8Maybe) == MH_OK) {
+  if (installLoggedHook((LPVOID)fpNewFromUtf8Maybe, (LPVOID)&detourNewFromUtf8<0>,
+                    (LPVOID*)&g_origMaybe)) {
     hooks++;
   }
-  if (fpNewFromUtf8Local &&
-      MH_CreateHook((LPVOID)fpNewFromUtf8Local, (LPVOID)&detourNewFromUtf8<1>,
-                    (LPVOID*)&g_origLocal) == MH_OK &&
-      MH_EnableHook((LPVOID)fpNewFromUtf8Local) == MH_OK) {
+  if (installLoggedHook((LPVOID)fpNewFromUtf8Local, (LPVOID)&detourNewFromUtf8<1>,
+                    (LPVOID*)&g_origLocal)) {
     hooks++;
   }
   dbgLog(DBG, "hooks installed: %d", hooks);

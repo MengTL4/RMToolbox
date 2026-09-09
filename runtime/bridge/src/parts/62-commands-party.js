@@ -80,6 +80,15 @@
     return ownedItemData(party, kind, id);
   }
 
+  function inventoryId(value, party, kind) {
+    // Native independent-item plugins allocate kind-prefixed instance IDs
+    // (I###/W###/A###). Accept only an instance actually owned by this party,
+    // never an arbitrary key that merely happens to look like an ID.
+    const prefix = { item: "I", weapon: "W", armor: "A" }[kind];
+    if (prefix && typeof value === "string" && new RegExp(`^${prefix}\\d+$`).test(value) && ownedItemData(party, kind, value)) return value;
+    return requireId(value, "id");
+  }
+
   // Custom engines sometimes replace gainGold with a shell that throws or
   // silently no-ops outside their own UI flow (傲世修仙录定制版: the override
   // dies on "Cannot read property 'constructor' of null"). Run the engine path
@@ -145,7 +154,7 @@
       const party = requireParty("gainItem");
       const kind = normalizeDropKind(args.kind || "item");
       if (!kind) throw new Error(`unsupported item kind: ${args.kind}`);
-      const id = requireId(args.id, "id");
+      const id = inventoryId(args.id, party, kind);
       const data = dataEntryLoose(kind, id, party);
       if (!data) throw new Error(`${kind} ${id} not found`);
       const amount = Math.floor(requireNumber(args.amount, "amount"));
@@ -185,7 +194,7 @@
       const party = requireParty("gainItem");
       const kind = normalizeDropKind(args.kind || "item");
       if (!kind) throw new Error(`unsupported item kind: ${args.kind}`);
-      const id = requireId(args.id, "id");
+      const id = inventoryId(args.id, party, kind);
       const data = dataEntryLoose(kind, id, party);
       if (!data) throw new Error(`${kind} ${id} not found`);
       const count = Math.max(0, Math.floor(requireNumber(args.count, "count")));
@@ -221,6 +230,9 @@
             if (typeof actor.setMp === "function") actor.setMp(Number(readStat(actor, "mmp", "_mmp")) || 9999);
           });
         }
+        if (isNativeFramePacingTarget() && typeof actor.setMp === "function") {
+          withLocksSuppressed(() => actor.setMp(Number(readStat(actor, "mmp", "_mmp")) || 0));
+        }
         refreshActor(actor);
       });
       refreshMapAndWindows();
@@ -250,6 +262,11 @@
     "actor.recover": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       if (typeof actor.recoverAll === "function") actor.recoverAll();
+      // FT's recoverAll restores HP/states only. The toolbox full recovery also
+      // restores its exposed MP value through the native setter.
+      if (isNativeFramePacingTarget() && typeof actor.setMp === "function") {
+        withLocksSuppressed(() => actor.setMp(Number(readStat(actor, "mmp", "_mmp")) || 0));
+      }
       refreshActor(actor);
       refreshMapAndWindows();
       return { actor: actorInfo(actor) };
@@ -262,8 +279,20 @@
         if (typeof actor.maxLevel === "function") maxLevel = Math.max(1, Math.floor(Number(actor.maxLevel() || maxLevel)));
       } catch (_) {}
       const level = Math.min(maxLevel, Math.max(1, Math.floor(requireNumber(args.level, "level"))));
-      // changeLevel(level, false) = no level-up message spam.
-      if (typeof actor.changeLevel === "function") actor.changeLevel(level, false);
+      // FT uses per-level EXP and updates its native level record only through
+      // thTyChangeExp/levelNewUp. Stock changeLevel leaves that record stale.
+      if (typeof isNativeFramePacingTarget === "function" && isNativeFramePacingTarget() &&
+          typeof actor.thTyChangeExp === "function" && typeof actor.levelNewUp === "function") {
+        if (level < actor.level) throw new Error("当前游戏的原生等级接口不支持降级");
+        withRatesSuppressed(() => {
+          while (actor.level < level) {
+            const before = actor.level, threshold = Number(actor.nextLevelExp());
+            if (!Number.isFinite(threshold) || threshold <= 0) throw new Error("游戏升级经验阈值无效");
+            actor.thTyChangeExp(threshold, false, true);
+            if (actor.level <= before || actor.level > level) throw new Error("游戏未按原生等级规则完成升级");
+          }
+        });
+      } else if (typeof actor.changeLevel === "function") actor.changeLevel(level, false);
       else actor._level = level;
       refreshActor(actor);
       refreshMapAndWindows();
@@ -328,6 +357,11 @@
         actor._paramPlus = actor._paramPlus || [0, 0, 0, 0, 0, 0, 0, 0];
         actor._paramPlus[paramId] = Number(actor._paramPlus[paramId] || 0) + value;
       }
+      if (typeof thParameterMethods !== "undefined" && thParameterMethods.has(actor.paramPlus) &&
+          before.every((entry, index) => entry === readParam()[index])) {
+        actor._paramPlus = actor._paramPlus || [0, 0, 0, 0, 0, 0, 0, 0];
+        actor._paramPlus[paramId] = Number(actor._paramPlus[paramId] || 0) + value;
+      }
       refreshActor(actor);
       const after = readParam();
       if (value !== 0 && before.every((entry, index) => entry === after[index])) {
@@ -357,12 +391,30 @@
 
     "actor.class.set": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
-      const classId = Math.floor(requireNumber(args.classId, "classId"));
+      const classId = requireId(args.classId, "classId");
+      const classes = runtimeDataTable("class");
+      if (classes.length && !classes[classId]) throw new Error(`class ${classId} not found`);
       if (typeof actor.changeClass !== "function") throw new Error("actor.changeClass is unavailable");
+      if (isNativeFramePacingTarget() && actor._thExpFxgGetNum && typeof actor.currentExp === "function") {
+        const party = resolveParty();
+        if (!party || typeof party.fhZhNumGain !== "function") throw new Error("当前游戏的职业经验初始化接口不可用");
+        // Native changeClass copies the numeric experience but omits its
+        // per-class record. Use the same writer as native gainExp before the
+        // class switch validates the target's experience.
+        const exp = args.keepExp !== false ? actor.currentExp() : Number(actor._exp && actor._exp[classId]) || 0;
+        party.fhZhNumGain(exp, 1, actor, classId);
+      }
       actor.changeClass(classId, args.keepExp !== false);
       refreshActor(actor);
       refreshMapAndWindows();
-      return { actor: actorInfo(actor) };
+      const info = actorInfo(actor);
+      if (info.classId != null && info.classId !== classId) {
+        if (typeof actor._zwEnsureClass_Multi === "function") {
+          throw new Error("该角色的职业由原生专武规则决定，暂不支持直接切换到所选职业");
+        }
+        throw new Error(`职业切换未生效：请求 ${classId}，实际 ${info.classId}`);
+      }
+      return { actor: info };
     },
 
     "actor.skill.learn": (args) => {

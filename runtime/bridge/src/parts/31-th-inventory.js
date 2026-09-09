@@ -1,10 +1,11 @@
+  // Native inventory adapters preserve each plugin's grant/removal behavior.
   // TH_ItemCore replaces the party's numeric containers with per-actor bags
   // and a warehouse. Keep the game's own grant/removal methods and its unique
   // equipment instances; the old _items/numItems API no longer describes it.
   function resolveCustomInventory(party) {
     if (!party || typeof party.newGetItem !== "function" || typeof party.thTyZhNumGain !== "function" ||
         typeof party.thTyZhNumGet !== "function" || !Array.isArray(party._tkCkItem) ||
-        typeof party.members !== "function") return null;
+        typeof party.members !== "function") return resolveIndependentInventory(party);
 
     const prefixes = { I: "item", W: "weapon", A: "armor" };
     function kindOf(data) {
@@ -99,6 +100,63 @@
           }
         }
         return count(data);
+      }
+    };
+  }
+
+  function resolveIndependentInventory(party) {
+    const manager = window.DataManager;
+    if (!party || typeof party.gainIndependentItem !== "function" ||
+        !manager || typeof manager.isIndependent !== "function") return null;
+    const kinds = [["item", "items"], ["weapon", "weapons"], ["armor", "armors"]];
+    const instance = data => data && data.baseItemId != null && String(data.baseItemId) !== String(data.id);
+    function rows() {
+      const result = [];
+      for (const [kind, method] of kinds) {
+        if (typeof party[method] !== "function") continue;
+        for (const data of party[method]() || []) {
+          if (!data) continue;
+          const count = Number(party.numItems(data)) || 0;
+          if (count > 0) result.push({ kind, data, count });
+        }
+      }
+      return result;
+    }
+    function count(data) {
+      if (instance(data) || !manager.isIndependent(data)) return Number(party.numItems(data)) || 0;
+      const kind = manager.isWeapon(data) ? "weapon" : manager.isArmor(data) ? "armor" : "item";
+      return rows().filter(row => row.kind === kind && String(row.data.baseItemId || row.data.id) === String(data.id))
+        .reduce((total, row) => total + row.count, 0);
+    }
+    return {
+      count,
+      entries: () => rows().map(row => ({kind: row.kind, id: row.data.id, name: row.data.name || "",
+        count: row.count, baseItemId: row.data.baseItemId || null})),
+      validateLock(data, value) {
+        if (manager.isIndependent(data) && data.baseItemId != null && String(data.baseItemId) !== String(data.id) && value > 1) {
+          throw new Error("独立装备实例只能锁定为 0 或 1 件");
+        }
+        if (!Number.isInteger(value) || value < 0 || value > 1000) throw new Error("物品锁数量必须在 0 到 1000 之间");
+      },
+      change(data, delta) {
+        if (!Number.isInteger(delta) || Math.abs(delta) > 1000) throw new Error("每次最多修改 1000 件物品");
+        if (delta > 0 && instance(data)) throw new Error("这是独立装备实例；添加装备时请选择基础装备目录");
+        const kind = manager.isWeapon(data) ? "weapon" : manager.isArmor(data) ? "armor" : "item";
+        const before = count(data);
+        if (delta < 0 && manager.isIndependent(data) && !instance(data)) {
+          // A base weapon/armor has no native numeric container. Remove actual
+          // owned instances one at a time so the game's own instance metadata
+          // and equipment bookkeeping remain intact.
+          for (let step = 0; step < -delta; step += 1) {
+            const row = rows().find(candidate => candidate.kind === kind &&
+              String(candidate.data.baseItemId || candidate.data.id) === String(data.id));
+            if (!row) break;
+            party.gainItem(row.data, -1);
+          }
+        } else if (delta) party.gainItem(data, delta);
+        const actual = count(data);
+        if (actual !== Math.max(0, before + delta)) throw new Error(`游戏仅应用了部分变化：当前数量 ${actual}（原数量 ${before}）`);
+        return actual;
       }
     };
   }

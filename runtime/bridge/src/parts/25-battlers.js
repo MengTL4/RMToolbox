@@ -122,8 +122,9 @@
   function actorIdOf(actor) {
     if (!actor) return null;
     try {
-      if (typeof actor.actorId === "function") return actor.actorId();
-      return actor._actorId || null;
+      const id = typeof actor.actorId === "function" ? actor.actorId() : actor._actorId;
+      const numeric = Number(id);
+      return Number.isInteger(numeric) && numeric > 0 ? numeric : id || null;
     } catch (_) {
       return null;
     }
@@ -234,16 +235,20 @@
     } catch (_) { params = null; }
 
     let className = null;
+    let classId = Number(actor._classId) || null;
     try {
       const klass = typeof actor.currentClass === "function" ? actor.currentClass() : null;
       className = klass && klass.name || null;
+      // TH stores _classId as an encoded string; the native record exposes
+      // the actual ID needed by the editor and by changeClass.
+      if (klass && Number(klass.id) > 0) classId = Number(klass.id);
     } catch (_) { className = null; }
 
     return {
       id: actorIdOf(actor),
       name: actorNameOf(actor),
       nickname: typeof actor.nickname === "function" ? safeCall(() => actor.nickname()) : null,
-      classId: Number(actor._classId) || null,
+      classId,
       className,
       level: readStat(actor, "level", "_level"),
       maxLevel: typeof actor.maxLevel === "function" ? safeCall(() => actor.maxLevel()) : null,

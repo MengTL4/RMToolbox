@@ -1,7 +1,8 @@
-// TH-QianC's module monitor treats the installed Sangfor VPN components as
-// unknown injected modules and quits even on an untouched game launch.
+// Game module monitors can mistake installed VPN/font components for injected
+// game modifications and quit even on an untouched launch.
 import { readFileSync } from "node:fs";
 import path from "node:path";
+export const GROVER_BRIDGE_READY_MS = 60000;
 
 export function isKnownSangforModule(value, programFiles = process.env["ProgramFiles(x86)"]) {
   if (!programFiles) return false;
@@ -13,6 +14,33 @@ export function isKnownSangforModule(value, programFiles = process.env["ProgramF
     ["sangforpwex\\sangforvpnlibcrypto-1_1.dll", "clientcomponent\\sangfortcp.dll", "clientcomponent\\5_sangfornsp.dll"].includes(rel);
 }
 
+export function isKnownMacTypeModule(value) {
+  const full = path.win32.normalize(String(value)).toLowerCase();
+  return path.win32.basename(path.win32.dirname(full)) === "mactype" &&
+    ["mactype.dll", "mactype.core.dll"].includes(path.win32.basename(full));
+}
+
+export function isKnownCompatibilityModule(value) {
+  return isKnownSangforModule(value) || isKnownMacTypeModule(value);
+}
+
+// Shadow startup runs before SceneManager exists, so report compatibility must
+// not depend on the later bridge or engine readiness.
+export function buildModuleReportCompatibility() {
+  return `(function(){try{
+    var path=require('path'),report=process.report;
+    if(!report||typeof report.getReport!=='function'||process.__rmchKnownModuleReport)return;
+    ${isKnownSangforModule.toString()}
+    ${isKnownMacTypeModule.toString()}
+    ${isKnownCompatibilityModule.toString()}
+    var original=report.getReport;
+    var modules=(original.call(report)||{}).sharedObjects;
+    if(!Array.isArray(modules)||!modules.some(isKnownCompatibilityModule))return;
+    report.getReport=function(){var value=original.apply(this,arguments);if(value&&Array.isArray(value.sharedObjects))value.sharedObjects=value.sharedObjects.filter(function(module){return !isKnownCompatibilityModule(module)});return value;};
+    process.__rmchKnownModuleReport=true;
+  }catch(_){}})();`;
+}
+
 export function hasGroverModuleMonitor(jsDir) {
   try {
     const bytes = readFileSync(path.join(jsDir, "plugins", "TH-QianC.js"));
@@ -21,8 +49,8 @@ export function hasGroverModuleMonitor(jsDir) {
 }
 
 export function buildGroverCompatibilityBootstrap(statusPath, { delayedBootstrapPath = null, delayMs = 60000, matchedModules = null } = {}) {
-  // Only the four observed components under the actual Windows program-files
-  // directory qualify. This does not change DLL loading or stop any component.
+  // Only the observed Sangfor components and the two MacType font DLLs qualify.
+  // This does not change DLL loading or stop any component.
   return `(function(){
     if(typeof window==='undefined'||!window.SceneManager)throw Error('rmch-not-game-page');
     var gameWindow=window;
@@ -45,7 +73,7 @@ export function buildGroverCompatibilityBootstrap(statusPath, { delayedBootstrap
             timers.setTimeout(function(){observe('after-bridge');},1000);return;
           }
         }catch(e){status({status:'bridge-error',error:String(e)});return;}
-        var deadline=Date.now()+14000,done=false;
+        var deadline=Date.now()+${GROVER_BRIDGE_READY_MS},done=false;
         var poll=timers.setInterval(function(){
           if(done)return;
           if(Date.now()>deadline){done=true;timers.clearInterval(poll);status({status:'bridge-error',error:'No game window became ready'});return;}
@@ -64,11 +92,12 @@ export function buildGroverCompatibilityBootstrap(statusPath, { delayedBootstrap
     if(!report||typeof report.getReport!=='function'){status({status:'unavailable'});return;}
     var original=report.getReport;
     var base=process.env['ProgramFiles(x86)'];
-    if(!base){status({status:'skipped',reason:'no-program-files'});later();return;}
-    var prefix=path.win32.join(base,'Sangfor','SSL').toLowerCase()+'\\\\';
+    var prefix=base?path.win32.join(base,'Sangfor','SSL').toLowerCase()+'\\\\':'';
+    ${isKnownMacTypeModule.toString()}
     function known(value){
+      if(isKnownMacTypeModule(value))return true;
       var full=path.win32.normalize(String(value)).toLowerCase();
-      if(full.indexOf(prefix)!==0)return false;
+      if(!prefix||full.indexOf(prefix)!==0)return false;
       var rel=full.slice(prefix.length);
       return /^sangforpwex\\\\sangforudprotectex_[0-9]+[.]dll$/.test(rel)||
         rel==='sangforpwex\\\\sangforvpnlibcrypto-1_1.dll'||
@@ -76,7 +105,7 @@ export function buildGroverCompatibilityBootstrap(statusPath, { delayedBootstrap
     }
     var modules=${matchedModules ? JSON.stringify(matchedModules) : "(original.call(report)||{}).sharedObjects"};
     var matched=Array.isArray(modules)?modules.filter(known):[];
-    if(!matched.length){status({status:'skipped',reason:'no-known-sangfor-modules'});later();return;}
+    if(!matched.length){status({status:'skipped',reason:'no-known-modules'});later();return;}
     report.getReport=function(){var value=original.apply(this,arguments);if(value&&Array.isArray(value.sharedObjects))value.sharedObjects=value.sharedObjects.filter(function(p){return !known(p)});return value;};
     window.__rmchGroverCompatibility={version:1,modules:matched.map(function(p){return path.win32.basename(p)})};
     status({status:'applied',modules:window.__rmchGroverCompatibility.modules});

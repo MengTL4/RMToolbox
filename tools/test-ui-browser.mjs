@@ -135,6 +135,13 @@ try {
   await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='应用').click()`);
   await sleep(100);
   assert.equal(await evaluate("__guiFixture.calls.filter(c=>c.type==='item.set').length"), editsBefore + 1);
+  await evaluate(`RMCH.store.data.owned.item=[{kind:'item',id:'I123',baseItemId:1,name:'独立实例测试',count:1}]; RMCH.store.data.counts.item.I123=1; RMCH.store.data.selected.item='I123'`);
+  await sleep(100);
+  assert.ok(await evaluate("document.body.innerText.includes('独立实例测试')"));
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='+1').click()`);
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='应用').click()`);
+  await sleep(100);
+  assert.equal(await evaluate("__guiFixture.calls.filter(c=>c.type==='item.set').at(-1).args.id"),'I123');
   await evaluate(`__guiFixture.sessions=__guiFixture.sessions.filter(s=>s.gameKey!=='a'); __guiFixture.handlers.onSessions(__guiFixture.sessions)`);
   await sleep(100);
   assert.ok(await evaluate("document.body.innerText.includes('当前游戏已断开')"));

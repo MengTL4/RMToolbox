@@ -297,23 +297,31 @@ function webStorageBackupFile(gameKey, name) {
   return file;
 }
 
-async function usesWebStorage(gameKey) {
+async function runtimeSaveStorage(gameKey) {
   const live = listSessions().find(session => session.gameKey === gameKey && session.alive);
   if (!live) return false;
-  return (await send(gameKey, "save.list", {})).storage === "webstorage";
+  const storage = (await send(gameKey, "save.list", {})).storage;
+  return ["webstorage", "native"].includes(storage) ? storage : null;
+}
+
+function runtimeBackupStorage(format) {
+  if (format === "rmch-mv-native-v1") return "native";
+  if (["rmch-mv-webstorage-v1", "rmch-mz-forage-v1"].includes(format)) return "webstorage";
+  return null;
 }
 
 async function backupSaves(gameKey) {
   let result;
-  if (await usesWebStorage(gameKey)) {
-    const snapshot = await send(gameKey, "save.webstorage.export", {});
+  const storage = await runtimeSaveStorage(gameKey);
+  if (storage) {
+    const snapshot = await send(gameKey, `save.${storage}.export`, {});
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
     let name = stamp, suffix = 1;
     while (fs.existsSync(path.dirname(webStorageBackupFile(gameKey, name)))) name = `${stamp}-${suffix++}`;
     const target = webStorageBackupFile(gameKey, name);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, JSON.stringify(snapshot), { flag: "wx" });
-    result = { gameKey, destDir: path.dirname(target), files: snapshot.entries.length, storage: "webstorage" };
+    result = { gameKey, destDir: path.dirname(target), files: snapshot.entries.length, storage };
   } else result = saveFiles().backup(gameKey);
   guiLog("save backup created", result);
   return result;
@@ -324,8 +332,9 @@ function listBackups(gameKey) {
     const file = webStorageBackupFile(gameKey, entry.name);
     if (!fs.existsSync(file)) return entry;
     const snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (snapshot.format !== "rmch-mv-webstorage-v1" || !Array.isArray(snapshot.entries)) throw new Error("invalid WebStorage backup");
-    return { ...entry, storage: "webstorage", files: snapshot.entries.length, bytes: fs.statSync(file).size };
+    const storage = runtimeBackupStorage(snapshot.format);
+    if (!storage || !Array.isArray(snapshot.entries)) throw new Error("invalid runtime save backup");
+    return { ...entry, storage, files: snapshot.entries.length, bytes: fs.statSync(file).size };
   });
 }
 
@@ -341,9 +350,10 @@ async function restoreBackup(gameKey, name) {
   const file = webStorageBackupFile(gameKey, name);
   let result;
   if (fs.existsSync(file)) {
-    if (!await usesWebStorage(gameKey)) throw new Error("请先连接使用浏览器存档的游戏，再恢复这份备份");
     const snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
-    result = { gameKey, name, ...await send(gameKey, "save.webstorage.import", { snapshot }) };
+    const storage = await runtimeSaveStorage(gameKey);
+    if (!storage || runtimeBackupStorage(snapshot.format) !== storage) throw new Error("请先连接使用对应存档方式的游戏，再恢复这份备份");
+    result = { gameKey, name, ...await send(gameKey, `save.${storage}.import`, { snapshot }) };
   } else result = saveFiles().restore(gameKey, name);
   guiLog("save backup restored", { gameKey, name, files: result.restored });
   return result;
@@ -378,8 +388,9 @@ function openPath(target) {
 // slots but has no delete, so the GUI does it from this side — same directory
 // save.list read from (saveDirOf prefers the live session's answer).
 async function deleteSaveFile(gameKey, fileName) {
-  const result = await usesWebStorage(gameKey)
-    ? await send(gameKey, "save.webstorage.delete", { name: fileName })
+  const storage = await runtimeSaveStorage(gameKey);
+  const result = storage
+    ? await send(gameKey, `save.${storage}.delete`, { name: fileName })
     : saveFiles().deleteSave(gameKey, fileName);
   guiLog("save file deleted", { gameKey, name: result.name });
   return result;

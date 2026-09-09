@@ -41,6 +41,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { buildBridge } from "./bridge-bundler.mjs";
+import { buildModuleReportCompatibility } from "./grover-compat.mjs";
 
 const SHADOW_ROOT = path.join("runtime", "shadow-apps");
 const PROFILE_ROOT = path.join("runtime", "shadow-profiles");
@@ -87,8 +88,18 @@ function mergeSaveFiles(srcDir, dstDir) {
   }
 }
 
-function buildPrelude(gameRoot) {
-  return `;(function () {
+function shadowExecutableRelative(scan) {
+  const source = scan.paths && scan.paths.exe || path.join(scan.root, "Game.exe");
+  const relative = path.relative(scan.root, source);
+  if (!relative || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+    throw new Error(`shadow executable must be inside the game root: ${source}`);
+  }
+  return relative;
+}
+
+function buildPrelude(gameRoot, executableRelative) {
+  return `;${buildModuleReportCompatibility()}
+;(function () {
   try {
     var fs = require("fs");
     var path = require("path");
@@ -97,7 +108,7 @@ function buildPrelude(gameRoot) {
     try {
       Object.defineProperty(process, "execPath", {
         configurable: true,
-        get: function () { return path.join(gameRoot, "Game.exe"); }
+        get: function () { return path.join(gameRoot, ${jsString(executableRelative)}); }
       });
     } catch (_) {}
     try {
@@ -191,6 +202,7 @@ function linkShadowEntry(source, dest, relSkip) {
 // Save rescue, link construction and private patch copies form one operation.
 // Callers only supply the game-specific source transformation.
 function buildShadowApp({ projectRoot, scan, gameKey, scriptRel, patch }) {
+  const executableRelative = shadowExecutableRelative(scan);
   const parts = String(scriptRel).split(/[\\/]+/).filter((part) => part && part !== ".");
   if (path.isAbsolute(scriptRel) || /^[A-Za-z]:/.test(scriptRel) || parts.includes("..") || !parts.length) {
     throw new Error(`invalid shadow patch path: ${scriptRel}`);
@@ -243,8 +255,8 @@ function buildShadowApp({ projectRoot, scan, gameKey, scriptRel, patch }) {
   if (lstatSync(patchedPath, { throwIfNoEntry: false })) rmSync(patchedPath, { recursive: true, force: true });
   mkdirSync(path.dirname(patchedPath), { recursive: true });
   writeFileSync(patchedPath, patched, "utf8");
-  const gameExe = path.join(appDir, "Game.exe");
-  if (!existsSync(gameExe)) throw new Error(`shadow Game.exe missing: ${gameExe}`);
+  const gameExe = path.join(appDir, executableRelative);
+  if (!existsSync(gameExe)) throw new Error(`shadow executable missing: ${gameExe}`);
   return { appDir, gameExe, patchedPath };
 }
 
@@ -365,7 +377,7 @@ export function setupShadowApp({ projectRoot, scan, gameKey }) {
   const result = buildShadowApp({
     projectRoot, scan, gameKey, scriptRel: bgScriptName,
     patch(source) {
-      return buildPrelude(scan.root) + (grover ? buildGroverBootstrap({ bridgePath, logPath }) : "")
+      return buildPrelude(scan.root, shadowExecutableRelative(scan)) + (grover ? buildGroverBootstrap({ bridgePath, logPath }) : "")
         + source + buildSuffix({ bridgePath, logPath, gameKey });
     }
   });
@@ -381,6 +393,12 @@ export function setupShadowApp({ projectRoot, scan, gameKey }) {
     const shimPath = path.join(result.appDir, "wmic.exe");
     if (lstatSync(shimPath, { throwIfNoEntry: false })) rmSync(shimPath, { recursive: true, force: true });
     copyFileSync(shimSource, shimPath);
+  } else if (!existsSync(path.join(scan.root, "wmic.exe"))) {
+    // Switching from the guarded strategy must also remove its generated
+    // executable: Windows command lookup searches cwd even without PATH edits.
+    const shimPath = path.join(result.appDir, "wmic.exe");
+    const shim = lstatSync(shimPath, { throwIfNoEntry: false });
+    if (shim && (shim.isFile() || shim.isSymbolicLink())) rmSync(shimPath, { force: true });
   }
   return { appDir: result.appDir, gameExe: result.gameExe, bgScriptPath: result.patchedPath };
 }
@@ -456,15 +474,18 @@ export function launchShadowGame({ projectRoot, scan, gameKey, port, token }) {
 // unmodified. eval() resolves each name in the bundle's own scope chain; a
 // name the family variant lacks throws and is skipped.
 const BUNDLED_PUBLISH_NAMES = [
-  "Utils", "JsonEx",
+  "Utils", "JsonEx", "Graphics", "Input", "TouchInput",
   "DataManager", "SceneManager", "BattleManager", "ConfigManager",
   "StorageManager", "ImageManager", "AudioManager", "TextManager",
-  "Scene_Map",
+  "Scene_Map", "Scene_Title", "Scene_Battle", "Scene_Item", "Scene_Skill",
+  "Scene_Equip", "Scene_Status", "Scene_Menu", "Scene_Save", "Scene_Load",
+  "Scene_Options", "Scene_Debug", "Scene_Shop", "Scene_Name", "Scene_GameEnd",
   "Game_BattlerBase", "Game_Battler", "Game_Actor", "Game_Actors",
   "Game_Party", "Game_Player", "Game_Enemy", "Game_Troop", "Game_Map",
   "Game_System", "Game_Screen", "Game_Temp", "Game_Switches",
   "Game_Variables", "Game_SelfSwitches", "Game_Follower", "Game_Followers",
-  "Game_Event", "Game_CommonEvent", "Game_Interpreter"
+  "Game_Event", "Game_CommonEvent", "Game_Interpreter", "Game_Action",
+  "Game_Item", "Game_Timer", "Game_Message", "Game_Vehicle"
 ];
 
 // $data*/$game* are closure VARIABLES too (measured on 命运II离线版: nothing

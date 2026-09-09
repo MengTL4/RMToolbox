@@ -40,14 +40,14 @@ const CDP_DEAD_GRACE_MS = 90000;
 // Shape-test order matters: managers and data tables are the most specific,
 // plain singletons the most generic. Everything sits in per-object try/catch —
 // the heap is full of hostile objects (proxies, detached frames, natives).
-const SEALED_SEED_FN = `function () {
+export const SEALED_SEED_FN = `function () {
   const found = {
     party: [], map: [], vars: [], switches: [], selfSwitches: [], actors: [],
-    system: [], temp: [], screen: [], troop: [], player: [],
+    system: [], temp: [], screen: [], troop: [], player: [], message: [],
     sceneManager: [], dataManager: [], configManager: [], storageManager: [],
-    battleManager: [], jsonEx: [], imageManager: [],
+    battleManager: [], jsonEx: [], imageManager: [], scenes: [], constructors: [],
     dataItems: [], dataWeapons: [], dataArmors: [], dataSkills: [], dataStates: [],
-    dataActors: [], dataEnemies: [], dataTroops: [], dataMapInfos: [],
+    dataActors: [], dataClasses: [], dataEnemies: [], dataTroops: [], dataMapInfos: [],
     dataCommonEvents: [], dataSystem: []
   };
   for (const x of this) {
@@ -55,6 +55,15 @@ const SEALED_SEED_FN = `function () {
     try {
       const kind = typeof x;
       if (kind === "function") {
+        // Scene constructors are closure-sealed too. Without them the bridge
+        // can edit party data but cannot finish a load or enter native menus.
+        const proto = x.prototype;
+        if (proto && typeof proto.create === "function" && typeof proto.start === "function") found.scenes.push(x);
+        if (proto && typeof proto.initialize === "function" &&
+            (/^Game_[A-Za-z0-9_]+$/.test(x.name || "") ||
+             typeof proto.executeCommand === "function" || typeof proto.isActor === "function" ||
+             typeof proto.isMoving === "function" || typeof proto.isItem === "function" ||
+             typeof proto.setValue === "function" || typeof proto.gainGold === "function")) found.constructors.push(x);
         // Most MZ "managers" are functions with statics (SceneManager,
         // DataManager, JsonEx, ImageManager, BattleManager, StorageManager —
         // the latter two could be either form; the family under test ships
@@ -62,7 +71,8 @@ const SEALED_SEED_FN = `function () {
         // skipped and every manager-shaped resolver in the bridge stays dead.
         if ("_scene" in x && "_stack" in x && typeof x.run === "function") found.sceneManager.push(x);
         else if ("_databaseFiles" in x && typeof x.isDatabaseLoaded === "function") found.dataManager.push(x);
-        else if (typeof x.saveObject === "function" && typeof x.loadObject === "function") found.storageManager.push(x);
+        else if ((typeof x.saveObject === "function" && typeof x.loadObject === "function") ||
+                 (typeof x.localFileDirectoryPath === "function" && typeof x.save === "function" && typeof x.load === "function")) found.storageManager.push(x);
         else if (typeof x.startBattle === "function" && typeof x.isBattleTest === "function") found.battleManager.push(x);
         else if (x.maxDepth !== undefined && typeof x.stringify === "function" && typeof x._encode === "function") found.jsonEx.push(x);
         else if (typeof x.loadSystem === "function" && typeof x.loadFace === "function") found.imageManager.push(x);
@@ -70,7 +80,7 @@ const SEALED_SEED_FN = `function () {
       }
       if (kind !== "object") continue;
       if (Array.isArray(x)) {
-        if (x.length > 1 && x[1] && typeof x[1] === "object") {
+        if (x.length > 1 && x[0] == null && x[1] && typeof x[1] === "object" && typeof x[1].id === "number") {
           const e = x[1];
           // This family's $dataItems has no atypeId (custom schema): itypeId
           // alone identifies the item table; weapons/armors follow.
@@ -80,8 +90,9 @@ const SEALED_SEED_FN = `function () {
           else if (e.atypeId !== undefined) found.dataArmors.push(x);
           else if (e.autoRemovalTiming !== undefined) found.dataStates.push(x);
           else if (e.profile !== undefined) found.dataActors.push(x);
+          else if (Array.isArray(e.expParams) && Array.isArray(e.learnings)) found.dataClasses.push(x);
           else if (e.battlerName !== undefined && e.exp !== undefined) found.dataEnemies.push(x);
-          else if (e.members !== undefined && e.turns !== undefined) found.dataTroops.push(x);
+          else if (Array.isArray(e.members) && Array.isArray(e.pages)) found.dataTroops.push(x);
           else if (e.list !== undefined && e.trigger !== undefined) found.dataCommonEvents.push(x);
           else if (e.parentId !== undefined && e.order !== undefined) found.dataMapInfos.push(x);
         }
@@ -109,6 +120,7 @@ const SEALED_SEED_FN = `function () {
       else if (x._brightness !== undefined && Array.isArray(x._flashColor)) found.screen.push(x);
       else if (x._troopId !== undefined && x._phase === undefined) found.troop.push(x);
       else if (x._vehicleType !== undefined && x._followers !== undefined) found.player.push(x);
+      else if (Array.isArray(x._texts) && Array.isArray(x._choices) && typeof x.isBusy === "function" && typeof x.add === "function") found.message.push(x);
       else if (x.alwaysDash !== undefined && x.bgmVolume !== undefined) found.configManager.push(x);
       else if (x.gameTitle !== undefined && Array.isArray(x.switches) && Array.isArray(x.variables)) found.dataSystem.push(x);
     } catch (_) {}
@@ -116,6 +128,15 @@ const SEALED_SEED_FN = `function () {
 
   const summary = { published: [], patched: [], warnings: [], counts: {} };
   for (const key of Object.keys(found)) summary.counts[key] = found[key].length;
+  const nativeScene = found.sceneManager[0] && found.sceneManager[0]._scene;
+  if (nativeScene && (nativeScene.constructor.name === "Scene_Boot" ||
+      typeof nativeScene.loadSystemImages === "function" && typeof nativeScene.checkPlayerLocation === "function")) {
+    // Boot plugins are still processing metadata. Publishing captured copies
+    // now can make those plugins observe tables before their notes are ready.
+    summary.partial = true;
+    summary.waitingForBoot = true;
+    return summary;
+  }
   const publish = (name, value) => {
     if (!value) return;
     try {
@@ -130,23 +151,31 @@ const SEALED_SEED_FN = `function () {
     if (list.length > 1) summary.warnings.push(label + ": " + list.length + " candidates, took first");
     return list[0] || null;
   };
-  // Data-table buckets may legitimately hold duplicates: this game family
-  // keeps byte-identical template clones of the item/weapon/armor databases
-  // (the 轮回-reset copies). Content-equal, so the first is fine.
+  // JSON capture caches and reset templates can be content-equal but fail
+  // DataManager's identity-based inventory predicates. Prefer the live table.
   const takeFirst = (label) => {
     const list = found[label] || [];
+    const predicate = { dataItems: "isItem", dataWeapons: "isWeapon", dataArmors: "isArmor", dataSkills: "isSkill" }[label];
+    const manager = found.dataManager[0];
+    if (predicate && manager && typeof manager[predicate] === "function") {
+      const native = list.find(table => {
+        const entry = table.find(item => item && typeof item === "object");
+        try { return !!entry && manager[predicate](entry); } catch (_) { return false; }
+      });
+      if (native) return native;
+    }
     return list[0] || null;
   };
   const singletonAliases = [
     ["$gameParty", "party"], ["$gameMap", "map"], ["$gameVariables", "vars"],
     ["$gameSwitches", "switches"], ["$gameSelfSwitches", "selfSwitches"],
     ["$gameActors", "actors"], ["$gameSystem", "system"], ["$gameTemp", "temp"],
-    ["$gameScreen", "screen"], ["$gameTroop", "troop"], ["$gamePlayer", "player"]
+    ["$gameScreen", "screen"], ["$gameTroop", "troop"], ["$gamePlayer", "player"], ["$gameMessage", "message"]
   ];
   for (const entry of singletonAliases) publish(entry[0], takeSingleton(entry[1]));
   for (const entry of [["$dataItems", "dataItems"], ["$dataWeapons", "dataWeapons"],
       ["$dataArmors", "dataArmors"], ["$dataSkills", "dataSkills"], ["$dataStates", "dataStates"],
-      ["$dataActors", "dataActors"], ["$dataEnemies", "dataEnemies"], ["$dataTroops", "dataTroops"],
+      ["$dataActors", "dataActors"], ["$dataClasses", "dataClasses"], ["$dataEnemies", "dataEnemies"], ["$dataTroops", "dataTroops"],
       ["$dataMapInfos", "dataMapInfos"], ["$dataCommonEvents", "dataCommonEvents"],
       ["$dataSystem", "dataSystem"]]) {
     publish(entry[0], takeFirst(entry[1]));
@@ -155,6 +184,40 @@ const SEALED_SEED_FN = `function () {
       ["ConfigManager", "configManager"], ["StorageManager", "storageManager"],
       ["BattleManager", "battleManager"], ["JsonEx", "jsonEx"], ["ImageManager", "imageManager"]]) {
     publish(entry[0], takeSingleton(entry[1]));
+  }
+  // Exact engine names take precedence over inferred superclass signatures.
+  for (const scene of found.scenes) {
+    if (/^Scene_[A-Za-z0-9_]+$/.test(scene.name || "") && typeof window[scene.name] !== "function") publish(scene.name, scene);
+  }
+  for (const scene of found.scenes) {
+    const proto = scene.prototype;
+    const signatures = [
+      ["Scene_Map", "onMapLoaded", "processMapTouch"],
+      ["Scene_Battle", "createPartyCommandWindow", "startActorCommandSelection"],
+      ["Scene_Item", "createCategoryWindow", "onCategoryOk"],
+      ["Scene_Skill", "createSkillTypeWindow", "refreshActor"],
+      ["Scene_Equip", "createSlotWindow", "onSlotOk"],
+      ["Scene_Status", "createProfileWindow", "createStatusWindow"],
+      ["Scene_Menu", "commandPersonal", "commandFormation"],
+      ["Scene_Title", "commandNewGame", "commandContinue"],
+      ["Scene_Save", "onSaveSuccess", "onSaveFailure"],
+      ["Scene_Load", "onLoadSuccess", "onLoadFailure"],
+      ["Scene_Options", "createOptionsWindow", "maxCommands"],
+      ["Scene_Debug", "createRangeWindow", "createEditWindow"],
+      ["Scene_GameEnd", "commandToTitle", "createCommandWindow"]
+    ];
+    for (const signature of signatures) {
+      if (typeof proto[signature[1]] === "function" && typeof proto[signature[2]] === "function" &&
+          typeof window[signature[0]] !== "function") publish(signature[0], scene);
+    }
+  }
+  // JsonEx restores prototype names that need not have a current singleton
+  // (followers, vehicles, interpreters, items and actions among others).
+  for (const ctor of found.constructors) {
+    if (ctor.name && typeof window[ctor.name] !== "function") publish(ctor.name, ctor);
+    if (typeof ctor.prototype.executeCommand === "function" && typeof ctor.prototype.command101 === "function") publish("Game_Interpreter", ctor);
+    if (typeof ctor.prototype.setAttack === "function" && typeof ctor.prototype.executeHpDamage === "function") publish("Game_Action", ctor);
+    if (typeof ctor.prototype.enemyId === "function" && typeof ctor.prototype.makeDropItems === "function") publish("Game_Enemy", ctor);
   }
 
   // The shape scan alone cannot pick the LIVE singleton generation: this game
@@ -238,9 +301,13 @@ const SEALED_SEED_FN = `function () {
     const dataManager = window.DataManager;
     if (dataManager && typeof dataManager.extractSaveContents === "function" && !dataManager.__rmchExtractPatched) {
       const originalExtract = dataManager.extractSaveContents;
-      const republishAll = function () {
+      const republishAll = function (extracted) {
         try {
-          const contents = dataManager.makeSaveContents ? dataManager.makeSaveContents() : null;
+          let contents = extracted;
+          // Some MV plugins add map.displayName to save metadata. During a
+          // load the map is not available yet, though extraction has already
+          // installed these decoded singletons successfully.
+          try { contents = dataManager.makeSaveContents ? dataManager.makeSaveContents() : extracted; } catch (_) {}
           if (!contents) return;
           const contentsAliases = {
             system: "$gameSystem", screen: "$gameScreen", temp: "$gameTemp",
@@ -256,7 +323,7 @@ const SEALED_SEED_FN = `function () {
       };
       const wrappedExtract = function () {
         const result = originalExtract.apply(this, arguments);
-        republishAll();
+        republishAll(arguments[0]);
         return result;
       };
       Object.defineProperty(dataManager, "extractSaveContents", {
@@ -282,6 +349,54 @@ const SEALED_SEED_FN = `function () {
   }
   return summary;
 }`;
+
+// NW's built-in debugger transport can query its own game page even when a
+// sealed launcher rejects command-line debugging flags. It uses the same heap
+// publisher as the external CDP route, without exposing a listening port.
+export function buildSelfSeedBootstrap() {
+  return `(async function () {
+    if (window.__rmchSelfSeeder || !window.chrome && typeof chrome === 'undefined') return;
+    if (!chrome.debugger || !chrome.debugger.getTargets) return;
+    const status = window.__rmchSelfSeeder = { attempts: 0, state: 'starting' };
+    const invoke = (method, ...args) => new Promise((resolve, reject) => {
+      chrome.debugger[method](...args, result => {
+        const error = chrome.runtime.lastError;
+        if (error) reject(new Error(error.message)); else resolve(result);
+      });
+    });
+    const attempt = async () => {
+      let target, attached = false;
+      status.attempts += 1;
+      try {
+        const targets = await invoke('getTargets');
+        const own = targets.find(t => t.type === 'page' && t.url === location.href);
+        if (!own || own.attached) throw new Error('game debugger target unavailable');
+        target = { targetId: own.id };
+        await invoke('attach', target, '1.3');
+        attached = true;
+        const post = (method, params) => invoke('sendCommand', target, method, params);
+        const proto = await post('Runtime.evaluate', { expression: 'Object.prototype', objectGroup: 'rmch-seed' });
+        const heap = await post('Runtime.queryObjects', { prototypeObjectId: proto.result.objectId, objectGroup: 'rmch-seed' });
+        const result = await post('Runtime.callFunctionOn', {
+          objectId: heap.objects.objectId, functionDeclaration: ${JSON.stringify(SEALED_SEED_FN)}, returnByValue: true
+        });
+        if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || 'seed failed');
+        status.summary = result.result && result.result.value;
+        status.state = window.__rmchSealed && window.__rmchSealed.seeded ? 'seeded' : 'waiting';
+      } catch (error) {
+        status.state = 'waiting';
+        status.error = String(error.message || error);
+      } finally {
+        if (attached) {
+          try { await invoke('sendCommand', target, 'Runtime.releaseObjectGroup', { objectGroup: 'rmch-seed' }); } catch (_) {}
+          try { await invoke('detach', target); } catch (_) {}
+        }
+      }
+      if (status.state !== 'seeded' && status.attempts < 120) setTimeout(attempt, 2500);
+    };
+    await attempt();
+  })()`;
+}
 
 // Quick page-state probe + the seed call. Used by runSeededSeeder and by tests.
 // Returns one of:

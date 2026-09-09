@@ -95,6 +95,7 @@
     skill: ["dataSkills", "$dataSkills"],
     state: ["dataStates", "$dataStates"],
     actor: ["dataActors", "$dataActors"],
+    class: ["dataClasses", "$dataClasses"],
     enemy: ["dataEnemies", "$dataEnemies"],
     troop: ["dataTroops", "$dataTroops"],
     mapInfo: ["dataMapInfos", "$dataMapInfos"],
