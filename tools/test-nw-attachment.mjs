@@ -73,7 +73,7 @@ function fixture(family, options = {}) {
     scan, projectRoot, stateDir, commandPath, eventPath, statePath, cachePath,
     processRow, gameProcesses, processes: options.running === false ? [] : gameProcesses,
     now: Date.now(), sleeps: [], spawns: [], spawnTimes: [], injections: [], clearedFlags: [],
-    queries: 0, captureReplies: new Set(), bridgeAlive: false
+    queries: 0, moduleQueries: 0, captureReplies: new Set(), bridgeAlive: false
   };
   context.commands = () => existsSync(commandPath)
     ? readFileSync(commandPath, "utf8").trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line))
@@ -116,7 +116,17 @@ function fixture(family, options = {}) {
     }
   };
   const platform = {
-    listProcessModules: async () => options.modules || [],
+    listProcessModules: async (pid) => {
+      context.moduleQueries += 1;
+      const race = options.moduleQueryRace;
+      if (race && context.moduleQueries <= (race.failures || 1)) {
+        if (race.replaceRenderer && context.moduleQueries === 1) {
+          context.processes = [processRow(101, ""), processRow(202, "--type=renderer")];
+        }
+        throw new AttachError("process query failed: Cannot find a process with the process identifier");
+      }
+      return options.modules || [];
+    },
     listProcessesByExeName: async (name) => {
       assert.equal(name, "游戏.exe");
       context.queries += 1;
@@ -157,6 +167,10 @@ function fixture(family, options = {}) {
         if (options.compatibilityStalePid && request.pid !== 202) {
           context.processes = [processRow(101, ""), processRow(202, "--type=renderer")];
           return {ok:false,detail:"injector-exit-2: OpenProcess failed: 87"};
+        }
+        if (options.compatibilityTimeoutRace && context.injections.filter((entry) => entry.compatibility).length <= (options.compatibilityTimeoutRaceFailures || 1)) {
+          context.processes = [processRow(101, ""), processRow(202, "--type=renderer")];
+          return { ok: false, detail: "core-timeout" };
         }
         if (options.compatibilityFailure) return { ok: false, detail: "compatibility probe failed" };
         vm.runInNewContext(request.bootstrap, {
@@ -467,6 +481,25 @@ try {
   staleCompat.scan.protection.flags.push("grover-module-monitor");
   await staleCompat.launch();
   assert.equal(staleCompat.injections.at(-1).pid,202,"only a failed OpenProcess permits refreshing the replacement renderer");
+  checks++;
+  const moduleQueryRace = fixture("grover", {
+    running: false, modules: [knownModule],
+    moduleQueryRace: { failures: 1, replaceRenderer: true }
+  });
+  moduleQueryRace.scan.protection.flags.push("grover-module-monitor");
+  await moduleQueryRace.launch();
+  assert.equal(moduleQueryRace.moduleQueries >= 2, true, "retry module inspection after a renderer replacement");
+  assert.equal(moduleQueryRace.injections.find((entry) => entry.compatibility).pid, 202);
+  assert.ok(!moduleQueryRace.sleeps.includes(60000), "a transient module query race must not fall into the 60s fallback");
+  assert.match(readFileSync(path.join(moduleQueryRace.stateDir, "bridge.log"), "utf8"), /module query/);
+  checks++;
+  const compatibilityTimeoutRace = fixture("grover", {
+    running: false, modules: [knownModule], compatibilityTimeoutRace: true,
+    compatibilityTimeoutRaceFailures: 2
+  });
+  compatibilityTimeoutRace.scan.protection.flags.push("grover-module-monitor");
+  await compatibilityTimeoutRace.launch();
+  assert.deepEqual(compatibilityTimeoutRace.injections.filter((entry) => entry.compatibility).map((entry) => entry.pid), [102, 103, 202]);
   checks++;
   for (const never of [false, true]) {
     const game = fixture("grover", { running: false, modules: [knownModule], compatibilityLateMs: 20000, compatibilityNeverReady: never });
