@@ -11,7 +11,8 @@ import net from "node:net";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { scanGame, injectionStrategy } from "./scanner.mjs";
+import { scanGame } from "./scanner.mjs";
+import { planLaunch } from "./launch-plan.mjs";
 import { buildBridge } from "./bridge-bundler.mjs";
 import { getToken } from "./token.mjs";
 import { launchShadowGame, launchBundledShadowGame } from "./shadow-launcher.mjs";
@@ -107,7 +108,7 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
     );
   }
   if (scan.engine.id === "RM2K") {
-    throw new Error(`engine "${scan.engine.id}" is not supported by the M1 injectors (planned: ${injectionStrategy(scan).id})`);
+    throw new Error(`engine "${scan.engine.id}" is not supported by the toolbox launch routes (${planLaunch(scan).error || "no route"})`);
   }
   if (scan.container === "evb") {
     // Enigma Virtual Box: extract the embedded filesystem once (big images
@@ -163,7 +164,7 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
   }
   if (!scan.paths.exe) throw new Error("Game.exe not found in game root");
 
-  const plan = injectionStrategy(scan);
+  const plan = planLaunch(scan, { strategy });
   let chosen = strategy === "auto" ? (scan.manifest && scan.manifest.bgScript ? "shadow" : "extension") : strategy;
   if (chosen === "shadow" && !(scan.manifest && scan.manifest.bgScript)) {
     throw new Error("shadow strategy requires a bg-script game");
@@ -233,7 +234,7 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
     engine: scan.engine.id,
     protection: scan.protection,
     strategy: chosen,
-    strategyReason: chosen === "shadow" ? "bg-script startup chain: shadow dir + patched bg-script" : plan.reason,
+    strategyReason: chosen === "shadow" ? "bg-script startup chain: shadow dir + patched bg-script" : (plan.selectedReason || plan.error),
     pid: processInfo.pid,
     shadowApp: processInfo.appDir || null,
     profileDir: processInfo.profileDir || null,
@@ -331,7 +332,7 @@ async function launchBundledGame({ scan, projectRoot, port }) {
     engine: scan.engine.id,
     protection: scan.protection,
     strategy: "shadow-engine-publish",
-    strategyReason: injectionStrategy(scan).reason,
+    strategyReason: planLaunch(scan).selectedReason,
     pid: info.pid,
     shadowApp: info.appDir,
     profileDir,
@@ -390,7 +391,7 @@ async function launchSealedGame({ scan, projectRoot, port }) {
     engine: scan.engine.id,
     protection: scan.protection,
     strategy: "extension-cdp-seed",
-    strategyReason: injectionStrategy(scan).reason,
+    strategyReason: planLaunch(scan).selectedReason,
     pid: child.pid,
     profileDir,
     seedPort,

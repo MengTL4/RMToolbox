@@ -14,7 +14,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { scanGame, injectionStrategy } from "../core/scanner.mjs";
+import { scanGame } from "../core/scanner.mjs";
+import { planLaunch } from "../core/launch-plan.mjs";
 import { launchGame } from "../core/launcher.mjs";
 import { attachGame, AttachError } from "../core/attach.mjs";
 
@@ -75,7 +76,8 @@ async function main() {
     assert.equal(scan.protection.level, 4, "the NB shell is the strongest protection tier");
     assert.equal(scan.title, "重装机兵-宿敌【测试】", "title comes from the manifest window");
     assert.ok(scan.paths.exe, "exe resolved for the game root");
-    assert.equal(injectionStrategy(scan).id, "unsupported-nb-shell");
+    assert.equal(planLaunch(scan).family, "unsupported-shell", "no route survives an NB shell");
+    assert.equal(planLaunch(scan).selected, null);
 
     // --- near misses ---------------------------------------------------------
     const noToolRoot = path.join(tempRoot, "NoTool");
@@ -111,7 +113,7 @@ async function main() {
     assert.ok(evalScan.protection.flags.includes("nb-evalnwbin-shell"), "flag must be set");
     assert.equal(evalScan.protection.level, 3, "attach-only shell tier");
     assert.ok(evalScan.paths.exe, "exe resolved via the single-exe fallback");
-    assert.equal(injectionStrategy(evalScan).id, "inject-file-transport");
+    assert.equal(planLaunch(evalScan).selected, "dll", "evalNWBin tolerates only the native route");
 
     // nbtool.node present → stays the Themida variant, never evalnwbin.
     const bothRoot = path.join(tempRoot, "BothMarkers");

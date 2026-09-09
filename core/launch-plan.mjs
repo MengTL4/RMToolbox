@@ -5,6 +5,12 @@
 // which routes are safe fallbacks, and which routes must be refused.  It does
 // not start a process.  Keeping the decision pure gives the GUI, CLI and tests
 // the same seam without making the planner know about Windows process APIs.
+//
+// Route identities, Chinese labels and mechanisms come from core/launch-routes.mjs
+// so the planner, the launchers, the log and the GUI all name a route the same
+// way. Only the container-specific *reason* is decided here.
+
+import { ROUTES, routeLabel, routeMechanism, routeMechanismText, preflightOf } from "./launch-routes.mjs";
 
 export const LAUNCH_ROUTES = Object.freeze({
   AUTO: "auto",
@@ -48,17 +54,29 @@ function isStandardNw(scan, engine, container) {
   return !!(scan && (scan.manifest || scan.paths && scan.paths.exe));
 }
 
-function candidate(id, reason, transport, preflight) {
-  return { id, reason, transport, preflight: [...preflight] };
+// A candidate is the catalogue entry plus the reason that applies to this game,
+// so every consumer (GUI dropdown, log, summary) reads the same label.
+function candidate(id, reason) {
+  const entry = ROUTES[id] || { id, label: id, mechanism: null, transport: null, preflight: [] };
+  return {
+    id,
+    label: entry.label,
+    mechanism: routeMechanism(id),
+    mechanismLabel: routeMechanismText(id),
+    reason: reason || entry.reason,
+    transport: entry.transport,
+    preflight: [...(entry.preflight || [])]
+  };
 }
 
 function blocked(id, reason) {
-  return { id, reason };
+  return { id, label: routeLabel(id), reason };
 }
 
 function finish(plan) {
   const selected = plan.candidates.find((entry) => entry.id === plan.selected) || null;
   plan.selectedReason = selected ? selected.reason : null;
+  plan.selectedLabel = selected ? selected.label : null;
   plan.fallback = plan.candidates
     .filter((entry) => entry.id !== plan.selected)
     .map((entry) => entry.id);
@@ -84,21 +102,11 @@ function specialPlan(scan, requested, container, engine) {
   }
 
   const special = (() => {
-    if (container === "evb") {
-      return candidate("evb-unpack-rgss-script", "EVB 单文件壳先解包，再走 RGSS 影子脚本", "evb-unpack", ["evb-executable"]);
-    }
-    if (isRgss(scan, engine, container)) {
-      return candidate("rgss-script", "RGSS 游戏把 Ruby bridge 写入影子副本的 Scripts 归档", "rgss-shadow", ["game.ini-library", "scripts-archive"]);
-    }
-    if (container === "tauri") {
-      return candidate("tauri-cdp", "Tauri/WebView2 需要补丁副本打开 CDP", "cdp", ["tauri-executable"]);
-    }
-    if (container === "nwjs-sealed") {
-      return candidate("extension-cdp-seed", "封闭 MZ 需要启动调试端口并用 CDP 发布引擎对象", "extension-cdp", ["remote-debug-port", "heap-seed"]);
-    }
-    if (container === "nwjs-bundled") {
-      return candidate("shadow-engine-publish", "合体引擎只能在影子脚本闭包内发布运行时对象", "shadow-patched-script", ["bundle-script-anchor"]);
-    }
+    if (container === "evb") return candidate("evb-unpack-rgss-script");
+    if (isRgss(scan, engine, container)) return candidate("rgss-script");
+    if (container === "tauri") return candidate("tauri-cdp");
+    if (container === "nwjs-sealed") return candidate("extension-cdp-seed");
+    if (container === "nwjs-bundled") return candidate("shadow-engine-publish");
     return null;
   })();
 
@@ -127,7 +135,9 @@ function specialPlan(scan, requested, container, engine) {
  * The planner deliberately does not claim that a route is fully working.  A
  * candidate's preflight list is the static part; launchers must still confirm
  * process appearance, bridge hello and runtime readiness before recording a
- * route as healthy.
+ * route as healthy. core/game-runtime.mjs consumes both: preflightOf() prunes
+ * candidates before the first attempt, and `fallback` is retried when an attempt
+ * fails before the bridge says hello.
  */
 export function planLaunch(scan = {}, { requested = LAUNCH_ROUTES.AUTO, strategy } = {}) {
   const route = requestedRoute(strategy === undefined ? requested : strategy);
@@ -157,30 +167,30 @@ export function planLaunch(scan = {}, { requested = LAUNCH_ROUTES.AUTO, strategy
     const blockedRoutes = [];
 
     if (container === "nb-evalnwbin") {
-      candidates.push(candidate("dll", "NB evalNWBin 拒绝启动参数，只接受裸启动后 DLL 注入", "native-dll-file", ["plain-spawn", "renderer", "pe-arch", "file-hello"]));
+      candidates.push(candidate("dll", "NB evalNWBin 拒绝启动参数，只接受裸启动后 DLL 注入"));
       blockedRoutes.push(blocked("shadow", "该壳会因启动参数退出"), blocked("extension", "该壳会因启动参数退出"));
     } else if (container === "enigma-nb") {
-      candidates.push(candidate("dll", "Enigma-NB 对任何启动参数敏感，采用裸启动后 DLL 注入", "native-dll-ws", ["plain-spawn", "renderer", "pe-arch", "bridge-hello"]));
+      candidates.push(candidate("dll", "Enigma-NB 对任何启动参数敏感，采用裸启动后 DLL 注入"));
       blockedRoutes.push(blocked("shadow", "Enigma-NB 会因启动参数退出"), blocked("extension", "Enigma-NB 会因启动参数退出"));
     } else if (grover) {
-      candidates.push(candidate("dll", "Grover 启动链需要裸启动并等待保护检查结束后注入", "native-dll-file", ["plain-spawn", "renderer", "pe-arch", "bridge-hello"]));
+      candidates.push(candidate("dll", "Grover 启动链需要裸启动并等待保护检查结束后注入"));
       // Keep an explicit shadow request visible even when a sparse scan/test
       // fixture omitted the manifest.  The launcher will perform the final
       // bg-script preflight and report its precise error; silently converting
       // that explicit request to DLL would hide the user's choice.
       candidates.push(candidate("shadow", bgScript
         ? "该游戏有可补丁的 bg-script，影子目录可作为显式备用路线"
-        : "影子路线已被显式请求，但启动前仍需发现 bg-script", "shadow-dir", ["bg-script", "patch-anchor", "shadow-spawn", "bridge-hello"]));
-      if (!bgScript) blockedRoutes.push(blocked("shadow-preflight", "影子路线缺少 bg-script，实际启动前会拒绝"));
+        : "影子路线已被显式请求，但启动前仍需发现 bg-script"));
+      if (!bgScript) blockedRoutes.push(blocked("shadow-preflight", preflightOf(scan, "shadow").reason));
       blockedRoutes.push(blocked("extension", "Grover 对带启动参数的扩展启动不稳定"));
     } else {
       if (bgScript) {
-        candidates.push(candidate("shadow", "bg-script 启动链可在独立影子目录中补丁", "shadow-dir", ["bg-script", "patch-anchor", "shadow-spawn", "bridge-hello"]));
+        candidates.push(candidate("shadow"));
       } else {
-        blockedRoutes.push(blocked("shadow", "没有 bg-script，普通影子目录没有补丁入口"));
+        blockedRoutes.push(blocked("shadow", preflightOf(scan, "shadow").reason));
       }
-      candidates.push(candidate("extension", "标准 NW.js 使用原版 Game.exe 加载 bridge 扩展", "load-extension", ["game-executable", "private-profile", "bridge-hello"]));
-      candidates.push(candidate("dll", "标准 NW.js 可裸启动后向 renderer 投递 native bridge", "native-dll-file", ["plain-spawn", "renderer", "pe-arch", "bridge-hello"]));
+      candidates.push(candidate("extension"));
+      candidates.push(candidate("dll", "标准 NW.js 可裸启动后向 renderer 投递 native bridge"));
     }
 
     // A static scan cannot prove the executable is runnable. Keep the route in

@@ -651,36 +651,3 @@ export function scanLibrary(commonDir) {
   return games;
 }
 
-export function injectionStrategy(scan) {
-  if (scan.engine.id === "RM2K") return { id: "easyrpg", reason: "RM2000/2003 has no script runtime; use EasyRPG player debug menu" };
-  if (scan.container === "evb") {
-    return { id: "evb-unpack-rgss-script", reason: "Enigma Virtual Box packed exe: extract the virtual filesystem to <exe>_unpacked, then the standard RGSS shadow-copy bridge" };
-  }
-  if (/^RGSS/i.test(scan.engine.id)) {
-    return { id: "rgss-script", reason: "RGSS (Ruby): bridge spliced into the Scripts archive inside a shadow copy" };
-  }
-  if (scan.container === "tauri") {
-    return { id: "tauri-cdp", reason: "Tauri (WebView2) shell over an MV/MZ runtime: patched exe copy exposes CDP, bridge transport is Runtime.evaluate outbox polling" };
-  }
-  if (scan.container === "nwjs-sealed") {
-    return { id: "extension-cdp-seed", reason: "sealed MZ engine (obfuscated game.js, no window globals): extension bridge + a CDP heap scan publishes the engine objects once the game boots" };
-  }
-  if (scan.container === "nwjs-bundled") {
-    return { id: "shadow-engine-publish", reason: "bundled engine (one combined script, every engine name closure-sealed — 命运II离线版 family): shadow copy appends a publish snippet inside the bundle wrapper (static for managers/classes, live getters for $data*/$game*), then the standard extension bridge sees a normal MV/MZ game" };
-  }
-  if (scan.container === "nb-shell") {
-    return { id: "unsupported-nb-shell", reason: "NB shell (nbtool.node/Themida) hash-verifies its boot files, refuses every launch flag and kills injected code — no toolbox injection vector survives; measured on 重装机兵-宿敌 v3.5.3, see ACCEPTANCE v0.6.3" };
-  }
-  if (scan.container === "nb-evalnwbin") {
-    return { id: "inject-file-transport", reason: "NB evalNWBin shell: refuses every launch flag and any in-page WebSocket kills the app, but tolerates DLL attach — plain spawn + rmch-mvhook inject + JSONL file channel (万族穿越-源启崛起 v1.2.2, see ACCEPTANCE v0.6.7)" };
-  }
-  if (scan.container === "enigma-nb") {
-    return { id: "launch-inject", reason: "Enigma-packed NB variant (三国修仙传 family): any launch flag makes the box exit within seconds, so launch is a flag-free spawn + rmch-mvhook DLL attach on the standard WebSocket bridge" };
-  }
-  if (scan.protection && scan.protection.flags && scan.protection.flags.includes("grover-boot")) {
-    return { id: "launch-inject", reason: "Grover bytecode startup: launch without flags, wait for boot checks, then attach the DLL bridge" };
-  }
-  if (scan.manifest && scan.manifest.nodeMain) return { id: "extension", reason: "node-main guard tolerates --load-extension; verify game does not self-close" };
-  if (scan.manifest && scan.manifest.bgScript) return { id: "extension-then-shadow", reason: "bg-script startup chain may detect extensions; fall back to shadow-dir bg-script patch" };
-  return { id: "extension", reason: "standard NW.js game: --load-extension into original Game.exe" };
-}

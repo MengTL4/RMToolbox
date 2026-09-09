@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { GameRuntime, gameRuntime } from "../core/game-runtime.mjs";
-import { scanGame, injectionStrategy } from "../core/scanner.mjs";
+import { scanGame } from "../core/scanner.mjs";
+import { planLaunch } from "../core/launch-plan.mjs";
 
 // GUI and CLI use this same interface. Real platform execution is replaced,
 // so selecting a fatal extension route is caught without launching a game.
@@ -73,7 +74,7 @@ try {
   writeFileSync(path.join(renamed, "www", "js", "rpg_core.js"), Buffer.from([3, 4, 222, 192]));
   const renamedScan = scanGame(renamed);
   assert.equal(renamedScan.paths.exe, path.join(renamed, "末日风暴.exe"), "NW notification helper must not hide a renamed game entry point");
-  assert.equal(injectionStrategy(renamedScan).id, "launch-inject", "Grover scan must report the route used by GameRuntime");
+  assert.equal(planLaunch(renamedScan).selected, "dll", "Grover scan must plan the route GameRuntime dispatches");
   writeFileSync(path.join(renamed, "AnotherGame.exe"), "other game");
   assert.equal(scanGame(renamed).paths.exe, null, "multiple genuine game executables remain ambiguous");
   mkdirSync(path.join(root, "nb_data"));
@@ -102,4 +103,64 @@ try {
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
-console.log("test-game-runtime: shared routing and real refusal passed");
+
+// Fallback is honoured before the bridge is up: a preferred route that fails is
+// followed by the next candidate, and the attempt trail records both.
+{
+  const seen = [];
+  let calls = 0;
+  const scan = { container: "nwjs", engine: { id: "MV" }, paths: { exe: "game.exe" }, manifest: { bgScript: "loading" }, protection: { flags: [] } };
+  const runtime = new GameRuntime({
+    scan: () => scan,
+    launch: async (options) => {
+      seen.push(options.strategy);
+      calls += 1;
+      // The selected route reaches the launcher with the user's own request
+      // ("auto"); only the fallback attempt spells the route out.
+      if (calls === 1) throw Error("shadow patch anchor missing");
+      return { pid: 7 };
+    },
+    launchInject: async () => { throw Error("renderer never appeared"); }
+  });
+  const summary = await runtime.launch({ gameRoot: "game", projectRoot: "toolbox", strategy: "auto" });
+  assert.deepEqual(seen, ["auto", "extension"], "the failed route is retried with the next candidate");
+  assert.equal(summary.strategy, "extension");
+  assert.deepEqual(summary.routeAttempts.map((entry) => entry.id), ["shadow", "extension"]);
+}
+
+// An OS-level refusal is not a route problem: no second route is spawned.
+{
+  const seen = [];
+  const scan = { container: "nwjs", engine: { id: "MV" }, paths: { exe: "game.exe" }, manifest: { bgScript: "loading" }, protection: { flags: [] } };
+  const runtime = new GameRuntime({
+    scan: () => scan,
+    launch: async (options) => {
+      seen.push(options.strategy);
+      const error = Error("spawn game.exe ENOENT");
+      error.code = "ENOENT";
+      throw error;
+    }
+  });
+  await assert.rejects(runtime.launch({ gameRoot: "game", projectRoot: "toolbox", strategy: "auto" }), /ENOENT/);
+  assert.deepEqual(seen, ["auto"], "a missing executable is not retried through another transport");
+}
+
+// A fallback candidate that the scan can already rule out is skipped, not tried.
+{
+  const seen = [];
+  let calls = 0;
+  const scan = { container: "nwjs", engine: { id: "MV" }, manifest: { bgScript: "loading" }, protection: { flags: [] } };
+  const runtime = new GameRuntime({
+    scan: () => scan,
+    launch: async (options) => {
+      seen.push(options.strategy);
+      calls += 1;
+      if (calls === 1) throw Error("shadow patch anchor missing");
+      return { pid: 8 };
+    }
+  });
+  await assert.rejects(runtime.launch({ gameRoot: "game", projectRoot: "toolbox", strategy: "auto" }), /shadow patch anchor/);
+  assert.deepEqual(seen, ["auto"], "extension was skipped: the scan proves there is no exe to launch");
+}
+
+console.log("test-game-runtime: shared routing, fallback and real refusal passed");
