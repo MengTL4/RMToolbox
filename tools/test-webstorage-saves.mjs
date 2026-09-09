@@ -100,3 +100,41 @@ try {
   host.deleteBackup('fixture',backups[0].name);assert.equal(host.listBackups('fixture').length,0);
 } finally {fs.rmSync(root,{recursive:true,force:true});}
 console.log('PASS WebStorage slots, backup/restore/delete, validation/rollback, async save/load');
+
+// Custom MV storage retains isLocalMode while no numbered file exists.
+const nativeValues=new Map([[1,JSON.stringify({system:{},party:{gold:123},actors:{}})]]);
+class SaveParty { characters(){return ['hero'];} }
+let nativeInfo=[null,{title:'native fixture',timestamp:1700000000000,party:new SaveParty()}];
+context.requireJsonEx=()=>({stringify:value=>JSON.stringify(value,(_key,v)=>v instanceof SaveParty?{'@':'SaveParty'}:v),
+  parse:value=>JSON.parse(value,(_key,v)=>v&&v['@']==='SaveParty'?new SaveParty():v)});
+let noDelete=true;
+window.$dataSystem={gameTitle:'native fixture'};
+window.StorageManager={isLocalMode:()=>true,localFilePath:id=>`virtual/file${id}.rpgsave`,
+  exists:id=>nativeValues.has(id),load:id=>nativeValues.get(id),save:(id,value)=>nativeValues.set(id,value),
+  remove:id=>{if(!noDelete)nativeValues.delete(id);}};
+window.DataManager={maxSavefiles:()=>4,loadGlobalInfo:()=>nativeInfo,saveGlobalInfo:info=>{nativeInfo=info;}};
+context.fs={existsSync:()=>false};
+assert.equal((await send('save.list')).storage,'native');
+const nativeSnapshot=await send('save.native.export');
+assert.equal(nativeSnapshot.entries[0].id,1);
+await assert.rejects(send('save.native.delete',{name:'file1.rpgsave'}),/未执行删除/);
+assert.equal(nativeValues.has(1),true);
+await assert.rejects(send('save.native.import',{snapshot:{...nativeSnapshot,title:'other'}}),/invalid/);
+await assert.rejects(send('save.native.import',{snapshot:{...nativeSnapshot,entries:[{id:5,value:nativeSnapshot.entries[0].value}]}}),/invalid/);
+const nativeRoot=fs.mkdtempSync(path.join(os.tmpdir(),'rmch-native-saves-'));
+try {
+  const fixtureState={projectRoot:nativeRoot,modules:{saveFiles:{createSaveFiles}},sessions:{
+    list:()=>[{gameKey:'fixture',alive:true,state:{saveStorage:'native'}}],send:(key,type,args)=>send(type,args)}};
+  const sandbox={module:{},require:createRequire(import.meta.url),fixtureState};
+  vm.runInNewContext(fs.readFileSync('app/gui/host.cjs','utf8')+'\nObject.assign(state,fixtureState);',sandbox);
+  const host=sandbox.module.exports;
+  const backup=await host.backupSaves('fixture');assert.equal(backup.storage,'native');
+  const backups=host.listBackups('fixture');assert.equal(backups[0].storage,'native');
+  noDelete=false;
+  await host.deleteSaveFile('fixture','file1.rpgsave');assert.equal(nativeValues.size,0);
+  await host.restoreBackup('fixture',backups[0].name);
+  assert.equal(nativeValues.get(1),nativeSnapshot.entries[0].value);
+  assert.equal(nativeInfo[1].party.characters()[0],'hero','native preview metadata retains engine classes');
+  host.deleteBackup('fixture',backups[0].name);
+} finally {fs.rmSync(nativeRoot,{recursive:true,force:true});}
+console.log('PASS native virtual slots, GUI backup/restore, validated slots and rejected silent deletion');

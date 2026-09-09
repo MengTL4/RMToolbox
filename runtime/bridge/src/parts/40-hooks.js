@@ -39,9 +39,8 @@
     if (!options || typeof options !== "object") return { ...bridge.options };
     const given = (key) => Object.prototype.hasOwnProperty.call(options, key);
 
-    // This target's native updateMain takes no elapsed-time argument. The
-    // generic extra-speed hook cannot accelerate it; do not acknowledge a
-    // setting that has no effect or replace the game's authored Drill gear.
+    // This target owns its frame pacing through Drill's authored speed gear.
+    // Keep the explicit limitation until extra scene ticks are verified there.
     if (typeof isNativeFramePacingTarget === "function" && isNativeFramePacingTarget() &&
         ((given("gameSpeedMulti") && Number(options.gameSpeedMulti) > 1) ||
          (given("speedHoldCtrl") && toBool(options.speedHoldCtrl)))) {
@@ -53,8 +52,8 @@
     });
     NUMBER_OPTIONS.forEach((key) => {
       if (!given(key)) return;
-      // gameSpeedMulti multiplies frame time, so below 1 would run the game
-      // backwards-ish; the rest may legitimately be negative (moveSpeedAdd).
+      // gameSpeedMulti adds scene ticks; values below 1 are not supported.
+      // The other numeric options may legitimately be negative (moveSpeedAdd).
       const min = key === "gameSpeedMulti" ? 1 : -9999;
       bridge.options[key] = clampNumber(options[key], min, 9999, bridge.options[key]);
     });
@@ -130,21 +129,34 @@
 
   // --- scene update: game speed + value locks ---------------------------------
 
-  // Both concerns share SceneManager.updateMain because patchMethod refuses to
-  // wrap the same method twice. Keep them in this order: locks must be
-  // re-asserted after the game's own frame has run, not before.
+  // updateMain can take no arguments, and MV's version also schedules the
+  // next animation frame. Repeat scene logic, never the outer frame scheduler.
+  // Reassert value locks after the complete frame, including its extra ticks.
   function patchSceneUpdate() {
     const sceneManager = resolveSceneManager();
     if (!sceneManager) return false;
+    let extraSceneTicks = 0;
+    patchMethod(sceneManager, "updateScene", "SceneManager.updateScene", function (original, args) {
+      const result = original.apply(this, args);
+      const held = bridge.options.speedHoldCtrl && bridge.keysHeld && (bridge.keysHeld.control || bridge.keysHeld[17]);
+      if (!held || (typeof isNativeFramePacingTarget === "function" && isNativeFramePacingTarget())) {
+        extraSceneTicks = 0;
+        return result;
+      }
+      extraSceneTicks += clampNumber(bridge.options.gameSpeedMulti, 1, 20, 1) - 1;
+      const repeats = Math.floor(extraSceneTicks);
+      extraSceneTicks -= repeats;
+      for (let index = 0; index < repeats && !this._stopped; index += 1) {
+        if (typeof this.updateFrameCount === "function") this.updateFrameCount();
+        if (typeof this.updateInputData === "function") this.updateInputData();
+        if (typeof this.updateEffekseer === "function") this.updateEffekseer();
+        if (typeof this.changeScene === "function") this.changeScene();
+        original.apply(this, args);
+      }
+      return result;
+    });
     return patchMethod(sceneManager, "updateMain", "SceneManager.updateMain", function (original, args) {
       const result = original.apply(this, args);
-      if (bridge.options.speedHoldCtrl && bridge.keysHeld && (bridge.keysHeld.control || bridge.keysHeld[17])) {
-        const delta = args && args[0];
-        if (Number.isFinite(delta)) {
-          const extra = delta * (clampNumber(bridge.options.gameSpeedMulti, 1, 20, 1) - 1);
-          try { original.call(this, extra); } catch (_) {}
-        }
-      }
       applyValueLocks();
       return result;
     });
@@ -371,6 +383,33 @@
     }
   }
 
+  // Homecoming's TH actor model removes the standard additive parameter term
+  // and leaves addParam as refresh-only. Preserve its equipment/tank formula;
+  // restore just the persisted additive term for toolbox parameter edits.
+  const thParameterMethods = new WeakSet();
+  function patchThActorParameters() {
+    let installed = false;
+    const targets = uniqueTargets(resolvePrototypeTargets("Game_Actor", ["GameActor"])
+      .concat(partyMemberPrototypeTargets("runtime.party")));
+    targets.forEach((target) => {
+      const owner = target.object;
+      if (!owner || typeof owner.paramPlus !== "function") return;
+      if (thParameterMethods.has(owner.paramPlus)) { installed = true; return; }
+      if (typeof owner.thNewPrValue !== "function" || typeof owner.isTkActor !== "function" ||
+          typeof owner.addParam !== "function") return;
+      const add = Function.prototype.toString.call(owner.addParam).replace(/\s/g, "");
+      const plus = Function.prototype.toString.call(owner.paramPlus);
+      if (!/\{this\.refresh\(\);?\}$/.test(add) || /_paramPlus|\[native code\]/.test(plus)) return;
+      if (patchMethod(owner, "paramPlus", target.label + ".thParamPlus", function (original, args) {
+        return original.apply(this, args) + (Number(this._paramPlus && this._paramPlus[args[0]]) || 0);
+      })) {
+        thParameterMethods.add(owner.paramPlus);
+        installed = true;
+      }
+    });
+    return installed;
+  }
+
   // --- master installer -------------------------------------------------------
 
   function patchTrainerHooks() {
@@ -385,6 +424,7 @@
     track(patchNativeFramePacing(), "framePacing");
     track(patchEncounter(), "encounter");
     track(patchGlobalInfoGuard(), "globalInfoGuard");
+    track(patchThActorParameters(), "thActorParameters");
     patchBattleRewards(track);
     patchScaledGain(
       track,
@@ -393,7 +433,8 @@
     );
     patchScaledGain(
       track,
-      resolvePrototypeTargets("Game_Party", ["GameParty"]),
+      uniqueTargets(resolvePrototypeTargets("Game_Party", ["GameParty"])
+        .concat(runtimePrototypeChainTargets("runtime.party", resolveParty(), 5))),
       "gainGold", "goldRate", "partyGainGold"
     );
     patchDropRate(track);

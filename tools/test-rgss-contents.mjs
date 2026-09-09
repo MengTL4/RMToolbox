@@ -6,8 +6,8 @@
 //
 //   node tools/test-rgss-contents.mjs <gameRoot>
 //
-// Exits non-zero on the first failed check group. Uses save slot 3 like the
-// saves test and removes it again at the end.
+// Exits non-zero on the first failed check group. Uses RMCH_TEST_SAVE_SLOT
+// (default 3) and removes only the save created by this test.
 
 import path from "node:path";
 import { existsSync, unlinkSync, rmSync as fsRmSync } from "node:fs";
@@ -86,7 +86,8 @@ const AC_ON = "module ::Input; class << self; unless method_defined?(:rmch_ac_tr
   "end; end; end; end; 'ac-on=' + $rmch_ac_method.to_s";
 
 const SLOT_RE = /^save(\d+)\.(rxdata|rvdata|rvdata2)$/i;
-const SLOT = 3;
+const SLOT = Number(process.env.RMCH_TEST_SAVE_SLOT || 3);
+if (!Number.isInteger(SLOT) || SLOT < 1 || SLOT > 90) throw new Error('invalid RMCH_TEST_SAVE_SLOT');
 const GOLD = 654321;
 const NAME_UTF8 = "改名ABC测试";
 const NAME_BYTES = [...Buffer.from(NAME_UTF8, "utf8")];
@@ -165,6 +166,15 @@ try {
       const p = await send("party.info", {}).catch(() => null);
       return p && p.members && p.members.length ? p : null;
     }, 8000);
+  }
+  if (!party) {
+    const emptyTest = gen === "RGSS1" ? "$game_party.actors.empty?" : "$game_party.members.empty?";
+    await evalRb(`$game_party.add_actor(1) if ${emptyTest} && $data_actors[1]; 'add'`).catch(() => null);
+    party = await poll(async () => {
+      const p = await send("party.info", {}).catch(() => null);
+      return p && p.members && p.members.length ? p : null;
+    }, 4000);
+    if (party) console.log("fixture : intro starts empty; added actor 1 for contents round-trip");
   }
   check("new game started", !!party, party ? `${party.members.length} members` : "no party");
   if (!party) throw new Error("cannot continue without a running game");
@@ -255,7 +265,7 @@ try {
   // --- Marshal round-trip: applied objects must survive save/load -------------------
   const list0 = await send("save.list");
   const occupied = list0.entries.some((e) => Number(SLOT_RE.exec(e.name)?.[1]) === SLOT);
-  check("slot 3 free", !occupied, "");
+  check(`slot ${SLOT} free`, !occupied, "");
   if (!occupied) {
     await send("gold.set", { value: GOLD });
     const saved = await send("save.save", { id: SLOT });

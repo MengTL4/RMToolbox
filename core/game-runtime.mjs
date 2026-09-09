@@ -18,7 +18,7 @@ export class GameRuntime {
     // has a different reason (shadow boot freezes), but the same delivery path.
     const grover = scan.protection && scan.protection.flags
       && scan.protection.flags.includes("grover-boot");
-    if (scan.container === "nb-evalnwbin" || scan.container === "enigma-nb" || grover) {
+    if (scan.container === "nb-evalnwbin" || scan.container === "enigma-nb" || (grover && options.strategy !== "shadow")) {
       return this.launchInject({ scan, projectRoot: options.projectRoot, port: options.port });
     }
     return this.launchNormal(options);

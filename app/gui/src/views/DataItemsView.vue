@@ -35,7 +35,15 @@ export default {
         return selected.value && locked.value ? Number(store.lockedValue(props.kind, selectedId.value)) : count.value;
       });
 
-      var entries = computed(function () { return data.catalog[props.kind] || []; });
+      var entries = computed(function () {
+        var catalog = data.catalog[props.kind] || [];
+        var known = new Set(catalog.map(function (entry) { return entry.id; }));
+        var owned = data.owned && data.owned[props.kind] || [];
+        return catalog.concat(owned.filter(function (entry) { return !known.has(entry.id); }).map(function (entry) {
+          var base = catalog.find(function (row) { return row.id === entry.baseItemId; });
+          return Object.assign({}, base || {}, entry);
+        }));
+      });
       var selectedId = computed(function () { return data.selected[props.kind]; });
 
       var selected = computed(function () {

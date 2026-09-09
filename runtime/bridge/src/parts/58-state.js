@@ -17,7 +17,7 @@
       map: currentMapInfo(),
       party: partyBattleMembers().map(actorInfo),
       saveDir: saveDirPath(),
-      saveStorage: isMvWebStorage() ? "webstorage" : "filesystem",
+      saveStorage: isMvWebStorage() || isMzForageStorage() ? "webstorage" : "filesystem",
       inBattle: isInBattle(),
       options: { ...bridge.options },
       hooks: {

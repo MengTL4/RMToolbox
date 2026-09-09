@@ -6,6 +6,7 @@
 // site) so same-profile games cannot single-instance-kill each other.
 
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import net from "node:net";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
@@ -58,6 +59,7 @@ export async function ensureServer({ projectRoot, port, token }) {
     env: { ...process.env, RMCH_TOKEN: token, RMCH_PROJECT_ROOT: projectRoot },
     windowsHide: true
   });
+  await once(child, "spawn");
   child.unref();
   const up = await waitForPort(port, 6000);
   return { running: up, started: true, pid: child.pid };
@@ -94,7 +96,7 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
       'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
     );
   }
-  if (scan.protection && scan.protection.flags && scan.protection.flags.includes("grover-boot")) {
+  if (strategy !== "shadow" && scan.protection && scan.protection.flags && scan.protection.flags.includes("grover-boot")) {
     // The Grover shell's toolbox-shadowed launch freezes the payload after its
     // (shim-assisted) verification, while the plainly launched real game runs
     // fine — its suicide paths fail on their own. Route like enigma-nb:
@@ -179,7 +181,13 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
 
   let processInfo;
   if (chosen === "shadow") {
-    processInfo = launchShadowGame({ projectRoot, scan, gameKey: scan.gameKey, port, token });
+    // Explicit shadow keeps the native startup chain used by older releases.
+    // The additional Grover kill-path guards freeze otherwise working games
+    // (verified with 再刷一把); default automatic launches still use DLL attach.
+    const shadowScan = strategy === "shadow" && scan.protection
+      ? { ...scan, protection: { ...scan.protection, flags: scan.protection.flags.filter(flag => flag !== "grover-boot") } }
+      : scan;
+    processInfo = launchShadowGame({ projectRoot, scan: shadowScan, gameKey: scan.gameKey, port, token });
   } else {
     // Per-game private profile. Most RM games keep the manifest default name
     // ("rmmz-game" — even MV titles), so without this they all share one
@@ -213,6 +221,7 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
       // so there is no console window to hide anyway.
       windowsHide: false
     });
+    await once(child, "spawn");
     child.unref();
     processInfo = { pid: child.pid, profileDir };
   }
@@ -368,6 +377,7 @@ async function launchSealedGame({ scan, projectRoot, port }) {
     // NW.js builds and leaves the game window invisible.
     windowsHide: false
   });
+  await once(child, "spawn");
   child.unref();
 
   const family = scan.container === "nwjs-bundled" ? "bundled" : "sealed";

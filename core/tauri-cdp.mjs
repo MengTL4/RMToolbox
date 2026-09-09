@@ -386,7 +386,7 @@ export class TauriSession extends EventEmitter {
     }
   }
 
-  // Native Tauri saves are listed on the host; MV browser saves are routed
+  // Native Tauri saves are listed on the host; MV/MZ browser saves are routed
   // through the bridge instead because they have no game-directory files.
   answerSaveList() {
     const dir = this.saveDir;
@@ -408,7 +408,7 @@ export class TauriSession extends EventEmitter {
     if (!this.alive || !this.cdp) return Promise.reject(new Error("bridge is not connected"));
     if (type === "save.list") {
       const webStorage = await this.cdp.evaluate(
-        "!!(window.StorageManager && typeof StorageManager.webStorageKey === 'function' && typeof StorageManager.isLocalMode === 'function' && !StorageManager.isLocalMode())", timeout);
+        "!!(window.StorageManager && (typeof StorageManager.webStorageKey === 'function' || typeof StorageManager.forageKey === 'function') && typeof StorageManager.isLocalMode === 'function' && !StorageManager.isLocalMode())", timeout);
       if (!webStorage) return this.answerSaveList();
     }
     if (type === "save.contents.apply") timeout = Math.max(timeout, 120000);

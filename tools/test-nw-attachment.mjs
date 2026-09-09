@@ -68,6 +68,7 @@ function fixture(family, options = {}) {
     processRow(101, ""),
     processRow(102, "--type=renderer")
   ];
+  if (options.outerLauncher) gameProcesses.unshift(processRow(100, ""));
   const context = {
     scan, projectRoot, stateDir, commandPath, eventPath, statePath, cachePath,
     processRow, gameProcesses, processes: options.running === false ? [] : gameProcesses,
@@ -91,7 +92,7 @@ function fixture(family, options = {}) {
       context.sleeps.push(ms);
       assert.ok(context.sleeps.length < 2000, "orchestration must terminate");
       if (options.onSleep) await options.onSleep(ms, context);
-      if (context.compatReadyAt && context.now >= context.compatReadyAt + (options.compatibilityLateMs || 0) && !options.compatibilityNeverReady) {
+      if (context.compatReadyAt && context.now >= context.compatReadyAt + (options.compatibilityLateMs || 0) && !options.compatibilityNeverReady && (!options.lateWindow || context.windowShown)) {
         context.publishHello();
         context.compatReadyAt = null;
       }
@@ -107,7 +108,9 @@ function fixture(family, options = {}) {
             "capture reload must have been pre-armed");
           context.captureReplies.add(command.commandId);
           context.publishHello();
-          writeFileSync(cachePath, '{"items":[null,{"id":1}]}');
+          writeFileSync(cachePath, JSON.stringify({ version: 1, tables: Object.fromEntries(
+            ["actor", "skill", "item", "weapon", "armor", "state"].map(key => [key, [null, { id: 1 }]])
+          ) }));
         }
       }
     }
@@ -134,7 +137,11 @@ function fixture(family, options = {}) {
       context.spawnTimes.push(context.now);
       if (options.fallbackAppears !== false) context.processes = gameProcesses;
     },
-    showNwGameWindow: async (pid) => { assert.equal(pid, 101); context.windowShown = true; return true; },
+    showNwGameWindow: async (pid) => {
+      if (options.outerLauncher && pid === 100) return [];
+      if (options.lateWindow && !context.compatReadyAt) return [];
+      assert.equal(pid, 101); context.windowShown = true; return true;
+    },
     injectAndDeliver: async (request) => {
       const match = request.bootstrap.match(/Object\.assign\(process\.env, (.+)\);/);
       if (request.bootstrap.includes("__rmchGroverCompatibility")) {
@@ -143,6 +150,10 @@ function fixture(family, options = {}) {
         assert.equal(existsSync(statePath), false, "old state cannot satisfy delayed readiness");
         assert.ok(Buffer.byteLength(request.bootstrap) < 16000, "early payload must reference the bridge file, never embed the full bridge source");
         context.injections.push({ ...request, env: {}, compatibility: true, at: context.now });
+        if (options.deliveryLateMs) {
+          context.now += Math.min(options.deliveryLateMs, request.timeoutMs);
+          if (request.timeoutMs < options.deliveryLateMs) return {ok:false,detail:'core-timeout'};
+        }
         if (options.compatibilityStalePid && request.pid !== 202) {
           context.processes = [processRow(101, ""), processRow(202, "--type=renderer")];
           return {ok:false,detail:"injector-exit-2: OpenProcess failed: 87"};
@@ -194,6 +205,8 @@ try {
       const first = game.injections[0];
       assert.equal(first.env.RMCH_TRANSPORT, file ? "file" : undefined);
       assert.equal(first.env.RMCH_SEALED, sealed ? "1" : undefined);
+      assert.equal(first.env.RMCH_SELF_SEED, family === "nb-evalnwbin" ? "1" : undefined,
+        "Enigma publishes native globals after login; heap publication is only needed for sealed evalNWBin");
       assert.equal(first.env.RMCH_BOOT_TAP, undefined, "normal attachment never installs the boot tap");
       assert.equal(first.timeoutMs, file && operation === "launched" ? 10000 : 30000);
       assert.equal(result.strategy, operation === "launched"
@@ -383,6 +396,22 @@ try {
     checks += 1;
   }
 
+  const partialCatalog = fixture("nb-evalnwbin", {
+    running: false,
+    onInject: async (entry, game) => {
+      if (!entry.env.RMCH_THROW_IF_BRIDGED) {
+        mkdirSync(game.stateDir, { recursive: true });
+        writeFileSync(game.cachePath, JSON.stringify({ version: 1, tables: {
+          item: [null, { id: 1 }], weapon: [null], armor: [null], state: [null]
+        } }));
+      }
+      return { ok: true, detail: "evaled" };
+    }
+  });
+  await partialCatalog.launch();
+  assert.equal(partialCatalog.commands().length, 1, "partial cache must retry early capture for missing actor and skill tables");
+  checks += 1;
+
   const noCatalog = fixture("nb-evalnwbin", { running: false, capture: false });
   assert.equal((await noCatalog.launch()).strategy, "nw-launch-inject-file");
   assert.equal(noCatalog.commands().length, 2, "capture remains bounded and best-effort");
@@ -390,9 +419,9 @@ try {
   checks += 1;
 
   const knownModule = "C:\\Program Files (x86)\\Sangfor\\SSL\\SangforPWEx\\SangforUDProtectEx_202591913857893.dll";
-  for (const modules of [[], [knownModule]]) {
+  for (const modules of [[], [knownModule], ["D:\\MacType\\MacType.dll", "D:\\MacType\\MacType.Core.dll"]]) {
     const game = fixture("grover", { running: false, modules });
-    game.scan.protection.flags.push("grover-module-monitor");
+    if (!modules.some(value => value.includes("MacType"))) game.scan.protection.flags.push("grover-module-monitor");
     if (modules.length) {
       mkdirSync(game.stateDir, { recursive: true });
       writeFileSync(game.commandPath, JSON.stringify({ commandId: "f1", type: "game.newGame", args: {} }) + "\n");
@@ -407,10 +436,20 @@ try {
       const status = JSON.parse(readFileSync(path.join(game.stateDir, "grover-compat.json"), "utf8"));
       assert.equal(status.status, "applied");
     } else {
-      assert.ok(game.injections.every(i => !i.compatibility), "without actual Sangfor modules the old route is unchanged");
+      assert.ok(game.injections.every(i => !i.compatibility), "without actual known modules the old route is unchanged");
     }
     checks++;
   }
+  const lateDelivery = fixture("grover", {running:false,modules:[knownModule],deliveryLateMs:19000});
+  await lateDelivery.launch();
+  assert.equal(lateDelivery.injections.length,1,"wait for the native hook result without injecting twice");
+  checks++;
+  const outerLauncher = fixture("grover", {running:false,modules:[knownModule],outerLauncher:true});
+  await outerLauncher.launch();
+  assert.equal(outerLauncher.windowShown,true,"restore NW's game window even when an outer launcher appears first");
+  checks++;
+  const lateWindow = fixture("grover", {running:false,modules:[knownModule],lateWindow:true});
+  await lateWindow.launch();assert.equal(lateWindow.windowShown,true,"retry window restoration after renderer discovery precedes window creation");checks++;
   const compatFailure = fixture("grover", { running: false, compatibilityFailure: true, modules: [knownModule] });
   compatFailure.scan.protection.flags.push("grover-module-monitor");
   await assert.rejects(compatFailure.launch(), /compatibility could not reach/);
@@ -430,7 +469,7 @@ try {
   assert.equal(staleCompat.injections.at(-1).pid,202,"only a failed OpenProcess permits refreshing the replacement renderer");
   checks++;
   for (const never of [false, true]) {
-    const game = fixture("grover", { running: false, modules: [knownModule], compatibilityLateMs: 2000, compatibilityNeverReady: never });
+    const game = fixture("grover", { running: false, modules: [knownModule], compatibilityLateMs: 20000, compatibilityNeverReady: never });
     game.scan.protection.flags.push("grover-module-monitor");
     if (never) await assert.rejects(game.launch(), /delayed game bridge did not become ready/);
     else await game.launch();
@@ -441,7 +480,8 @@ try {
 
   const statusPath = path.join(tempRoot, "compat-unit.json");
   const retained = ["C:\\Windows\\System32\\winmm.dll", "C:\\Other\\Sangfor\\SSL\\ClientComponent\\SangforTcp.dll", "C:\\Program Files (x86)\\Sangfor\\SSL\\unknown.dll", "C:\\Tools\\rmch-mvhook.dll"];
-  const report = { getReport: () => ({ sharedObjects: [knownModule, ...retained], header: { unchanged: true } }) };
+  retained.push("D:\\Other\\MacType.dll", "D:\\MacType\\unknown.dll");
+  const report = { getReport: () => ({ sharedObjects: [knownModule, "D:\\MacType\\MacType.dll", "D:\\MacType\\MacType.Core.dll", ...retained], header: { unchanged: true } }) };
   vm.runInNewContext(buildGroverCompatibilityBootstrap(statusPath), { window: { SceneManager: { _scene: {} }, document: { hidden: false } }, process: { env: { "ProgramFiles(x86)": "C:\\Program Files (x86)" }, report }, require: name => name === "fs" ? fs : path });
   assert.deepEqual(report.getReport().sharedObjects, retained, "unknown modules, system DLLs and toolbox DLLs remain visible");
   assert.deepEqual(report.getReport().header, { unchanged: true });

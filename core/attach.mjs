@@ -30,7 +30,8 @@ import { buildBridge } from "./bridge-bundler.mjs";
 import { ensureServer, launchGame } from "./launcher.mjs";
 import { getToken } from "./token.mjs";
 import { adoptRgssSession } from "./rgss-launcher.mjs";
-import { buildGroverCompatibilityBootstrap, isKnownSangforModule } from "./grover-compat.mjs";
+import { buildGroverCompatibilityBootstrap, isKnownCompatibilityModule, GROVER_BRIDGE_READY_MS } from "./grover-compat.mjs";
+import { buildSelfSeedBootstrap } from "./sealed-seed.mjs";
 
 export class AttachError extends Error {}
 
@@ -344,6 +345,7 @@ export function buildNwBootstrap({ gameRoot, projectRoot, gameKey, port, token, 
     "  var __rmchStart = function () {",
     "    Object.assign(process.env, " + JSON.stringify(envVars) + ");",
     "    " + (pageRealm ? "window.eval" : "(0, eval)") + "(" + JSON.stringify(bridgeSource) + ");",
+    ...(envVars.RMCH_SELF_SEED === "1" ? ["    " + buildSelfSeedBootstrap() + ";"] : []),
     "  };",
     "  var isGamePage = !!(document && document.querySelector &&",
     "    (document.querySelector('canvas') || window.SceneManager || window.PluginManager || window.Utils));",
@@ -534,7 +536,8 @@ async function attachNw({ scan, projectRoot, port = 47412 }, runtime, operation)
     gameRoot: scan.root, projectRoot, gameKey: scan.gameKey, port, token,
     extraEnv: {
       ...(file ? { RMCH_TRANSPORT: "file" } : {}),
-      ...(policy.sealed ? { RMCH_SEALED: "1" } : {})
+      ...(policy.sealed ? { RMCH_SEALED: "1" } : {}),
+      ...(scan.container === "nb-evalnwbin" ? { RMCH_SELF_SEED: "1" } : {})
     }
   });
 
@@ -741,13 +744,30 @@ async function ensureSealedCatalog({ scan, projectRoot, port }, { platform, cloc
   const cachePath = path.join(stateDir, "catalog-cache.json");
   const { sleep } = clock;
   const hello = () => fileBridgeHello(stateDir, clock.now());
+  let cacheStamp = null;
+  let cacheComplete = false;
+  const hasCompleteCache = () => {
+    try {
+      const stat = statSync(cachePath);
+      const stamp = `${stat.mtimeMs}:${stat.size}`;
+      if (stamp === cacheStamp) return cacheComplete;
+      const { tables } = JSON.parse(readFileSync(cachePath, "utf8"));
+      cacheComplete = ["actor", "skill", "item", "weapon", "armor", "state"]
+        .every(key => Array.isArray(tables?.[key]));
+      cacheStamp = stamp;
+      return cacheComplete;
+    } catch {
+      // Capture can be between writes. Retry on the next poll.
+      return false;
+    }
+  };
   const waitForCache = async (ms) => {
     const deadline = clock.now() + ms;
     while (clock.now() < deadline) {
-      if (existsSync(cachePath)) return true;
+      if (hasCompleteCache()) return true;
       await sleep(500);
     }
-    return existsSync(cachePath);
+    return hasCompleteCache();
   };
   if (await waitForCache(10000)) return;
 
@@ -758,6 +778,7 @@ async function ensureSealedCatalog({ scan, projectRoot, port }, { platform, cloc
     gameRoot: scan.root, projectRoot, gameKey: scan.gameKey, port, token,
     extraEnv: {
       RMCH_TRANSPORT: "file", RMCH_SEALED: "1", RMCH_BOOT_TAP: "1",
+      ...(scan.container === "nb-evalnwbin" ? { RMCH_SELF_SEED: "1" } : {}),
       RMCH_THROW_IF_BRIDGED: "1"
     }
   });
@@ -884,7 +905,9 @@ async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
     launchLog(projectRoot, scan.gameKey, "launch skipped, already running — attaching");
     return attachNw({ scan, projectRoot, port }, runtime, "existing");
   }
-  const moduleMonitor = scan.protection && scan.protection.flags.includes("grover-boot") && scan.protection.flags.includes("grover-module-monitor");
+  // Compiled monitors have no searchable TH-QianC.js fingerprint. Inspect
+  // the real module list for every Grover boot, then filter only known tools.
+  const moduleMonitor = scan.protection && scan.protection.flags.includes("grover-boot");
   let compatibilityToken;
   if (moduleMonitor) {
     compatibilityToken = getToken(projectRoot);
@@ -974,16 +997,25 @@ async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
   launchLog(projectRoot, scan.gameKey, "renderer appeared", { t: elapsed() });
 
   let compatibilityPrepared = false;
+  let compatibilityWindowRestored = false;
+  const restoreCompatibilityWindows = async (processes) => {
+    for (const main of nwProcessTargets(processes).mains) {
+      const windows = await platform.showNwGameWindow(main.ProcessId);
+      log("Grover native game window restored", {pid:main.ProcessId, windows});
+      if (Array.isArray(windows) ? windows.length > 0 : !!windows) compatibilityWindowRestored = true;
+    }
+  };
   let monitorModules = [];
   if (moduleMonitor) {
     const target = nwProcessTargets(rendererProcesses).targets[0];
     if (target) monitorModules = await platform.listProcessModules(target.ProcessId, readPeArch(scan.paths.exe));
   }
-  if (monitorModules.some(value => isKnownSangforModule(value))) {
+  if (monitorModules.some(value => isKnownCompatibilityModule(value))) {
     // Restore before the native hook: a hidden page may have no animation/V8
     // activity for the probe to intercept in the first place.
-    const main = nwProcessTargets(rendererProcesses).mains[0];
-    if (main) log("Grover native game window restored", await platform.showNwGameWindow(main.ProcessId));
+    // A packed launcher and NW's actual browser can both be main processes.
+    // The launcher has no game window; inspect every main under this root.
+    await restoreCompatibilityWindows(rendererProcesses);
     const statusPath = path.join(projectRoot, "runtime", "bridge-state", scan.gameKey, "grover-compat.json");
     // This cold launch starts the file bridge before attachNw sees its hello.
     // Discard the previous process's queue before any bridge can consume it.
@@ -997,13 +1029,17 @@ async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
     });
     const delayedBootstrapPath = path.join(path.dirname(statusPath), "grover-delayed-bridge.js");
     writeFileSync(delayedBootstrapPath, delayedBootstrap, "utf8");
-    const bootstrap = buildGroverCompatibilityBootstrap(statusPath, { delayedBootstrapPath, delayMs: GROVER_COMPAT_SETTLE_MS, matchedModules: monitorModules.filter(value => isKnownSangforModule(value)) });
+    const bootstrap = buildGroverCompatibilityBootstrap(statusPath, { delayedBootstrapPath, delayMs: GROVER_COMPAT_SETTLE_MS, matchedModules: monitorModules.filter(value => isKnownCompatibilityModule(value)) });
     const results = [];
+    // mvhook waits up to 20 seconds for a suitable V8 context. Keep its pipe
+    // alive through that native deadline so it can report and unload cleanly.
     for (const target of nwProcessTargets(rendererProcesses).targets) {
+      log("Grover compatibility delivery begin", {pid:target.ProcessId, t:elapsed()});
       const result = await platform.injectAndDeliver({
         projectRoot, arch: readPeArch(scan.paths.exe), pid: target.ProcessId,
-        dllName: "rmch-mvhook.dll", bootstrap, mode: "crt", timeoutMs: 10000
+        dllName: "rmch-mvhook.dll", bootstrap, mode: "crt", timeoutMs: 30000
       });
+      log("Grover compatibility delivery result", {pid:target.ProcessId, t:elapsed(), ...result});
       results.push(result);
       if (result.ok) break;
     }
@@ -1015,12 +1051,12 @@ async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
       const freshTargets = nwProcessTargets(fresh);
       for (const target of freshTargets.targets) {
         const modules = await platform.listProcessModules(target.ProcessId, readPeArch(scan.paths.exe));
-        const matched = modules.filter(value => isKnownSangforModule(value));
+        const matched = modules.filter(value => isKnownCompatibilityModule(value));
         if (!matched.length) continue;
-        if (freshTargets.mains[0]) log("Grover replacement game window restored", await platform.showNwGameWindow(freshTargets.mains[0].ProcessId));
+        await restoreCompatibilityWindows(fresh);
         const result = await platform.injectAndDeliver({
           projectRoot, arch: readPeArch(scan.paths.exe), pid: target.ProcessId,
-          dllName: "rmch-mvhook.dll", mode: "crt", timeoutMs: 10000,
+          dllName: "rmch-mvhook.dll", mode: "crt", timeoutMs: 30000,
           bootstrap: buildGroverCompatibilityBootstrap(statusPath, {delayedBootstrapPath, delayMs:GROVER_COMPAT_SETTLE_MS, matchedModules:matched})
         });
         results.push(result);
@@ -1054,12 +1090,22 @@ async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
     // The page already owns the delayed bootstrap. Do not race its timer with
     // a second DLL injection: wait for the same real hello attachNw adopts.
     const stateDir = path.join(projectRoot, "runtime", "bridge-state", scan.gameKey);
-    const readyDeadline = clock.now() + 15000;
-    while (!fileBridgeHello(stateDir, clock.now()) && clock.now() < readyDeadline) await clock.sleep(250);
+    const readyDeadline = clock.now() + GROVER_BRIDGE_READY_MS + 1000;
+    let nextWindowCheck = clock.now() + 2000;
+    while (!fileBridgeHello(stateDir, clock.now()) && clock.now() < readyDeadline) {
+      // The renderer can appear before its titled application window. A single
+      // empty EnumWindows result must not leave the later page hidden/paused.
+      if (!compatibilityWindowRestored && clock.now() >= nextWindowCheck) {
+        const fresh = processesUnderRoot(await platform.listProcessesByExeName(exeName), scan.root);
+        await restoreCompatibilityWindows(fresh);
+        nextWindowCheck = clock.now() + 2000;
+      }
+      await clock.sleep(250);
+    }
     if (!fileBridgeHello(stateDir, clock.now())) {
       let detail = "";
       try { detail = JSON.parse(readFileSync(path.join(stateDir, "grover-compat.json"), "utf8")).error || ""; } catch (_) {}
-      throw new AttachError("Grover compatibility completed, but the delayed game bridge did not become ready within 15s" + (detail ? ": " + detail : ""));
+      throw new AttachError("Grover compatibility completed, but the delayed game bridge did not become ready within " + (GROVER_BRIDGE_READY_MS / 1000) + "s" + (detail ? ": " + detail : ""));
     }
   }
   const alive = processesUnderRoot(await platform.listProcessesByExeName(exeName), scan.root);

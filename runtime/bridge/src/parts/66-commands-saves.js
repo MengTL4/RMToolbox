@@ -14,6 +14,18 @@
       typeof storage.isLocalMode === "function" && !storage.isLocalMode());
   }
 
+  function isMzForageStorage() {
+    const storage = window.StorageManager;
+    return !!(storage && typeof storage.isLocalMode === "function" && !storage.isLocalMode() &&
+      ["forageKey", "updateForageKeys", "loadZip", "saveZip", "loadObject", "exists", "remove"]
+        .every(name => typeof storage[name] === "function"));
+  }
+
+  function requireSaveSlotId(value) {
+    if (isMzForageStorage() && (value === 0 || value === "0")) return 0;
+    return requireId(value, "save id");
+  }
+
   function requireMvWebStorage() {
     if (!isMvWebStorage()) throw new Error("this game does not use MV WebStorage saves");
     return window.StorageManager;
@@ -41,11 +53,70 @@
     return { format: "rmch-mv-webstorage-v1", title: window.$dataSystem && window.$dataSystem.gameTitle || null, entries };
   }
 
+  const nativeSlotManagers = new WeakSet();
+  function isNativeSlotStorage() {
+    const storage = window.StorageManager, manager = window.DataManager;
+    if (!storage || !manager || isMvWebStorage() || typeof storage.load !== "function" ||
+        typeof storage.save !== "function" || typeof storage.exists !== "function" ||
+        typeof storage.localFilePath !== "function") return false;
+    if (nativeSlotManagers.has(storage)) return true;
+    // Encrypted/remote MV storage may retain the local-mode flag and filename
+    // methods while its real saves are only accessible through StorageManager.
+    try {
+      for (let id = 1; id <= webSaveMaxSlots(); id += 1) {
+        if (storage.exists(id) === true && !fs.existsSync(storage.localFilePath(id))) {
+          nativeSlotManagers.add(storage);
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  async function nativeSlotSnapshot() {
+    if (!isNativeSlotStorage()) throw new Error("当前游戏未使用原生槽位存档");
+    const storage = window.StorageManager, entries = [];
+    for (let id = 1; id <= webSaveMaxSlots(); id += 1) {
+      if (!await storage.exists(id)) continue;
+      const value = await storage.load(id);
+      if (typeof value !== "string" || !value) throw new Error(`无法读取存档 ${id}`);
+      entries.push({id, value});
+    }
+    return {format: "rmch-mv-native-v1", title: window.$dataSystem.gameTitle,
+      infoJson: requireJsonEx().stringify(await window.DataManager.loadGlobalInfo() || []), entries};
+  }
+
+  // This part is also loaded in isolation by the lock-unit test. The full
+  // bridge has inventoryId from 62-commands-party.js; keep a strict numeric
+  // fallback for the isolated module so custom inventory validation remains
+  // testable without coupling the harness to another part.
+  function lockInventoryId(value, party, kind) {
+    return typeof inventoryId === "function"
+      ? inventoryId(value, party, kind)
+      : typeof requireId === "function"
+        ? requireId(value, "id")
+        : (() => {
+          const id = Number(value);
+          if (!Number.isInteger(id) || id < 0) throw new Error("id must be a non-negative integer");
+          return id;
+        })();
+  }
+
   Object.assign(commandHandlers, {
 
     // --- save slots -----------------------------------------------------------
 
-    "save.list": () => {
+    "save.list": async () => {
+      if (isMzForageStorage()) return mzForageList();
+      if (isNativeSlotStorage()) {
+        const snapshot = await nativeSlotSnapshot();
+        const info = requireJsonEx().parse(snapshot.infoJson);
+        return {dir: null, storage: "native", entries: snapshot.entries.map(entry => ({
+          name: `file${entry.id}.rpgsave`, slot: entry.id, size: entry.value.length,
+          mtime: info[entry.id] && info[entry.id].timestamp
+            ? new Date(info[entry.id].timestamp).toISOString() : null
+        }))};
+      }
       if (isMvWebStorage()) {
         const storage = window.StorageManager;
         const info = window.DataManager.loadGlobalInfo() || [];
@@ -79,7 +150,7 @@
     },
 
     "save.save": async (args) => {
-      const id = requireId(args.id === undefined ? 1 : args.id, "save id");
+      const id = requireSaveSlotId(args.id === undefined ? 1 : args.id);
       const dataManager = requireDataManager("saveGame");
       if (isMvWebStorage() && id > webSaveMaxSlots()) throw new Error("save id exceeds this game's slot limit");
       const system = resolveSystem();
@@ -94,9 +165,52 @@
       return { id, saved: true };
     },
 
-    "save.webstorage.export": () => webSaveSnapshot(),
+    "save.webstorage.export": () => isMzForageStorage() ? mzForageSnapshot() : webSaveSnapshot(),
+
+    "save.native.export": () => nativeSlotSnapshot(),
+
+    "save.native.import": async (args) => {
+      const snapshot = args.snapshot, manager = window.DataManager, storage = window.StorageManager;
+      if (!isNativeSlotStorage()) throw new Error("请先连接使用原生槽位存档的游戏");
+      if (!snapshot || snapshot.format !== "rmch-mv-native-v1" || snapshot.title !== window.$dataSystem.gameTitle ||
+          !Array.isArray(snapshot.entries) || typeof snapshot.infoJson !== "string") throw new Error("invalid native save backup");
+      const restoredInfo = requireJsonEx().parse(snapshot.infoJson);
+      if (!Array.isArray(restoredInfo)) throw new Error("invalid native save metadata");
+      const seen = new Set();
+      for (const entry of snapshot.entries) {
+        if (!entry || !Number.isInteger(entry.id) || entry.id < 1 || entry.id > webSaveMaxSlots() ||
+            seen.has(entry.id) || typeof entry.value !== "string") throw new Error("invalid native save slot");
+        const data = JSON.parse(entry.value);
+        if (!data || !data.system || !data.party || !data.actors) throw new Error("invalid native save contents");
+        seen.add(entry.id);
+      }
+      // Preserve all other slots and merge only metadata of restored slots.
+      const info = await manager.loadGlobalInfo() || [];
+      for (const entry of snapshot.entries) {
+        await storage.save(entry.id, entry.value);
+        if (await storage.load(entry.id) !== entry.value) throw new Error(`存档 ${entry.id} 恢复后校验失败`);
+        info[entry.id] = restoredInfo[entry.id] || null;
+      }
+      await manager.saveGlobalInfo(info);
+      return {restored: snapshot.entries.length};
+    },
+
+    "save.native.delete": async (args) => {
+      if (!isNativeSlotStorage()) throw new Error("当前游戏未使用原生槽位存档");
+      const match = /^file([1-9]\d*)\.rpgsave$/.exec(args.name || "");
+      const id = match && Number(match[1]);
+      if (!id || id > webSaveMaxSlots()) throw new Error("invalid native save slot");
+      const storage = window.StorageManager;
+      await storage.remove(id);
+      if (await storage.exists(id)) throw new Error("游戏的原生存档接口未执行删除，存档仍保留");
+      const info = await window.DataManager.loadGlobalInfo() || [];
+      delete info[id];
+      await window.DataManager.saveGlobalInfo(info);
+      return {name: args.name, deleted: true};
+    },
 
     "save.webstorage.import": (args) => {
+      if (isMzForageStorage()) return mzForageImport(args.snapshot);
       requireMvWebStorage();
       const snapshot = args.snapshot;
       if (!snapshot || snapshot.format !== "rmch-mv-webstorage-v1" || !Array.isArray(snapshot.entries) ||
@@ -135,6 +249,7 @@
     },
 
     "save.webstorage.delete": (args) => {
+      if (isMzForageStorage()) return mzForageDelete(args.name);
       const storage = requireMvWebStorage();
       const name = String(args.name || "");
       const known = webSaveKeys();
@@ -169,7 +284,7 @@
     },
 
     "save.load": (args) => {
-      const id = requireId(args.id, "save id");
+      const id = requireSaveSlotId(args.id);
       const dataManager = requireDataManager("loadGame");
       const enterMap = (ok) => {
         if (!ok) throw new Error(`loadGame(${id}) failed`);
@@ -188,9 +303,14 @@
       };
       // MV returns a boolean synchronously; MZ returns a promise.
       const attempt = () => {
+        // Ldd's native UI downloads cloud saves, while saveGame still writes
+        // local MZ storage. Toolbox listings/backups refer to those local slots.
+        if (isMzForageStorage() && typeof window.StorageManager.loadCloudSave === "function") {
+          return mzForageLoad(id);
+        }
         const loaded = dataManager.loadGame(id);
         return loaded && typeof loaded.then === "function"
-          ? loaded.then(result => result === undefined ? true : result)
+          ? loaded.then(result => result === undefined || result === 0 ? true : result)
           : Promise.resolve(loaded);
       };
       // Some custom engines (傲世修仙录定制版 family) sit at the title with the
@@ -296,7 +416,10 @@
       }
       const table = bridge.valueLocks[kind];
       if (!table) throw new Error(`unsupported lock kind: ${kind}`);
-      const id = Math.floor(requireNumber(args.id, "id"));
+      const party = resolveParty();
+      const id = (kind === "item" || kind === "weapon" || kind === "armor")
+        ? lockInventoryId(args.id, party, kind)
+        : Math.floor(requireNumber(args.id, "id"));
       if (args.enabled === false) {
         delete table[id];
         return { kind, id, enabled: false, value: null };
@@ -329,8 +452,10 @@
         const source = incoming[kind];
         if (source && typeof source === "object") {
           for (const key of Object.keys(source)) {
-            const id = Math.floor(Number(key));
-            if (!Number.isFinite(id)) continue;
+            const id = (kind === "item" || kind === "weapon" || kind === "armor")
+              ? lockInventoryId(key, resolveParty(), kind)
+              : Math.floor(Number(key));
+            if (typeof id !== "string" && !Number.isFinite(id)) continue;
             const value = coerceLockValue(kind, source[key]);
             validateInventoryLock(kind, id, value);
             table[id] = value;

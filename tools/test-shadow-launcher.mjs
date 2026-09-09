@@ -10,7 +10,9 @@ import assert from "node:assert/strict";
 import { existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { setupShadowApp, setupBundledShadowApp } from "../core/shadow-launcher.mjs";
+import vm from "node:vm";
+import * as fs from "node:fs";
+import { setupShadowApp, setupBundledShadowApp, patchBundledEngineScript } from "../core/shadow-launcher.mjs";
 
 function makeFile(file, content) {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -40,6 +42,10 @@ function main() {
   const bgScript = path.join("bg_script", "boot.js");
   const originalBg = "// ORIGINAL BG SCRIPT\n";
   try {
+    const bundledWindow = {};
+    const bundledSource = '(function(){function Scene_Item(){} function Scene_Battle(){} function Game_Action(){} window.expected={Scene_Item:Scene_Item,Scene_Battle:Scene_Battle,Game_Action:Game_Action};}.call(this));';
+    vm.runInNewContext(patchBundledEngineScript(bundledSource), {window:bundledWindow});
+    for (const name of ["Scene_Item","Scene_Battle","Game_Action"]) assert.equal(bundledWindow[name],bundledWindow.expected[name],name+" must be published from the native bundle closure");
     makeFakeGame(gameRoot, bgScript);
     const scan = {
       root: gameRoot,
@@ -70,11 +76,18 @@ function main() {
     assert.ok(patched.includes("ORIGINAL BG SCRIPT"), "patched bg-script must embed the original");
     assert.ok(patched.includes("process.cwd"), "patched bg-script must carry the prelude spoof");
     assert.ok(patched.includes("page-bridge"), "patched bg-script must carry the bridge suffix");
+    const nativeModules = ["D:\\MacType\\MacType.dll", "D:\\MacType\\MacType.Core.dll", "C:\\Windows\\System32\\winmm.dll", "D:\\Other\\MacType.dll"];
+    const shadowProcess = {env:{},cwd:()=>gameRoot,report:{getReport:()=>({sharedObjects:[...nativeModules]})}};
+    vm.runInNewContext(patched,{require:name=>name==="fs"?fs:path,process:shadowProcess,location:{href:"chrome-extension://test/_generated_background_page.html"}});
+    assert.deepEqual(shadowProcess.report.getReport().sharedObjects,nativeModules.slice(2),"shadow bootstrap filters only the observed font compatibility modules");
 
     // …and the real game's file is untouched (the write-through-junction bug
     // this guards against would have replaced it with the patched text).
     assert.equal(readFileSync(path.join(gameRoot, bgScript), "utf8"), originalBg,
       "the game's original bg-script must stay byte-identical");
+    makeFile(path.join(appDir, "wmic.exe"), "stale toolbox shim");
+    setupShadowApp({ projectRoot, scan, gameKey: "fake-game" });
+    assert.equal(existsSync(path.join(appDir, "wmic.exe")), false, "plain shadow must not retain a previous guarded launch shim");
 
     // Regression: a root-level bg-script ("loading", NWR-style) still works.
     const gameRoot2 = path.join(tempRoot, "game2");
@@ -90,6 +103,17 @@ function main() {
       "root-level bg-script must be patched in the shadow");
     assert.equal(readFileSync(path.join(gameRoot2, "loading"), "utf8"), "// ORIGINAL LOADER\n",
       "root-level original must stay untouched");
+
+    const namedRoot = path.join(tempRoot, "named-game");
+    makeFakeGame(namedRoot, "loading");
+    const namedExe = path.join(namedRoot, "末日风暴.exe");
+    fs.renameSync(path.join(namedRoot, "Game.exe"), namedExe);
+    const named = setupShadowApp({projectRoot, scan:{root:namedRoot,layout:"www",paths:{exe:namedExe},manifest:{bgScript:"loading"}},gameKey:"named-game"});
+    assert.equal(named.gameExe, path.join(named.appDir, "末日风暴.exe"));
+    assert.equal(readFileSync(named.gameExe,"utf8"), "fake-nw-binary");
+    const namedProcess={env:{},cwd:()=>named.appDir};
+    vm.runInNewContext(readFileSync(named.bgScriptPath,"utf8"),{require:name=>name==="fs"?fs:path,process:namedProcess,location:{href:"chrome-extension://test/_generated_background_page.html"}});
+    assert.equal(namedProcess.execPath,namedExe,"shadow prelude must preserve the actual source executable name");
 
     // grover-boot: the shell's own chain runs (original kept), the manifest
     // copy stays stock (Some.js validates it), the wmic shim is deployed, and

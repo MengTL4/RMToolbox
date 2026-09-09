@@ -16,7 +16,50 @@
   ]);
 
   function availableScenes() {
-    return PUSHABLE_SCENES.filter((name) => typeof window[name] === "function");
+    publishNativeMenuScenes();
+    return PUSHABLE_SCENES.filter((name) => {
+      if (typeof window[name] !== "function") return false;
+      // This TH release retains the Debug class name but removes its entire
+      // window creation body. Entering it terminates the native game; it is not
+      // an available menu. Toolbox switch/variable editing remains independent.
+      if (name === "Scene_Debug" && window.ThSce_Debug === window[name]) {
+        const create = window[name].prototype && window[name].prototype.create;
+        if (typeof create === "function" && /\{ThSce_MenuBase\.prototype\.create\.call\(this\);?\}$/.test(
+          Function.prototype.toString.call(create).replace(/\s/g, ""))) return false;
+      }
+      return true;
+    });
+  }
+
+  function publishNativeMenuScenes() {
+    // TK releases rename these constructors but keep the native menu handlers.
+    // Capture the constructor passed by the handler synchronously; no scene is
+    // instantiated, pushed or rendered while discovering the native target.
+    const toolkit = window.TK && window.TK.$;
+    const manager = toolkit && toolkit.SceneMrg, Menu = window.Scene_Menu;
+    if (!manager || typeof manager.push !== "function" || typeof Menu !== "function") return;
+    for (const [name, symbol, signature] of [
+      ["Scene_Item", "item", "createItemWindow"],
+      ["Scene_Skill", "skill", "createSkillTypeWindow"],
+      ["Scene_Equip", "equip", "createSlotWindow"]
+    ]) {
+      if (typeof window[name] === "function") continue;
+      const method = symbol === "item" ? "commandItem" : "onPersonalOk";
+      if (typeof Menu.prototype[method] !== "function") continue;
+      const menu = Object.create(Menu.prototype);
+      menu._commandWindow = {currentSymbol: () => symbol};
+      menu._statusWindow = {index: () => 0};
+      const original = manager.push;
+      let captured;
+      try {
+        manager.push = ctor => { captured = ctor; };
+        menu[method]();
+      } catch (_) { captured = null; }
+      finally { manager.push = original; }
+      if (typeof captured === "function" && captured.prototype && typeof captured.prototype[signature] === "function") {
+        window[name] = captured;
+      }
+    }
   }
 
   // action -> handler. A table rather than a switch so `game.repair` can report
@@ -49,7 +92,7 @@
 
     clearMoveRoute: () => {
       const player = requirePlayer("forceMoveRoute");
-      if (typeof player.processRouteEnd === "function") player.processRouteEnd();
+      if (player._moveRoute && typeof player.processRouteEnd === "function") player.processRouteEnd();
       player._moveRouteForcing = false;
       player._waitCount = 0;
     },
@@ -85,8 +128,11 @@
       const sceneManager = resolveSceneManager();
       const scene = sceneManager && sceneManager._scene;
       const stack = sceneManager && Array.isArray(sceneManager._stack) ? sceneManager._stack : [];
+      const ctor = scene && scene.constructor;
+      const canonical = ctor && ["Scene_Map", "Scene_Title", "Scene_Battle", "Scene_Boot", ...PUSHABLE_SCENES]
+        .find(name => window[name] === ctor);
       return {
-        current: scene && scene.constructor && scene.constructor.name || null,
+        current: canonical || ctor && ctor.name || null,
         stackDepth: stack.length,
         available: availableScenes()
       };
@@ -98,6 +144,25 @@
       // generator, and the GUI only ever offers what scene.info reported.
       if (!availableScenes().includes(name)) {
         throw new Error(`scene is unavailable: ${name || "(empty)"}`);
+      }
+      // Native menus normally select an actor before opening these views.
+      // TH's item view reads the persisted selection directly, so the getter's
+      // fallback alone is insufficient when a new save still has actor ID 0.
+      if (["Scene_Item", "Scene_Skill", "Scene_Equip", "Scene_Status"].includes(name)) {
+        const party = resolveParty();
+        if (party && typeof party.menuActor === "function" && typeof party.setMenuActor === "function") {
+          const actor = party.menuActor();
+          if (!actor) throw new Error("当前没有可用于此菜单的队伍角色");
+          party.setMenuActor(actor);
+          // FT's native personal-menu handler also selects a party position.
+          // Scene_Equip consumes it while creating the battle-sprite background,
+          // before its own actor window exists (a fresh save has no index yet).
+          if (isNativeFramePacingTarget() && typeof party.members === "function") {
+            const index = party.members().indexOf(actor);
+            if (index < 0) throw new Error("当前菜单角色已不在队伍中");
+            party._TkSpIndex = index;
+          }
+        }
       }
       requireSceneManager("push").push(window[name]);
       return { pushed: name };

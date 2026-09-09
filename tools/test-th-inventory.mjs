@@ -40,3 +40,28 @@ assert.throws(()=>adapter.validateLock(weapon,1),/独立装备/);
 assert.throws(()=>adapter.validateLock(item,1001),/1000/);
 assert.equal(context.resolveCustomInventory({}),null);
 console.log('PASS TH inventory owners, warehouse, native mutation, capacity, partial progress, instance protection');
+
+// Native YEP variants use string instance IDs and report zero for a base item.
+const independent = { _items: {}, _weapons: {}, _armors: {}, owned: [],
+  items(){return [];}, weapons(){return this.owned;}, armors(){return [];},
+  gainIndependentItem(){}, numItems(data){return this._weapons[data.id] || 0;},
+  gainItem(data, amount){
+    if(amount>0) for(let n=0;n<amount;n++){const row={...data,id:'I'+(++this.serial),baseItemId:data.id};this.owned.push(row);this._weapons[row.id]=1;}
+    else {this.owned=this.owned.filter(row=>row!==data);delete this._weapons[data.id];}
+  },serial:100
+};
+window.DataManager.isIndependent = data => data.kind === 'weapon';
+const nativeAdapter=context.resolveCustomInventory(independent);
+assert.ok(nativeAdapter, 'independent native inventory must be recognized');
+assert.equal(nativeAdapter.change(weapon,2),2);
+assert.equal(independent._weapons[weapon.id],undefined,'never fabricate numeric base stock');
+const nativeRows=nativeAdapter.entries();
+assert.equal(nativeRows[0].id,'I101');
+assert.equal(nativeRows[0].baseItemId,1);
+assert.equal(nativeAdapter.change(weapon,-1),1,'base aggregate removal must delete one native instance');
+assert.doesNotThrow(()=>nativeAdapter.validateLock(weapon,1));
+assert.throws(()=>nativeAdapter.validateLock(independent.owned[0],2),/0 或 1/);
+assert.throws(()=>nativeAdapter.change(independent.owned[0],1),/基础装备/);
+assert.equal(nativeAdapter.change(independent.owned[0],-1),0);
+assert.equal(nativeAdapter.count(weapon),0);
+console.log('PASS native independent string IDs, aggregate base count and precise removal');

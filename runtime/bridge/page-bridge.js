@@ -604,6 +604,7 @@
     skill: ["dataSkills", "$dataSkills"],
     state: ["dataStates", "$dataStates"],
     actor: ["dataActors", "$dataActors"],
+    class: ["dataClasses", "$dataClasses"],
     enemy: ["dataEnemies", "$dataEnemies"],
     troop: ["dataTroops", "$dataTroops"],
     mapInfo: ["dataMapInfos", "$dataMapInfos"],
@@ -1032,8 +1033,9 @@
   function actorIdOf(actor) {
     if (!actor) return null;
     try {
-      if (typeof actor.actorId === "function") return actor.actorId();
-      return actor._actorId || null;
+      const id = typeof actor.actorId === "function" ? actor.actorId() : actor._actorId;
+      const numeric = Number(id);
+      return Number.isInteger(numeric) && numeric > 0 ? numeric : id || null;
     } catch (_) {
       return null;
     }
@@ -1144,16 +1146,20 @@
     } catch (_) { params = null; }
 
     let className = null;
+    let classId = Number(actor._classId) || null;
     try {
       const klass = typeof actor.currentClass === "function" ? actor.currentClass() : null;
       className = klass && klass.name || null;
+      // TH stores _classId as an encoded string; the native record exposes
+      // the actual ID needed by the editor and by changeClass.
+      if (klass && Number(klass.id) > 0) classId = Number(klass.id);
     } catch (_) { className = null; }
 
     return {
       id: actorIdOf(actor),
       name: actorNameOf(actor),
       nickname: typeof actor.nickname === "function" ? safeCall(() => actor.nickname()) : null,
-      classId: Number(actor._classId) || null,
+      classId,
       className,
       level: readStat(actor, "level", "_level"),
       maxLevel: typeof actor.maxLevel === "function" ? safeCall(() => actor.maxLevel()) : null,
@@ -1331,13 +1337,14 @@
     }
     return { total: entries.length, entries };
   }
+  // Native inventory adapters preserve each plugin's grant/removal behavior.
   // TH_ItemCore replaces the party's numeric containers with per-actor bags
   // and a warehouse. Keep the game's own grant/removal methods and its unique
   // equipment instances; the old _items/numItems API no longer describes it.
   function resolveCustomInventory(party) {
     if (!party || typeof party.newGetItem !== "function" || typeof party.thTyZhNumGain !== "function" ||
         typeof party.thTyZhNumGet !== "function" || !Array.isArray(party._tkCkItem) ||
-        typeof party.members !== "function") return null;
+        typeof party.members !== "function") return resolveIndependentInventory(party);
 
     const prefixes = { I: "item", W: "weapon", A: "armor" };
     function kindOf(data) {
@@ -1435,6 +1442,63 @@
       }
     };
   }
+
+  function resolveIndependentInventory(party) {
+    const manager = window.DataManager;
+    if (!party || typeof party.gainIndependentItem !== "function" ||
+        !manager || typeof manager.isIndependent !== "function") return null;
+    const kinds = [["item", "items"], ["weapon", "weapons"], ["armor", "armors"]];
+    const instance = data => data && data.baseItemId != null && String(data.baseItemId) !== String(data.id);
+    function rows() {
+      const result = [];
+      for (const [kind, method] of kinds) {
+        if (typeof party[method] !== "function") continue;
+        for (const data of party[method]() || []) {
+          if (!data) continue;
+          const count = Number(party.numItems(data)) || 0;
+          if (count > 0) result.push({ kind, data, count });
+        }
+      }
+      return result;
+    }
+    function count(data) {
+      if (instance(data) || !manager.isIndependent(data)) return Number(party.numItems(data)) || 0;
+      const kind = manager.isWeapon(data) ? "weapon" : manager.isArmor(data) ? "armor" : "item";
+      return rows().filter(row => row.kind === kind && String(row.data.baseItemId || row.data.id) === String(data.id))
+        .reduce((total, row) => total + row.count, 0);
+    }
+    return {
+      count,
+      entries: () => rows().map(row => ({kind: row.kind, id: row.data.id, name: row.data.name || "",
+        count: row.count, baseItemId: row.data.baseItemId || null})),
+      validateLock(data, value) {
+        if (manager.isIndependent(data) && data.baseItemId != null && String(data.baseItemId) !== String(data.id) && value > 1) {
+          throw new Error("独立装备实例只能锁定为 0 或 1 件");
+        }
+        if (!Number.isInteger(value) || value < 0 || value > 1000) throw new Error("物品锁数量必须在 0 到 1000 之间");
+      },
+      change(data, delta) {
+        if (!Number.isInteger(delta) || Math.abs(delta) > 1000) throw new Error("每次最多修改 1000 件物品");
+        if (delta > 0 && instance(data)) throw new Error("这是独立装备实例；添加装备时请选择基础装备目录");
+        const kind = manager.isWeapon(data) ? "weapon" : manager.isArmor(data) ? "armor" : "item";
+        const before = count(data);
+        if (delta < 0 && manager.isIndependent(data) && !instance(data)) {
+          // A base weapon/armor has no native numeric container. Remove actual
+          // owned instances one at a time so the game's own instance metadata
+          // and equipment bookkeeping remain intact.
+          for (let step = 0; step < -delta; step += 1) {
+            const row = rows().find(candidate => candidate.kind === kind &&
+              String(candidate.data.baseItemId || candidate.data.id) === String(data.id));
+            if (!row) break;
+            party.gainItem(row.data, -1);
+          }
+        } else if (delta) party.gainItem(data, delta);
+        const actual = count(data);
+        if (actual !== Math.max(0, before + delta)) throw new Error(`游戏仅应用了部分变化：当前数量 ${actual}（原数量 ${before}）`);
+        return actual;
+      }
+    };
+  }
   // ---------------------------------------------------------------------------
   // Trainer hooks.
   //
@@ -1476,9 +1540,8 @@
     if (!options || typeof options !== "object") return { ...bridge.options };
     const given = (key) => Object.prototype.hasOwnProperty.call(options, key);
 
-    // This target's native updateMain takes no elapsed-time argument. The
-    // generic extra-speed hook cannot accelerate it; do not acknowledge a
-    // setting that has no effect or replace the game's authored Drill gear.
+    // This target owns its frame pacing through Drill's authored speed gear.
+    // Keep the explicit limitation until extra scene ticks are verified there.
     if (typeof isNativeFramePacingTarget === "function" && isNativeFramePacingTarget() &&
         ((given("gameSpeedMulti") && Number(options.gameSpeedMulti) > 1) ||
          (given("speedHoldCtrl") && toBool(options.speedHoldCtrl)))) {
@@ -1490,8 +1553,8 @@
     });
     NUMBER_OPTIONS.forEach((key) => {
       if (!given(key)) return;
-      // gameSpeedMulti multiplies frame time, so below 1 would run the game
-      // backwards-ish; the rest may legitimately be negative (moveSpeedAdd).
+      // gameSpeedMulti adds scene ticks; values below 1 are not supported.
+      // The other numeric options may legitimately be negative (moveSpeedAdd).
       const min = key === "gameSpeedMulti" ? 1 : -9999;
       bridge.options[key] = clampNumber(options[key], min, 9999, bridge.options[key]);
     });
@@ -1567,21 +1630,34 @@
 
   // --- scene update: game speed + value locks ---------------------------------
 
-  // Both concerns share SceneManager.updateMain because patchMethod refuses to
-  // wrap the same method twice. Keep them in this order: locks must be
-  // re-asserted after the game's own frame has run, not before.
+  // updateMain can take no arguments, and MV's version also schedules the
+  // next animation frame. Repeat scene logic, never the outer frame scheduler.
+  // Reassert value locks after the complete frame, including its extra ticks.
   function patchSceneUpdate() {
     const sceneManager = resolveSceneManager();
     if (!sceneManager) return false;
+    let extraSceneTicks = 0;
+    patchMethod(sceneManager, "updateScene", "SceneManager.updateScene", function (original, args) {
+      const result = original.apply(this, args);
+      const held = bridge.options.speedHoldCtrl && bridge.keysHeld && (bridge.keysHeld.control || bridge.keysHeld[17]);
+      if (!held || (typeof isNativeFramePacingTarget === "function" && isNativeFramePacingTarget())) {
+        extraSceneTicks = 0;
+        return result;
+      }
+      extraSceneTicks += clampNumber(bridge.options.gameSpeedMulti, 1, 20, 1) - 1;
+      const repeats = Math.floor(extraSceneTicks);
+      extraSceneTicks -= repeats;
+      for (let index = 0; index < repeats && !this._stopped; index += 1) {
+        if (typeof this.updateFrameCount === "function") this.updateFrameCount();
+        if (typeof this.updateInputData === "function") this.updateInputData();
+        if (typeof this.updateEffekseer === "function") this.updateEffekseer();
+        if (typeof this.changeScene === "function") this.changeScene();
+        original.apply(this, args);
+      }
+      return result;
+    });
     return patchMethod(sceneManager, "updateMain", "SceneManager.updateMain", function (original, args) {
       const result = original.apply(this, args);
-      if (bridge.options.speedHoldCtrl && bridge.keysHeld && (bridge.keysHeld.control || bridge.keysHeld[17])) {
-        const delta = args && args[0];
-        if (Number.isFinite(delta)) {
-          const extra = delta * (clampNumber(bridge.options.gameSpeedMulti, 1, 20, 1) - 1);
-          try { original.call(this, extra); } catch (_) {}
-        }
-      }
       applyValueLocks();
       return result;
     });
@@ -1808,6 +1884,33 @@
     }
   }
 
+  // Homecoming's TH actor model removes the standard additive parameter term
+  // and leaves addParam as refresh-only. Preserve its equipment/tank formula;
+  // restore just the persisted additive term for toolbox parameter edits.
+  const thParameterMethods = new WeakSet();
+  function patchThActorParameters() {
+    let installed = false;
+    const targets = uniqueTargets(resolvePrototypeTargets("Game_Actor", ["GameActor"])
+      .concat(partyMemberPrototypeTargets("runtime.party")));
+    targets.forEach((target) => {
+      const owner = target.object;
+      if (!owner || typeof owner.paramPlus !== "function") return;
+      if (thParameterMethods.has(owner.paramPlus)) { installed = true; return; }
+      if (typeof owner.thNewPrValue !== "function" || typeof owner.isTkActor !== "function" ||
+          typeof owner.addParam !== "function") return;
+      const add = Function.prototype.toString.call(owner.addParam).replace(/\s/g, "");
+      const plus = Function.prototype.toString.call(owner.paramPlus);
+      if (!/\{this\.refresh\(\);?\}$/.test(add) || /_paramPlus|\[native code\]/.test(plus)) return;
+      if (patchMethod(owner, "paramPlus", target.label + ".thParamPlus", function (original, args) {
+        return original.apply(this, args) + (Number(this._paramPlus && this._paramPlus[args[0]]) || 0);
+      })) {
+        thParameterMethods.add(owner.paramPlus);
+        installed = true;
+      }
+    });
+    return installed;
+  }
+
   // --- master installer -------------------------------------------------------
 
   function patchTrainerHooks() {
@@ -1822,6 +1925,7 @@
     track(patchNativeFramePacing(), "framePacing");
     track(patchEncounter(), "encounter");
     track(patchGlobalInfoGuard(), "globalInfoGuard");
+    track(patchThActorParameters(), "thActorParameters");
     patchBattleRewards(track);
     patchScaledGain(
       track,
@@ -1830,7 +1934,8 @@
     );
     patchScaledGain(
       track,
-      resolvePrototypeTargets("Game_Party", ["GameParty"]),
+      uniqueTargets(resolvePrototypeTargets("Game_Party", ["GameParty"])
+        .concat(runtimePrototypeChainTargets("runtime.party", resolveParty(), 5))),
       "gainGold", "goldRate", "partyGainGold"
     );
     patchDropRate(track);
@@ -2097,6 +2202,15 @@
     custom.validateLock(data, value);
   }
 
+  function storedInventoryId(kind, raw) {
+    if (kind !== "item" && kind !== "weapon" && kind !== "armor") return Math.floor(Number(raw));
+    const text = String(raw);
+    const prefix = { item: "I", weapon: "W", armor: "A" }[kind];
+    if (prefix && new RegExp(`^${prefix}\\d+$`).test(text)) return text;
+    const number = Number(raw);
+    return Number.isFinite(number) ? Math.floor(number) : null;
+  }
+
   function applyValueLocks() {
     const locks = bridge.valueLocks;
     if (!locks || bridge.suppressLocks > 0) return;
@@ -2123,15 +2237,17 @@
         const store = party && party[prop];
         if (!party || (!store && !customInventory(party))) continue;
         for (const id of ids) {
+          const itemId = storedInventoryId(kind, id);
+          if (itemId == null) continue;
           const want = Math.max(0, Math.floor(Number(table[id]) || 0));
-          validateInventoryLock(kind, Number(id), want);
-          const data = dataEntryLoose(kind, Number(id), party);
-          const current = inventoryCount(party, prop, id, data);
+          validateInventoryLock(kind, itemId, want);
+          const data = dataEntryLoose(kind, itemId, party);
+          const current = inventoryCount(party, prop, itemId, data);
           if (current !== want) {
             if (data && typeof party.gainItem === "function") {
               withRatesSuppressed(() => changeInventory(party, data, want - current));
             }
-            writeBackItemCount(party, prop, id, want, data);
+            writeBackItemCount(party, prop, itemId, want, data);
           }
         }
       }
@@ -2440,7 +2556,7 @@
       map: currentMapInfo(),
       party: partyBattleMembers().map(actorInfo),
       saveDir: saveDirPath(),
-      saveStorage: isMvWebStorage() ? "webstorage" : "filesystem",
+      saveStorage: isMvWebStorage() || isMzForageStorage() ? "webstorage" : "filesystem",
       inBattle: isInBattle(),
       options: { ...bridge.options },
       hooks: {
@@ -2594,6 +2710,15 @@
     return ownedItemData(party, kind, id);
   }
 
+  function inventoryId(value, party, kind) {
+    // Native independent-item plugins allocate kind-prefixed instance IDs
+    // (I###/W###/A###). Accept only an instance actually owned by this party,
+    // never an arbitrary key that merely happens to look like an ID.
+    const prefix = { item: "I", weapon: "W", armor: "A" }[kind];
+    if (prefix && typeof value === "string" && new RegExp(`^${prefix}\\d+$`).test(value) && ownedItemData(party, kind, value)) return value;
+    return requireId(value, "id");
+  }
+
   // Custom engines sometimes replace gainGold with a shell that throws or
   // silently no-ops outside their own UI flow (傲世修仙录定制版: the override
   // dies on "Cannot read property 'constructor' of null"). Run the engine path
@@ -2659,7 +2784,7 @@
       const party = requireParty("gainItem");
       const kind = normalizeDropKind(args.kind || "item");
       if (!kind) throw new Error(`unsupported item kind: ${args.kind}`);
-      const id = requireId(args.id, "id");
+      const id = inventoryId(args.id, party, kind);
       const data = dataEntryLoose(kind, id, party);
       if (!data) throw new Error(`${kind} ${id} not found`);
       const amount = Math.floor(requireNumber(args.amount, "amount"));
@@ -2699,7 +2824,7 @@
       const party = requireParty("gainItem");
       const kind = normalizeDropKind(args.kind || "item");
       if (!kind) throw new Error(`unsupported item kind: ${args.kind}`);
-      const id = requireId(args.id, "id");
+      const id = inventoryId(args.id, party, kind);
       const data = dataEntryLoose(kind, id, party);
       if (!data) throw new Error(`${kind} ${id} not found`);
       const count = Math.max(0, Math.floor(requireNumber(args.count, "count")));
@@ -2735,6 +2860,9 @@
             if (typeof actor.setMp === "function") actor.setMp(Number(readStat(actor, "mmp", "_mmp")) || 9999);
           });
         }
+        if (isNativeFramePacingTarget() && typeof actor.setMp === "function") {
+          withLocksSuppressed(() => actor.setMp(Number(readStat(actor, "mmp", "_mmp")) || 0));
+        }
         refreshActor(actor);
       });
       refreshMapAndWindows();
@@ -2764,6 +2892,11 @@
     "actor.recover": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       if (typeof actor.recoverAll === "function") actor.recoverAll();
+      // FT's recoverAll restores HP/states only. The toolbox full recovery also
+      // restores its exposed MP value through the native setter.
+      if (isNativeFramePacingTarget() && typeof actor.setMp === "function") {
+        withLocksSuppressed(() => actor.setMp(Number(readStat(actor, "mmp", "_mmp")) || 0));
+      }
       refreshActor(actor);
       refreshMapAndWindows();
       return { actor: actorInfo(actor) };
@@ -2776,8 +2909,20 @@
         if (typeof actor.maxLevel === "function") maxLevel = Math.max(1, Math.floor(Number(actor.maxLevel() || maxLevel)));
       } catch (_) {}
       const level = Math.min(maxLevel, Math.max(1, Math.floor(requireNumber(args.level, "level"))));
-      // changeLevel(level, false) = no level-up message spam.
-      if (typeof actor.changeLevel === "function") actor.changeLevel(level, false);
+      // FT uses per-level EXP and updates its native level record only through
+      // thTyChangeExp/levelNewUp. Stock changeLevel leaves that record stale.
+      if (typeof isNativeFramePacingTarget === "function" && isNativeFramePacingTarget() &&
+          typeof actor.thTyChangeExp === "function" && typeof actor.levelNewUp === "function") {
+        if (level < actor.level) throw new Error("当前游戏的原生等级接口不支持降级");
+        withRatesSuppressed(() => {
+          while (actor.level < level) {
+            const before = actor.level, threshold = Number(actor.nextLevelExp());
+            if (!Number.isFinite(threshold) || threshold <= 0) throw new Error("游戏升级经验阈值无效");
+            actor.thTyChangeExp(threshold, false, true);
+            if (actor.level <= before || actor.level > level) throw new Error("游戏未按原生等级规则完成升级");
+          }
+        });
+      } else if (typeof actor.changeLevel === "function") actor.changeLevel(level, false);
       else actor._level = level;
       refreshActor(actor);
       refreshMapAndWindows();
@@ -2842,6 +2987,11 @@
         actor._paramPlus = actor._paramPlus || [0, 0, 0, 0, 0, 0, 0, 0];
         actor._paramPlus[paramId] = Number(actor._paramPlus[paramId] || 0) + value;
       }
+      if (typeof thParameterMethods !== "undefined" && thParameterMethods.has(actor.paramPlus) &&
+          before.every((entry, index) => entry === readParam()[index])) {
+        actor._paramPlus = actor._paramPlus || [0, 0, 0, 0, 0, 0, 0, 0];
+        actor._paramPlus[paramId] = Number(actor._paramPlus[paramId] || 0) + value;
+      }
       refreshActor(actor);
       const after = readParam();
       if (value !== 0 && before.every((entry, index) => entry === after[index])) {
@@ -2871,12 +3021,30 @@
 
     "actor.class.set": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
-      const classId = Math.floor(requireNumber(args.classId, "classId"));
+      const classId = requireId(args.classId, "classId");
+      const classes = runtimeDataTable("class");
+      if (classes.length && !classes[classId]) throw new Error(`class ${classId} not found`);
       if (typeof actor.changeClass !== "function") throw new Error("actor.changeClass is unavailable");
+      if (isNativeFramePacingTarget() && actor._thExpFxgGetNum && typeof actor.currentExp === "function") {
+        const party = resolveParty();
+        if (!party || typeof party.fhZhNumGain !== "function") throw new Error("当前游戏的职业经验初始化接口不可用");
+        // Native changeClass copies the numeric experience but omits its
+        // per-class record. Use the same writer as native gainExp before the
+        // class switch validates the target's experience.
+        const exp = args.keepExp !== false ? actor.currentExp() : Number(actor._exp && actor._exp[classId]) || 0;
+        party.fhZhNumGain(exp, 1, actor, classId);
+      }
       actor.changeClass(classId, args.keepExp !== false);
       refreshActor(actor);
       refreshMapAndWindows();
-      return { actor: actorInfo(actor) };
+      const info = actorInfo(actor);
+      if (info.classId != null && info.classId !== classId) {
+        if (typeof actor._zwEnsureClass_Multi === "function") {
+          throw new Error("该角色的职业由原生专武规则决定，暂不支持直接切换到所选职业");
+        }
+        throw new Error(`职业切换未生效：请求 ${classId}，实际 ${info.classId}`);
+      }
+      return { actor: info };
     },
 
     "actor.skill.learn": (args) => {
@@ -3588,6 +3756,18 @@
       typeof storage.isLocalMode === "function" && !storage.isLocalMode());
   }
 
+  function isMzForageStorage() {
+    const storage = window.StorageManager;
+    return !!(storage && typeof storage.isLocalMode === "function" && !storage.isLocalMode() &&
+      ["forageKey", "updateForageKeys", "loadZip", "saveZip", "loadObject", "exists", "remove"]
+        .every(name => typeof storage[name] === "function"));
+  }
+
+  function requireSaveSlotId(value) {
+    if (isMzForageStorage() && (value === 0 || value === "0")) return 0;
+    return requireId(value, "save id");
+  }
+
   function requireMvWebStorage() {
     if (!isMvWebStorage()) throw new Error("this game does not use MV WebStorage saves");
     return window.StorageManager;
@@ -3615,11 +3795,70 @@
     return { format: "rmch-mv-webstorage-v1", title: window.$dataSystem && window.$dataSystem.gameTitle || null, entries };
   }
 
+  const nativeSlotManagers = new WeakSet();
+  function isNativeSlotStorage() {
+    const storage = window.StorageManager, manager = window.DataManager;
+    if (!storage || !manager || isMvWebStorage() || typeof storage.load !== "function" ||
+        typeof storage.save !== "function" || typeof storage.exists !== "function" ||
+        typeof storage.localFilePath !== "function") return false;
+    if (nativeSlotManagers.has(storage)) return true;
+    // Encrypted/remote MV storage may retain the local-mode flag and filename
+    // methods while its real saves are only accessible through StorageManager.
+    try {
+      for (let id = 1; id <= webSaveMaxSlots(); id += 1) {
+        if (storage.exists(id) === true && !fs.existsSync(storage.localFilePath(id))) {
+          nativeSlotManagers.add(storage);
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  async function nativeSlotSnapshot() {
+    if (!isNativeSlotStorage()) throw new Error("当前游戏未使用原生槽位存档");
+    const storage = window.StorageManager, entries = [];
+    for (let id = 1; id <= webSaveMaxSlots(); id += 1) {
+      if (!await storage.exists(id)) continue;
+      const value = await storage.load(id);
+      if (typeof value !== "string" || !value) throw new Error(`无法读取存档 ${id}`);
+      entries.push({id, value});
+    }
+    return {format: "rmch-mv-native-v1", title: window.$dataSystem.gameTitle,
+      infoJson: requireJsonEx().stringify(await window.DataManager.loadGlobalInfo() || []), entries};
+  }
+
+  // This part is also loaded in isolation by the lock-unit test. The full
+  // bridge has inventoryId from 62-commands-party.js; keep a strict numeric
+  // fallback for the isolated module so custom inventory validation remains
+  // testable without coupling the harness to another part.
+  function lockInventoryId(value, party, kind) {
+    return typeof inventoryId === "function"
+      ? inventoryId(value, party, kind)
+      : typeof requireId === "function"
+        ? requireId(value, "id")
+        : (() => {
+          const id = Number(value);
+          if (!Number.isInteger(id) || id < 0) throw new Error("id must be a non-negative integer");
+          return id;
+        })();
+  }
+
   Object.assign(commandHandlers, {
 
     // --- save slots -----------------------------------------------------------
 
-    "save.list": () => {
+    "save.list": async () => {
+      if (isMzForageStorage()) return mzForageList();
+      if (isNativeSlotStorage()) {
+        const snapshot = await nativeSlotSnapshot();
+        const info = requireJsonEx().parse(snapshot.infoJson);
+        return {dir: null, storage: "native", entries: snapshot.entries.map(entry => ({
+          name: `file${entry.id}.rpgsave`, slot: entry.id, size: entry.value.length,
+          mtime: info[entry.id] && info[entry.id].timestamp
+            ? new Date(info[entry.id].timestamp).toISOString() : null
+        }))};
+      }
       if (isMvWebStorage()) {
         const storage = window.StorageManager;
         const info = window.DataManager.loadGlobalInfo() || [];
@@ -3653,7 +3892,7 @@
     },
 
     "save.save": async (args) => {
-      const id = requireId(args.id === undefined ? 1 : args.id, "save id");
+      const id = requireSaveSlotId(args.id === undefined ? 1 : args.id);
       const dataManager = requireDataManager("saveGame");
       if (isMvWebStorage() && id > webSaveMaxSlots()) throw new Error("save id exceeds this game's slot limit");
       const system = resolveSystem();
@@ -3668,9 +3907,52 @@
       return { id, saved: true };
     },
 
-    "save.webstorage.export": () => webSaveSnapshot(),
+    "save.webstorage.export": () => isMzForageStorage() ? mzForageSnapshot() : webSaveSnapshot(),
+
+    "save.native.export": () => nativeSlotSnapshot(),
+
+    "save.native.import": async (args) => {
+      const snapshot = args.snapshot, manager = window.DataManager, storage = window.StorageManager;
+      if (!isNativeSlotStorage()) throw new Error("请先连接使用原生槽位存档的游戏");
+      if (!snapshot || snapshot.format !== "rmch-mv-native-v1" || snapshot.title !== window.$dataSystem.gameTitle ||
+          !Array.isArray(snapshot.entries) || typeof snapshot.infoJson !== "string") throw new Error("invalid native save backup");
+      const restoredInfo = requireJsonEx().parse(snapshot.infoJson);
+      if (!Array.isArray(restoredInfo)) throw new Error("invalid native save metadata");
+      const seen = new Set();
+      for (const entry of snapshot.entries) {
+        if (!entry || !Number.isInteger(entry.id) || entry.id < 1 || entry.id > webSaveMaxSlots() ||
+            seen.has(entry.id) || typeof entry.value !== "string") throw new Error("invalid native save slot");
+        const data = JSON.parse(entry.value);
+        if (!data || !data.system || !data.party || !data.actors) throw new Error("invalid native save contents");
+        seen.add(entry.id);
+      }
+      // Preserve all other slots and merge only metadata of restored slots.
+      const info = await manager.loadGlobalInfo() || [];
+      for (const entry of snapshot.entries) {
+        await storage.save(entry.id, entry.value);
+        if (await storage.load(entry.id) !== entry.value) throw new Error(`存档 ${entry.id} 恢复后校验失败`);
+        info[entry.id] = restoredInfo[entry.id] || null;
+      }
+      await manager.saveGlobalInfo(info);
+      return {restored: snapshot.entries.length};
+    },
+
+    "save.native.delete": async (args) => {
+      if (!isNativeSlotStorage()) throw new Error("当前游戏未使用原生槽位存档");
+      const match = /^file([1-9]\d*)\.rpgsave$/.exec(args.name || "");
+      const id = match && Number(match[1]);
+      if (!id || id > webSaveMaxSlots()) throw new Error("invalid native save slot");
+      const storage = window.StorageManager;
+      await storage.remove(id);
+      if (await storage.exists(id)) throw new Error("游戏的原生存档接口未执行删除，存档仍保留");
+      const info = await window.DataManager.loadGlobalInfo() || [];
+      delete info[id];
+      await window.DataManager.saveGlobalInfo(info);
+      return {name: args.name, deleted: true};
+    },
 
     "save.webstorage.import": (args) => {
+      if (isMzForageStorage()) return mzForageImport(args.snapshot);
       requireMvWebStorage();
       const snapshot = args.snapshot;
       if (!snapshot || snapshot.format !== "rmch-mv-webstorage-v1" || !Array.isArray(snapshot.entries) ||
@@ -3709,6 +3991,7 @@
     },
 
     "save.webstorage.delete": (args) => {
+      if (isMzForageStorage()) return mzForageDelete(args.name);
       const storage = requireMvWebStorage();
       const name = String(args.name || "");
       const known = webSaveKeys();
@@ -3743,7 +4026,7 @@
     },
 
     "save.load": (args) => {
-      const id = requireId(args.id, "save id");
+      const id = requireSaveSlotId(args.id);
       const dataManager = requireDataManager("loadGame");
       const enterMap = (ok) => {
         if (!ok) throw new Error(`loadGame(${id}) failed`);
@@ -3762,9 +4045,14 @@
       };
       // MV returns a boolean synchronously; MZ returns a promise.
       const attempt = () => {
+        // Ldd's native UI downloads cloud saves, while saveGame still writes
+        // local MZ storage. Toolbox listings/backups refer to those local slots.
+        if (isMzForageStorage() && typeof window.StorageManager.loadCloudSave === "function") {
+          return mzForageLoad(id);
+        }
         const loaded = dataManager.loadGame(id);
         return loaded && typeof loaded.then === "function"
-          ? loaded.then(result => result === undefined ? true : result)
+          ? loaded.then(result => result === undefined || result === 0 ? true : result)
           : Promise.resolve(loaded);
       };
       // Some custom engines (傲世修仙录定制版 family) sit at the title with the
@@ -3870,7 +4158,10 @@
       }
       const table = bridge.valueLocks[kind];
       if (!table) throw new Error(`unsupported lock kind: ${kind}`);
-      const id = Math.floor(requireNumber(args.id, "id"));
+      const party = resolveParty();
+      const id = (kind === "item" || kind === "weapon" || kind === "armor")
+        ? lockInventoryId(args.id, party, kind)
+        : Math.floor(requireNumber(args.id, "id"));
       if (args.enabled === false) {
         delete table[id];
         return { kind, id, enabled: false, value: null };
@@ -3903,8 +4194,10 @@
         const source = incoming[kind];
         if (source && typeof source === "object") {
           for (const key of Object.keys(source)) {
-            const id = Math.floor(Number(key));
-            if (!Number.isFinite(id)) continue;
+            const id = (kind === "item" || kind === "weapon" || kind === "armor")
+              ? lockInventoryId(key, resolveParty(), kind)
+              : Math.floor(Number(key));
+            if (typeof id !== "string" && !Number.isFinite(id)) continue;
             const value = coerceLockValue(kind, source[key]);
             validateInventoryLock(kind, id, value);
             table[id] = value;
@@ -3919,6 +4212,122 @@
       return { locks: snapshotValueLocks() };
     }
   });
+  // MZ browser saves live in localForage, accessed through the native codec.
+  // Keep the existing webstorage command contract used by the desktop host.
+  function mzForageName(name) {
+    return typeof name === "string" && /^(?:global|file\d{1,4})$/.test(name);
+  }
+
+  async function mzForageSnapshot() {
+    const storage = window.StorageManager;
+    await storage.updateForageKeys();
+    const prefix = storage.forageKey("");
+    const names = (storage._forageKeys || []).filter(key => key.startsWith(prefix))
+      .map(key => key.slice(prefix.length)).filter(mzForageName).sort();
+    const entries = [];
+    for (const key of names) {
+      const value = await storage.loadZip(key);
+      if (typeof value !== "string") throw new Error(`无法读取本地存档 ${key}`);
+      entries.push({key, value});
+    }
+    return {format:"rmch-mz-forage-v1", title:window.$dataSystem.gameTitle, prefix, entries};
+  }
+
+  async function mzForageList() {
+    const snapshot = await mzForageSnapshot(), storage = window.StorageManager;
+    const info = await storage.loadObject("global").catch(() => []);
+    return {dir:null, storage:"webstorage", localOnly:typeof storage.loadCloudSave === "function", entries:snapshot.entries.map(entry => {
+      const match = /^file(\d+)$/.exec(entry.key), slot = match ? Number(match[1]) : null;
+      return {name:entry.key + ".rmmzsave", slot, size:entry.value.length,
+        mtime:slot !== null && info && info[slot] && info[slot].timestamp
+          ? new Date(info[slot].timestamp).toISOString() : null};
+    })};
+  }
+
+  async function mzForageImport(snapshot) {
+    const storage = window.StorageManager, manager = window.DataManager;
+    if (!snapshot || snapshot.format !== "rmch-mz-forage-v1" ||
+        snapshot.title !== window.$dataSystem.gameTitle || snapshot.prefix !== storage.forageKey("") ||
+        !Array.isArray(snapshot.entries)) throw new Error("invalid MZ browser save backup");
+    const seen = new Set();
+    let restoredInfo;
+    // Decode every entry before writing any of them. Config and other games'
+    // storage keys are never valid backup destinations.
+    for (const entry of snapshot.entries) {
+      if (!entry || !mzForageName(entry.key) || seen.has(entry.key) || typeof entry.value !== "string") {
+        throw new Error("invalid MZ browser save entry");
+      }
+      seen.add(entry.key);
+      const contents = await storage.jsonToObject(await storage.zipToJson(entry.value));
+      if (entry.key === "global" ? !Array.isArray(contents) :
+          !contents || !contents.system || !contents.party || !contents.actors) throw new Error("invalid MZ save contents");
+      if (entry.key === "global") restoredInfo = contents;
+    }
+    const entries = snapshot.entries.map(entry => ({key:entry.key,value:entry.value}));
+    if (restoredInfo) {
+      const currentInfo = await storage.loadObject("global").catch(() => []);
+      const merged = Array.isArray(currentInfo) ? currentInfo.slice() : [];
+      for (const entry of entries) {
+        if (entry.key === "global") continue;
+        const id = Number(entry.key.slice(4));
+        if (Object.prototype.hasOwnProperty.call(restoredInfo, id)) merged[id] = restoredInfo[id];
+        else delete merged[id];
+      }
+      entries.find(entry => entry.key === "global").value =
+        await storage.jsonToZip(await storage.objectToJson(merged));
+    }
+    const before = [];
+    for (const entry of entries) before.push({key:entry.key,
+      value:await storage.exists(entry.key) ? await storage.loadZip(entry.key) : null});
+    try {
+      for (const entry of entries) await storage.saveZip(entry.key, entry.value);
+      for (const entry of entries) {
+        if (await storage.loadZip(entry.key) !== entry.value) throw new Error("MZ save restore verification failed");
+      }
+      await manager.loadGlobalInfo();
+    } catch (error) {
+      for (const entry of before) {
+        if (entry.value === null) await storage.remove(entry.key);
+        else await storage.saveZip(entry.key, entry.value);
+      }
+      await manager.loadGlobalInfo();
+      throw error;
+    }
+    return {restored:snapshot.entries.length};
+  }
+
+  async function mzForageDelete(filename) {
+    const name = String(filename || "").replace(/\.rmmzsave$/, "");
+    if (!/^file\d{1,4}$/.test(name)) throw new Error("invalid MZ save slot");
+    const storage = window.StorageManager, manager = window.DataManager;
+    if (!await storage.exists(name)) throw new Error("本地存档不存在");
+    const old = await storage.loadZip(name), info = await storage.loadObject("global").catch(() => []);
+    const previousInfo = requireJsonEx().stringify(info || []);
+    try {
+      await storage.remove(name);
+      if (await storage.exists(name)) throw new Error("游戏未删除本地存档");
+      delete info[Number(name.slice(4))];
+      await storage.saveObject("global", info);
+      await manager.loadGlobalInfo();
+    } catch (error) {
+      await storage.saveZip(name, old);
+      await storage.saveObject("global", requireJsonEx().parse(previousInfo));
+      await manager.loadGlobalInfo();
+      throw error;
+    }
+    return {name:filename, deleted:true};
+  }
+
+  async function mzForageLoad(id) {
+    const manager = window.DataManager, storage = window.StorageManager;
+    const name = manager.makeSavename(id);
+    if (!await storage.exists(name)) throw new Error(`未找到本地存档 ${id}`);
+    const contents = await storage.loadObject(name);
+    manager.createGameObjects();
+    manager.extractSaveContents(contents);
+    if (typeof manager.correctDataErrors === "function") manager.correctDataErrors();
+    return true;
+  }
   // ---------------------------------------------------------------------------
   // Commands: decoded game assets.
   //
@@ -4007,7 +4416,50 @@
   ]);
 
   function availableScenes() {
-    return PUSHABLE_SCENES.filter((name) => typeof window[name] === "function");
+    publishNativeMenuScenes();
+    return PUSHABLE_SCENES.filter((name) => {
+      if (typeof window[name] !== "function") return false;
+      // This TH release retains the Debug class name but removes its entire
+      // window creation body. Entering it terminates the native game; it is not
+      // an available menu. Toolbox switch/variable editing remains independent.
+      if (name === "Scene_Debug" && window.ThSce_Debug === window[name]) {
+        const create = window[name].prototype && window[name].prototype.create;
+        if (typeof create === "function" && /\{ThSce_MenuBase\.prototype\.create\.call\(this\);?\}$/.test(
+          Function.prototype.toString.call(create).replace(/\s/g, ""))) return false;
+      }
+      return true;
+    });
+  }
+
+  function publishNativeMenuScenes() {
+    // TK releases rename these constructors but keep the native menu handlers.
+    // Capture the constructor passed by the handler synchronously; no scene is
+    // instantiated, pushed or rendered while discovering the native target.
+    const toolkit = window.TK && window.TK.$;
+    const manager = toolkit && toolkit.SceneMrg, Menu = window.Scene_Menu;
+    if (!manager || typeof manager.push !== "function" || typeof Menu !== "function") return;
+    for (const [name, symbol, signature] of [
+      ["Scene_Item", "item", "createItemWindow"],
+      ["Scene_Skill", "skill", "createSkillTypeWindow"],
+      ["Scene_Equip", "equip", "createSlotWindow"]
+    ]) {
+      if (typeof window[name] === "function") continue;
+      const method = symbol === "item" ? "commandItem" : "onPersonalOk";
+      if (typeof Menu.prototype[method] !== "function") continue;
+      const menu = Object.create(Menu.prototype);
+      menu._commandWindow = {currentSymbol: () => symbol};
+      menu._statusWindow = {index: () => 0};
+      const original = manager.push;
+      let captured;
+      try {
+        manager.push = ctor => { captured = ctor; };
+        menu[method]();
+      } catch (_) { captured = null; }
+      finally { manager.push = original; }
+      if (typeof captured === "function" && captured.prototype && typeof captured.prototype[signature] === "function") {
+        window[name] = captured;
+      }
+    }
   }
 
   // action -> handler. A table rather than a switch so `game.repair` can report
@@ -4040,7 +4492,7 @@
 
     clearMoveRoute: () => {
       const player = requirePlayer("forceMoveRoute");
-      if (typeof player.processRouteEnd === "function") player.processRouteEnd();
+      if (player._moveRoute && typeof player.processRouteEnd === "function") player.processRouteEnd();
       player._moveRouteForcing = false;
       player._waitCount = 0;
     },
@@ -4076,8 +4528,11 @@
       const sceneManager = resolveSceneManager();
       const scene = sceneManager && sceneManager._scene;
       const stack = sceneManager && Array.isArray(sceneManager._stack) ? sceneManager._stack : [];
+      const ctor = scene && scene.constructor;
+      const canonical = ctor && ["Scene_Map", "Scene_Title", "Scene_Battle", "Scene_Boot", ...PUSHABLE_SCENES]
+        .find(name => window[name] === ctor);
       return {
-        current: scene && scene.constructor && scene.constructor.name || null,
+        current: canonical || ctor && ctor.name || null,
         stackDepth: stack.length,
         available: availableScenes()
       };
@@ -4089,6 +4544,25 @@
       // generator, and the GUI only ever offers what scene.info reported.
       if (!availableScenes().includes(name)) {
         throw new Error(`scene is unavailable: ${name || "(empty)"}`);
+      }
+      // Native menus normally select an actor before opening these views.
+      // TH's item view reads the persisted selection directly, so the getter's
+      // fallback alone is insufficient when a new save still has actor ID 0.
+      if (["Scene_Item", "Scene_Skill", "Scene_Equip", "Scene_Status"].includes(name)) {
+        const party = resolveParty();
+        if (party && typeof party.menuActor === "function" && typeof party.setMenuActor === "function") {
+          const actor = party.menuActor();
+          if (!actor) throw new Error("当前没有可用于此菜单的队伍角色");
+          party.setMenuActor(actor);
+          // FT's native personal-menu handler also selects a party position.
+          // Scene_Equip consumes it while creating the battle-sprite background,
+          // before its own actor window exists (a fresh save has no index yet).
+          if (isNativeFramePacingTarget() && typeof party.members === "function") {
+            const index = party.members().indexOf(actor);
+            if (index < 0) throw new Error("当前菜单角色已不在队伍中");
+            party._TkSpIndex = index;
+          }
+        }
       }
       requireSceneManager("push").push(window[name]);
       return { pushed: name };

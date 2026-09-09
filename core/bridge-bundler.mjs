@@ -44,6 +44,7 @@ const PARTS = [
   "65-event-tools.js",      // map snapshots, guarded movement, read-only event inspection
   "65b-event-execution.js",  // complete steps and owned native interpreter execution
   "66-commands-saves.js",   // save slots, save-data tree, value locks
+  "66b-mz-forage.js",       // native MZ browser storage and local slot recovery
   "67-commands-assets.js",  // decoded game assets (IconSet sheet for the GUI)
   "68-commands-system.js",  // scene push/pop, repair, new game
   "69-router.js",           // freeze table + execute()

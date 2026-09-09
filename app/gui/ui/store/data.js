@@ -25,6 +25,7 @@
     },
     // Every entry the game defines (from $dataX), with the owned count merged in.
     catalog: { item: [], weapon: [], armor: [] },
+    owned: { item: [], weapon: [], armor: [] },
     counts: { item: {}, weapon: {}, armor: {} },
     // Switch / variable lists, keyed the same way so one loader serves both.
     flags: { switch: [], variable: [] },
@@ -46,6 +47,7 @@
   function resetData() {
     ITEM_KINDS.forEach(function (kind) {
       data.catalog[kind] = [];
+      data.owned[kind] = [];
       data.counts[kind] = {};
     });
     Object.keys(data.selected).forEach(function (key) { data.selected[key] = null; });
@@ -121,10 +123,19 @@
       store.cmd("item.list", {}).then(function (p) {
         if (!p) return null;
         var next = { item: {}, weapon: {}, armor: {} };
+        var owned = { item: [], weapon: [], armor: [] };
         (p.entries || []).forEach(function (entry) {
-          if (next[entry.kind]) next[entry.kind][entry.id] = entry.count;
+          if (next[entry.kind]) {
+            next[entry.kind][entry.id] = entry.count;
+            owned[entry.kind].push(entry);
+          }
         });
-        ITEM_KINDS.forEach(function (kind) { data.counts[kind] = next[kind]; });
+        (p.entries || []).forEach(function (entry) {
+          if (next[entry.kind] && entry.baseItemId != null && String(entry.baseItemId) !== String(entry.id)) {
+            next[entry.kind][entry.baseItemId] = (next[entry.kind][entry.baseItemId] || 0) + entry.count;
+          }
+        });
+        ITEM_KINDS.forEach(function (kind) { data.counts[kind] = next[kind]; data.owned[kind] = owned[kind]; });
         return p;
       }));
   }
@@ -136,8 +147,8 @@
 
   function setItemCount(kind, id, count) {
     return store.cmdWarn("item.set", { kind: kind, id: id, count: Math.max(0, Math.floor(count)) })
-      .then(function (p) {
-        if (p) data.counts[p.kind][p.id] = p.count;
+      .then(async function (p) {
+        if (p) { data.counts[p.kind][p.id] = p.count; await loadCounts(); }
         return p;
       });
   }

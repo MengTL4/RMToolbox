@@ -57,6 +57,7 @@ export default {
       var gameKey = computed(function () { return store.trainer.gameKey; });
       var saveDir = ref("");
       var saveStorage = ref("");
+      var localOnly = ref(false);
       var files = ref([]);
       var backups = ref([]);
       var loading = ref(false);
@@ -77,6 +78,7 @@ export default {
             files.value = payload.entries || [];
             saveDir.value = payload.dir || "";
             saveStorage.value = payload.storage || "filesystem";
+            localOnly.value = payload.localOnly === true;
           })
           .catch(function (error) { if (epoch === store.state.selectionEpoch) store.fail("读取存档列表失败：" + error.message); })
           .finally(function () { if (epoch === store.state.selectionEpoch) loading.value = false; });
@@ -90,6 +92,7 @@ export default {
         files.value = [];
         saveDir.value = "";
         saveStorage.value = "";
+        localOnly.value = false;
         busySlot.value = 0;
         loading.value = false;
         refreshBackups();
@@ -300,6 +303,7 @@ export default {
         gameKey: gameKey,
         saveDir: saveDir,
         saveStorage: saveStorage,
+        localOnly: localOnly,
         loading: loading,
         slots: slots,
         others: others,
@@ -361,6 +365,8 @@ export default {
     <n-flex vertical :size="10">
       <n-text v-if="saveDir" depth="3" style="font-size: 12px">{{ saveDir }}</n-text>
       <n-text v-else-if="saveStorage === 'webstorage'" depth="3" style="font-size: 12px">存档保存在游戏的浏览器数据中。备份、恢复和删除需要保持游戏连接。</n-text>
+      <n-text v-else-if="saveStorage === 'native'" depth="3" style="font-size: 12px">存档由游戏自行管理。备份和恢复需要保持游戏连接；删除是否可用取决于游戏的原生接口。</n-text>
+      <n-text v-if="localOnly" depth="3" style="font-size: 12px">此处保存和读取本机存档。云端存档请通过游戏内的云存档菜单管理。</n-text>
       <n-data-table v-if="slots.length || loading" :columns="slotColumns" :data="slots" size="small" :bordered="false"
                     :row-key="row => row.entry.name" :max-height="slotHeight" :loading="loading"/>
       <n-empty v-if="!slots.length && !loading" size="small" style="padding: 20px 0"

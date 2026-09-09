@@ -361,6 +361,37 @@ async function main() {
   assert.equal(vitals.payload.actor.hp, 199);
   const skill = await sendCommand("actor.skill.learn", { id: 1, skillId: 2 });
   assert.ok(skill.payload.actor.skills.some((s) => s.id === 2));
+  // Encoded native class IDs must remain readable and round-trip through the
+  // editor; invalid IDs must never reach changeClass's mutating implementation.
+  const classActor = mock.actors[0];
+  const nativeActorId = classActor.actorId;
+  const nativeActorLookup = sandbox.$gameActors.actor;
+  classActor.actorId = () => "1";
+  sandbox.$gameActors.actor = () => classActor;
+  assert.equal((await sendCommand("actor.info", {id:1})).payload.actor.id, 1);
+  classActor.actorId = nativeActorId;
+  sandbox.$gameActors.actor = nativeActorLookup;
+  sandbox.$dataClasses = [null, {id:1,name:"Hunter"}, {id:2,name:"Mechanic"}];
+  classActor._classId = "encoded-1";
+  classActor.currentClass = function(){return sandbox.$dataClasses[Number(this._classId.split("-")[1])];};
+  classActor.changeClass = function(id){this._classId="encoded-"+id;};
+  assert.equal((await sendCommand("actor.info", {id:1})).payload.actor.classId, 1);
+  assert.equal((await sendCommand("actor.class.set", {id:1,classId:2})).payload.actor.classId, 2);
+  for (const invalid of [0, null, -1, 99]) {
+    assert.equal((await sendCommand("actor.class.set", {id:1,classId:invalid})).ok, false);
+    assert.equal(classActor._classId, "encoded-2");
+  }
+  assert.equal((await sendCommand("actor.class.set", {id:1,classId:1})).payload.actor.classId, 1);
+  classActor.changeClass = function() {};
+  assert.equal((await sendCommand("actor.class.set", {id:1,classId:2})).ok, false,
+    "native class overrides must not return false success");
+  classActor._zwEnsureClass_Multi = function() {};
+  const weaponClass = await sendCommand("actor.class.set", {id:1,classId:2});
+  assert.equal(weaponClass.ok, false);
+  assert.match(JSON.stringify(weaponClass), /原生专武规则/);
+  delete classActor._zwEnsureClass_Multi;
+  delete classActor._classId; delete classActor.currentClass; delete classActor.changeClass;
+  delete sandbox.$dataClasses;
 
   // 6. party info/recover
   const party = await sendCommand("party.info");
@@ -400,10 +431,20 @@ async function main() {
   assert.equal(actor1._paramPlus[2], 10);
 
   // 11. battle reward rates on BattleManager mock
+  const partyPrototype = Object.getPrototypeOf(mock.party);
+  const nativePartyGain = mock.party.gainGold;
+  delete mock.party.gainGold;
+  Object.setPrototypeOf(mock.party, { gainGold: nativePartyGain });
   sandbox.BattleManager._rewards = { exp: 100, gold: 200 };
   sandbox.BattleManager.makeRewards = function () { this._rewards = { exp: 100, gold: 200 }; };
   await sendCommand("trainer.options.set", { options: { expRate: 2, goldRate: 3, lockHp: false } });
   sandbox.BattleManager._phase = "battle";
+  const beforeNativeGold = mock.party.gold();
+  mock.party.gainGold(10);
+  assert.equal(mock.party.gold() - beforeNativeGold, 30, "unnamed live party prototype receives the battle gold multiplier");
+  mock.party._gold = beforeNativeGold;
+  Object.setPrototypeOf(mock.party, partyPrototype);
+  mock.party.gainGold = nativePartyGain;
   sandbox.BattleManager.makeRewards();
   assert.equal(sandbox.BattleManager._rewards.exp, 200, "exp rate must apply");
   assert.equal(sandbox.BattleManager._rewards.gold, 600, "gold rate must apply");
@@ -606,7 +647,18 @@ async function main() {
   assert.equal(sandbox.DataManager._extracted.marker, "after", "edited contents must reach extractSaveContents");
 
   // 26. scene push/pop
+  const originalLoadGame = sandbox.DataManager.loadGame;
+  sandbox.DataManager.loadGame = () => Promise.resolve(0);
+  assert.equal((await sendCommand("save.load", { id: 1 })).ok, true, "MZ async load resolves zero on success");
+  sandbox.DataManager.loadGame = () => false;
+  assert.equal((await sendCommand("save.load", { id: 1 })).ok, false, "MV synchronous false remains failure");
+  sandbox.DataManager.loadGame = () => Promise.reject(new Error("native load failed"));
+  assert.equal((await sendCommand("save.load", { id: 1 })).ok, false, "MZ rejection remains failure");
+  sandbox.DataManager.loadGame = originalLoadGame;
+  Object.defineProperty(sandbox.Scene_Map, "name", { value: "_0xnativeMap" });
+  sandbox.SceneManager._scene = new sandbox.Scene_Map();
   const sceneInfo = await sendCommand("scene.info");
+  assert.equal(sceneInfo.payload.current, "Scene_Map", "published native constructor identity survives obfuscated class names");
   assert.ok(sceneInfo.payload.available.includes("Scene_Item"), "Scene_Item must be offered");
   assert.ok(!sceneInfo.payload.available.includes("Scene_Equip"), "absent scenes must be filtered out");
   const pushed = await sendCommand("scene.push", { name: "Scene_Item" });
@@ -625,6 +677,22 @@ async function main() {
   assert.equal(sandbox.$gameScreen._fadeIn, 24);
   await sendCommand("game.repair", { action: "clearCurrentEvent" });
   assert.equal(sandbox.$gameMap._interpreter.cleared, true);
+  // MV processRouteEnd reads _moveRoute.repeat; idle players can have no route.
+  sandbox.$gamePlayer.forceMoveRoute = function () {};
+  sandbox.$gamePlayer.processRouteEnd = function () {
+    if (this._moveRoute.repeat) this._moveRouteIndex = -1;
+    this._routeEnded = true;
+  };
+  sandbox.$gamePlayer._moveRoute = null;
+  sandbox.$gamePlayer._moveRouteForcing = true;
+  sandbox.$gamePlayer._waitCount = 40;
+  const idleRouteRepair = await sendCommand("game.repair", { action: "clearMoveRoute" });
+  assert.equal(idleRouteRepair.ok, true, "clearing an absent move route must succeed");
+  assert.equal(sandbox.$gamePlayer._moveRouteForcing, false);
+  assert.equal(sandbox.$gamePlayer._waitCount, 0);
+  sandbox.$gamePlayer._moveRoute = { repeat: false };
+  await sendCommand("game.repair", { action: "clearMoveRoute" });
+  assert.equal(sandbox.$gamePlayer._routeEnded, true, "existing routes retain native cleanup");
   const badRepair = await sendCommand("game.repair", { action: "explode" });
   assert.equal(badRepair.ok, false);
   assert.match(badRepair.payload.error, /unsupported repair action/);
