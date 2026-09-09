@@ -1342,6 +1342,115 @@
   // and a warehouse. Keep the game's own grant/removal methods and its unique
   // equipment instances; the old _items/numItems API no longer describes it.
   function resolveCustomInventory(party) {
+    // Some TH_ItemCore builds retain the encoded numeric containers but gate
+    // every gainItem call behind a private flag. The normal game flow sets
+    // this flag around its own grants; toolbox calls must do the same or the
+    // method silently returns without touching _items. Recognise this shape
+    // from the public methods and the gate reference in gainItem's wrapper.
+    const encodedGainSource = party && typeof party.gainItem === "function" ?
+      Function.prototype.toString.call(party.gainItem) : "";
+    const encodedThInventory = encodedGainSource.includes("_GITHGT") ||
+      (party && typeof party.newNumItems === "function" &&
+       typeof party.thTyGetOnOver === "function" && Array.isArray(party._equipBaseRmPr));
+    if (party && typeof party.gainItem === "function" &&
+        typeof party.numItems === "function" && typeof party.items === "function" &&
+        typeof party.weapons === "function" && typeof party.armors === "function" &&
+        typeof party.thTyZhNumGain === "function" && typeof party.thTyZhNumGet === "function" &&
+        encodedThInventory) {
+      const manager = window.DataManager || {};
+      const kinds = [["item", "items"], ["weapon", "weapons"], ["armor", "armors"]];
+      const kindOf = (data) => {
+        if (manager && typeof manager.isItem === "function" && manager.isItem(data)) return "item";
+        if (manager && typeof manager.isWeapon === "function" && manager.isWeapon(data)) return "weapon";
+        if (manager && typeof manager.isArmor === "function" && manager.isArmor(data)) return "armor";
+        if (data && data.itypeId != null) return "item";
+        if (data && data.wtypeId != null) return "weapon";
+        if (data && data.atypeId != null) return "armor";
+        throw new Error("游戏没有识别这个物品");
+      };
+      const isInstance = (data, kind = kindOf(data)) =>
+        kind !== "item" && data && data.baseItemId != null && Number(data.baseItemId) !== Number(data.id);
+      const count = (data) => {
+        const kind = kindOf(data);
+        if (!isInstance(data, kind) && kind !== "item" && typeof party.newNumItems === "function") {
+          try {
+            const aggregate = Number(party.newNumItems(data, false));
+            if (Number.isFinite(aggregate)) return Math.max(0, aggregate);
+          } catch (_) {}
+        }
+        return Math.max(0, Number(party.numItems(data)) || 0);
+      };
+      const rows = () => {
+        const result = [], seen = new Set();
+        for (const [kind, method] of kinds) {
+          let list;
+          try { list = party[method]() || []; } catch (_) { list = []; }
+          for (const data of list) {
+            if (!data || seen.has(data)) continue;
+            seen.add(data);
+            const amount = count(data);
+            if (amount > 0) result.push({ kind, data, count: amount });
+          }
+        }
+        return result;
+      };
+      return {
+        count,
+        entries() {
+          return rows().map((row) => ({
+            kind: row.kind, id: row.data.id, name: row.data.name || "",
+            count: row.count, baseItemId: row.data.baseItemId || null
+          }));
+        },
+        validateLock(data, value) {
+          kindOf(data);
+          if (!Number.isInteger(value) || value < 0 || value > 1000) {
+            throw new Error("物品锁数量必须在 0 到 1000 之间");
+          }
+        },
+        change(data, delta) {
+          if (!Number.isInteger(delta) || Math.abs(delta) > 1000) {
+            throw new Error("每次最多修改 1000 件物品");
+          }
+          if (!delta) return count(data);
+          const kind = kindOf(data);
+          const instance = isInstance(data, kind);
+          if (delta > 0 && instance) {
+            throw new Error("这是独立装备实例；添加装备时请选择基础装备目录");
+          }
+          const before = count(data);
+          const invokeGain = (target, amount) => {
+            const hadOwnGate = Object.prototype.hasOwnProperty.call(party, "_GITHGT");
+            const oldGate = party._GITHGT;
+            party._GITHGT = true;
+            try {
+              party.gainItem(target, amount);
+            } finally {
+              if (hadOwnGate) party._GITHGT = oldGate;
+              else delete party._GITHGT;
+            }
+          };
+          for (let step = 0; step < Math.abs(delta); step += 1) {
+            const old = count(data);
+            let target = data;
+            if (delta < 0 && kind !== "item" && !instance) {
+              const baseId = Number(data.id);
+              const row = rows().find((candidate) => candidate.kind === kind &&
+                Number(candidate.data.baseItemId || candidate.data.id) === baseId);
+              if (!row) break;
+              target = row.data;
+            }
+            invokeGain(target, delta > 0 ? 1 : -1);
+            const actual = count(data);
+            if (actual !== old + (delta > 0 ? 1 : -1)) {
+              throw new Error(`游戏仅应用了部分变化：当前数量 ${actual}（原数量 ${before}）；请检查背包容量或物品类型限制`);
+            }
+          }
+          return count(data);
+        }
+      };
+    }
+
     if (!party || typeof party.newGetItem !== "function" || typeof party.thTyZhNumGain !== "function" ||
         typeof party.thTyZhNumGet !== "function" || !Array.isArray(party._tkCkItem) ||
         typeof party.members !== "function") return resolveIndependentInventory(party);

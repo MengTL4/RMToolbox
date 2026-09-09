@@ -16,7 +16,7 @@ import { buildBridge } from "./bridge-bundler.mjs";
 import { getToken } from "./token.mjs";
 import { launchShadowGame, launchBundledShadowGame } from "./shadow-launcher.mjs";
 import { launchRgssGame, getRgssSession, listRgssSessions } from "./rgss-launcher.mjs";
-import { ensureEvbUnpacked } from "./evb-unpack.mjs";
+import { ensureEvbUnpackedAsync } from "./evb-unpack.mjs";
 import { launchTauriGame, getTauriSession, listTauriSessions } from "./tauri-cdp.mjs";
 import { pickFreePort, runSeededSeeder, appendSeedLog } from "./sealed-seed.mjs";
 
@@ -65,7 +65,7 @@ export async function ensureServer({ projectRoot, port, token }) {
   return { running: up, started: true, pid: child.pid };
 }
 
-export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy = "auto", build = true }) {
+export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy = "auto", build = true, onProgress }) {
   const scan = scanGame(gameRoot);
   if (scan.container === "nb-shell") {
     // Measured (ACCEPTANCE v0.6.3): any extra launch flag (--load-extension,
@@ -114,7 +114,7 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
     // take tens of seconds — 宝可梦赤途's 2.9GB exe unpacks in ~30s), then
     // hand the real directory to the standard RGSS path. The gameKey stays
     // derived from the ORIGINAL folder so bridge state survives re-unpacks.
-    const unpacked = ensureEvbUnpacked(scan.evb.exePath);
+    const unpacked = await ensureEvbUnpackedAsync(scan.evb.exePath, { onProgress });
     const handle = await launchRgssGame({ gameRoot: unpacked.dir, projectRoot, gameKey: scan.gameKey });
     return {
       game: scan.title,

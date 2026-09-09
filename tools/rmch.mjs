@@ -3,7 +3,8 @@
 // Usage:
 //   node tools/rmch.mjs scan [gameRoot|steam] [--json]
 //   node tools/rmch.mjs serve [--port 47412]
-//   node tools/rmch.mjs launch <gameRoot> [--port 47412] [--strategy auto|extension]
+//   node tools/rmch.mjs launch <gameRoot> [--port 47412] [--strategy auto|shadow|extension|dll]
+//   node tools/rmch.mjs plan <gameRoot> [--strategy auto|shadow|extension|dll]
 //   node tools/rmch.mjs attach <gameRoot> [--port 47412]
 //   node tools/rmch.mjs send <gameRoot|gameKey> <command.type> [jsonArgs]
 //   node tools/rmch.mjs bridge-build
@@ -22,6 +23,7 @@ function usage(exitCode = 0) {
     "  scan [gameRoot|steam] [--json]   Scan a game directory (default: all Steam libraries)",
     "  serve [--port 47412]             Start standalone bridge WebSocket server (for testing)",
     "  launch <gameRoot> [--port N]     Launch game with injected trainer bridge",
+    "  plan <gameRoot> [--strategy S]   Explain the selected and fallback launch routes",
     "  attach <gameRoot> [--port N]     Attach to an ALREADY-RUNNING game via DLL injection",
     "  send <gameRoot|gameKey> <type> [jsonArgs]   Send one command to a running bridge",
     "  bridge-build                     Build runtime/bridge/page-bridge.js from src parts",
@@ -101,6 +103,7 @@ async function main() {
       // IPC back to it, so close it and point interactive use at the GUI.
       const tauriSession = summary.tauriSession;
       const printable = { ...summary };
+      if (summary.launchPlan) printable.launchPlan = summary.launchPlan;
       delete printable.session;
       delete printable.rgssSession;
       delete printable.tauriSession;
@@ -109,6 +112,18 @@ async function main() {
         tauriSession.close();
         console.error("[rmch] tauri-cdp sessions live inside the launcher process — use the GUI (or keep this process alive) for trainer commands");
       }
+      break;
+    }
+    case "plan": {
+      const { gameRuntime } = await import("../core/game-runtime.mjs");
+      const { positional, options } = parseArgs(rest);
+      if (!positional[0]) usage(1);
+      const plan = gameRuntime.plan({
+        gameRoot: path.resolve(positional[0]),
+        strategy: options.strategy || "auto"
+      });
+      console.log(JSON.stringify(plan, null, 2));
+      if (!plan.selected) process.exitCode = 2;
       break;
     }
     case "attach": {

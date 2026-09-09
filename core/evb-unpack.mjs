@@ -278,6 +278,73 @@ export function extractEvb(exePath, outDir, { onProgress } = {}) {
   }
 }
 
+function yieldToEventLoop() {
+  return new Promise((resolve) => {
+    if (typeof setImmediate === "function") setImmediate(resolve);
+    else setTimeout(resolve, 0);
+  });
+}
+
+/**
+ * GUI-safe counterpart of extractEvb. The EVB image is still read with the
+ * same validated parser, but large reads and file batches yield to Node/NW's
+ * event loop so the toolbox window can repaint and process cancel/close input.
+ * The synchronous function above remains available for CLI and fixture users.
+ */
+export async function extractEvbAsync(exePath, outDir, { onProgress } = {}) {
+  const { files } = parseEvbTree(exePath);
+  const compressed = files.filter((f) => f.compressed);
+  if (compressed.length) {
+    const first = compressed.slice(0, 3).map((f) => f.path).join(", ");
+    throw new EvbError(
+      `EVB image uses aPLib compression on ${compressed.length} file(s) (${first}…) — ` +
+      "compressed extraction is not ported yet (raw-only images work)"
+    );
+  }
+  const fd = openSync(exePath, "r");
+  try {
+    const bytesTotal = files.reduce((sum, f) => sum + f.storedSize, 0);
+    let bytesDone = 0;
+    let filesDone = 0;
+    let lastYield = Date.now();
+    const chunk = Buffer.allocUnsafe(16 * 1024 * 1024);
+    for (const file of files) {
+      const dest = path.join(outDir, ...file.path.split("/"));
+      mkdirSync(path.dirname(dest), { recursive: true });
+      const out = openSync(dest, "w");
+      try {
+        let remaining = file.storedSize;
+        let at = file.offset;
+        while (remaining > 0) {
+          const want = Math.min(chunk.length, remaining);
+          const got = readSync(fd, chunk, 0, want, at);
+          if (got <= 0) throw new EvbError(`short read on ${file.path}`);
+          writeFileSyncSilently(out, chunk, got);
+          at += got;
+          remaining -= got;
+          // A 16 MiB read/write is bounded, but yielding here prevents a
+          // multi-gigabyte image from monopolising the NW event loop.
+          await yieldToEventLoop();
+        }
+      } finally {
+        closeSync(out);
+      }
+      filesDone += 1;
+      bytesDone += file.storedSize;
+      if (onProgress) await onProgress({ files: filesDone, filesTotal: files.length, bytes: bytesDone, bytesTotal, current: file.path });
+      // Empty/small files do not enter the chunk loop; batch their yields so
+      // a 40k-file image remains responsive without adding 40k timers.
+      if (filesDone === files.length || filesDone % 32 === 0 || Date.now() - lastYield >= 50) {
+        lastYield = Date.now();
+        await yieldToEventLoop();
+      }
+    }
+    return { files: filesDone, bytes: bytesDone };
+  } finally {
+    closeSync(fd);
+  }
+}
+
 // writeSync loop on the output descriptor (fs.writeSync partial writes are
 // legal; loop until the chunk is fully out).
 function writeFileSyncSilently(outFd, buf, length) {
@@ -304,6 +371,18 @@ export function ensureEvbUnpacked(exePath, { onProgress } = {}) {
     return { dir: outDir, extracted: false };
   }
   const result = extractEvb(exePath, outDir, { onProgress });
+  linkSaveDir(exePath, outDir);
+  return { dir: outDir, extracted: true, files: result.files, bytes: result.bytes };
+}
+
+/** Async, repaint-safe launcher entry used by the GUI for large EVB images. */
+export async function ensureEvbUnpackedAsync(exePath, { onProgress } = {}) {
+  const outDir = exePath.replace(/\.exe$/i, "") + "_unpacked";
+  if (existsSync(path.join(outDir, "Game.exe"))) {
+    linkSaveDir(exePath, outDir);
+    return { dir: outDir, extracted: false };
+  }
+  const result = await extractEvbAsync(exePath, outDir, { onProgress });
   linkSaveDir(exePath, outDir);
   return { dir: outDir, extracted: true, files: result.files, bytes: result.bytes };
 }

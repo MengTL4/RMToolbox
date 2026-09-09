@@ -35,6 +35,7 @@ export const MODULES = [
   "core/rgss-launcher.mjs",
   "core/launcher.mjs",
   "core/attach.mjs",
+  "core/launch-plan.mjs",
   "core/game-runtime.mjs"
 ];
 

@@ -5,10 +5,25 @@ import Component_InjectionGuide from '../components/InjectionGuide.vue';
 var RMCH = (window.RMCH = window.RMCH || {});
 
 var store = RMCH.store;
+var state = store.state;
 
 var ref = Vue.ref;
 
 var computed = Vue.computed;
+
+var ROUTE_LABELS = {
+  auto: "自动",
+  shadow: "影子目录",
+  dll: "DLL 注入",
+  extension: "扩展启动",
+  "evb-unpack-rgss-script": "EVB/RGSS 专用",
+  "rgss-script": "RGSS 专用",
+  "tauri-cdp": "Tauri/CDP 专用",
+  "extension-cdp-seed": "封闭 MZ/CDP 专用",
+  "shadow-engine-publish": "合体引擎专用"
+};
+
+function routeLabel(id) { return ROUTE_LABELS[id] || id || "不可用"; }
 
 export default {
     name: "LibraryView",
@@ -55,6 +70,35 @@ export default {
         return store.launch(game);
       }
 
+      function routePlan(game) {
+        return state.routePlans[game.gameKey] || { selected: null, candidates: [] };
+      }
+      function routeChoice(game) {
+        var plan = routePlan(game);
+        var value = state.routeChoices[game.gameKey] || "auto";
+        var allowed = (plan.candidates || []).map(function (entry) { return entry.id; });
+        return value === "auto" || allowed.indexOf(value) !== -1 ? value : "auto";
+      }
+      function routeOptions(game) {
+        var plan = routePlan(game);
+        var entries = plan.candidates || [];
+        if (!entries.length) return [];
+        return [{
+          label: plan.preferred ? "自动（" + routeLabel(plan.preferred) + "）" : "自动",
+          value: "auto"
+        }].concat(entries.map(function (entry) {
+          return { label: routeLabel(entry.id), value: entry.id };
+        }));
+      }
+      function routeTitle(game) {
+        var plan = routePlan(game);
+        if (!plan.selected) return plan.error || "没有可用路线";
+        return routeLabel(plan.preferred || plan.selected);
+      }
+      function chooseRoute(game, value) {
+        state.routeChoices[game.gameKey] = value;
+      }
+
       // nwdirectory is an NW.js-only <input> attribute, so the picker has to be
       // created imperatively rather than declared in the template.
       function pickFolder() {
@@ -86,6 +130,8 @@ export default {
         filtered: filtered,
         connectedCount: connectedCount,
         unavailable: unavailable, takeover: takeover, attach: attach, stop: stop, retry: retry,
+        routePlan: routePlan, routeChoice: routeChoice, routeOptions: routeOptions,
+        routeTitle: routeTitle, chooseRoute: chooseRoute, routeLabel: routeLabel,
         pickFolder: pickFolder,
         removeGame: removeGame,
         icon: RMCH.icon,
@@ -150,6 +196,13 @@ export default {
             {{ protectionTag(game.protection.level).label }} · {{ game.container || "标准游戏" }}
           </n-tooltip>
           <div style="flex: 1"></div>
+          <n-select v-if="(routePlan(game).candidates || []).length > 1" size="small" style="width: 150px"
+                    :value="routeChoice(game)" :options="routeOptions(game)"
+                    :disabled="!!state.busy[game.gameKey]" @update:value="value => chooseRoute(game, value)"/>
+          <n-tooltip v-else-if="(routePlan(game).candidates || []).length === 1" trigger="hover">
+            <template #trigger><n-tag size="small" :bordered="false" type="info">{{ routeTitle(game) }}</n-tag></template>
+            当前游戏只有这一条安全启动路线
+          </n-tooltip>
           <n-tooltip v-if="!sessionFor(game.gameKey) && unavailable(game)" trigger="hover">
             <template #trigger>
               <n-button type="primary" size="small" disabled>

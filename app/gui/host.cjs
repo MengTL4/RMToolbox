@@ -192,18 +192,67 @@ function removeManualRoot(root) {
   saveLibrary();
 }
 
-async function launch(gameRoot) {
+async function launch(gameRoot, strategy = "auto") {
+  let planned = null;
+  try {
+    if (state.modules.gameRuntime && typeof state.modules.gameRuntime.plan === "function") {
+      planned = state.modules.gameRuntime.plan({ gameRoot, strategy });
+      guiLog("game launch plan", {
+        gameRoot,
+        requested: strategy,
+        family: planned.family,
+        preferred: planned.preferred,
+        selected: planned.selected,
+        fallback: planned.fallback,
+        override: planned.override || null,
+        blocked: planned.blocked
+      });
+    }
+  } catch (error) {
+    guiLog("game launch plan FAILED", { gameRoot, error: String(error && error.stack || error) });
+  }
   const summary = await state.modules.gameRuntime.launch({
     gameRoot,
     projectRoot: state.projectRoot,
-    port: 47412
+    port: 47412,
+    strategy,
+    onProgress: (() => {
+      let last = 0;
+      return (progress) => {
+        const now = Date.now();
+        if (progress.files === progress.filesTotal || now - last >= 1000) {
+          last = now;
+          guiLog("evb unpack progress", progress);
+        }
+      };
+    })()
   });
   guiLog("game launched", {
     gameKey: summary.gameKey,
     strategy: summary.strategy,
-    pid: summary.pid
+    pid: summary.pid,
+    route: summary.launchPlan ? {
+      family: summary.launchPlan.family,
+      preferred: summary.launchPlan.preferred,
+      selected: summary.launchPlan.selected,
+      fallback: summary.launchPlan.fallback,
+      override: summary.launchPlan.override || null
+    } : planned ? {
+      family: planned.family,
+      preferred: planned.preferred,
+      selected: planned.selected,
+      fallback: planned.fallback,
+      override: planned.override || null
+    } : null
   });
   return summary;
+}
+
+function plan(gameRoot, strategy = "auto") {
+  if (!state.modules || !state.modules.gameRuntime || typeof state.modules.gameRuntime.plan !== "function") {
+    throw new Error("工具箱启动路线规划器尚未就绪");
+  }
+  return state.modules.gameRuntime.plan({ gameRoot, strategy });
 }
 
 // Session discovery and notifications are owned by BridgeSessions for both
@@ -528,6 +577,7 @@ module.exports = {
   addManualRoot,
   removeManualRoot,
   listSessions,
+  plan,
   launch,
   attach,
   stop,

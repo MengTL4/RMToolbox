@@ -10,6 +10,7 @@
 core/            ESM 核心模块
   scanner.mjs        引擎(MV/MZ/XP/VX/Ace/RM2k) + 保护等级(L0-L4) + 布局识别（L4=nb-shell，只识别不注入；
                      bundled-engine 合体单脚本游戏识别为 container=nwjs-bundled）
+  launch-plan.mjs    纯启动路线规划：首选、备用、阻断原因和桥接就绪条件
   launcher.mjs       注入启动（策略自动选择，RGSS 分发到 rgss-launcher）
   game-runtime.mjs   GUI/CLI 共用启动与附加入口；特殊壳裸启动路由集中于此
   bridge-sessions.mjs 桥接会话登记、列表、命令归属与事件通知
@@ -218,6 +219,9 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
 
 ## 注入策略（均不改游戏原文件）
 
+路线选择由 [LAUNCH-ROUTE-DESIGN.md](LAUNCH-ROUTE-DESIGN.md) 和 `core/launch-plan.mjs` 统一规划。
+先区分递送方式，再由对应运行时适配器确认 bridge hello、运行时对象和存档路径；不要把“进程出现”或“DLL 返回成功”单独当成适配完成。
+
 - **策略 A（extension）**：原版 Game.exe + `--load-extension=<bridge扩展>`（MV/MZ 默认）。
   附带私有 `--user-data-dir=runtime/profiles/<gameKey>`（持久、按游戏隔离）——大量游戏
   manifest 都叫 `rmmz-game`，共享 profile 会让「单实例检测」杀掉后启动的游戏、以及
@@ -241,9 +245,9 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
   细节见 [RGSS-HANDOVER.md](RGSS-HANDOVER.md)
 - **EVB 单文件壳（evb-unpack-rgss-script）**：Enigma Virtual Box 打包的 RGSS 游戏
   （一个几 GB 的 exe 内含完整游戏树，实测宝可梦赤途）。scanner 按 exe 里的
-  `.enigma1`/`.enigma2` 段识别（`container: "evb"`）；launcher 先用
-  `core/evb-unpack.mjs` 的 `ensureEvbUnpacked` 解包到 `<exe去后缀>_unpacked/`（已有
-  Game.exe 则复用），把原始目录的 save/ junction 进解包目录，之后完全走
+  `.enigma1`/`.enigma2` 段识别（`container: "evb"`）；launcher 的 GUI 路径使用
+  `core/evb-unpack.mjs` 的 `ensureEvbUnpackedAsync` 解包到 `<exe去后缀>_unpacked/`
+  （已有 Game.exe 则复用），把原始目录的 save/ junction 进解包目录，之后完全走
   rgss-script 链（gameKey 仍用原始目录名）。解包器是 Python evbunpack 的 Node
   移植：只支持 raw（未压缩）镜像，aPLib 压缩会明确报错；EVB 文件记录的可选块是
   53 字节（stored_size 在偏移 49），不是旧文档说的 39。

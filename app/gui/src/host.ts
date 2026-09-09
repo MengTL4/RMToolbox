@@ -32,7 +32,8 @@ export interface GuiHost {
   listSessions(): SessionSummary[];
   addManualRoot(root: string): unknown;
   removeManualRoot(root: string): unknown;
-  launch(root: string): Promise<{ gameKey: string; pid?: number; [field: string]: unknown }>;
+  plan(root: string, strategy?: string): { [field: string]: unknown };
+  launch(root: string, strategy?: string): Promise<{ gameKey: string; pid?: number; [field: string]: unknown }>;
   attach(root: string): Promise<{ gameKey: string; pid?: number; [field: string]: unknown }>;
   stop(pid: number): unknown;
   // Game-engine commands are deliberately dynamic; callers must interpret the
@@ -61,7 +62,7 @@ export function getGuiHost(loader: HostLoader | undefined = window.require): Gui
   if (typeof loader !== 'function') throw new Error('原生宿主不可用，请通过 RMToolbox.exe 启动工具箱');
   const candidate = loader('./host.cjs');
   if (!candidate || typeof candidate !== 'object') throw new Error('工具箱宿主未正确加载');
-  for (const method of ['init', 'describe', 'setHandlers', 'listLibrary', 'listSessions', 'send', 'launch', 'attach']) {
+  for (const method of ['init', 'describe', 'setHandlers', 'listLibrary', 'listSessions', 'send', 'plan', 'launch', 'attach']) {
     if (typeof Reflect.get(candidate, method) !== 'function') throw new Error('工具箱宿主缺少接口：' + method);
   }
   return candidate as GuiHost;
