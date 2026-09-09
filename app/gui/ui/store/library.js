@@ -52,9 +52,18 @@
     state.scanning = true;
     try {
       state.games = server.listLibrary();
+      state.routePlans = {};
+      state.games.forEach(function (game) {
+        try {
+          state.routePlans[game.gameKey] = server.plan(game.root, "auto");
+        } catch (error) {
+          state.routePlans[game.gameKey] = { selected: null, candidates: [], error: error.message };
+        }
+      });
     } catch (error) {
       store.fail("库扫描失败：" + error.message);
       state.games = [];
+      state.routePlans = {};
     } finally {
       state.scanning = false;
     }
@@ -91,11 +100,12 @@
     refreshLibrary();
   }
 
-  async function launch(game) {
+  async function launch(game, strategy) {
     // A Tauri launch takes several seconds (boot grace before the CDP link);
     // ignore extra clicks while one is in flight instead of piling up
     // concurrent launches.
-    return operate(game, "launching", function () { return server.launch(game.root); });
+    var selected = strategy || state.routeChoices[game.gameKey] || "auto";
+    return operate(game, "launching", function () { return server.launch(game.root, selected); });
   }
 
   // Attach to a game the user started themselves. The summary carries the main

@@ -36,6 +36,8 @@ import { createGameDrafts } from '../../src/state/drafts';
     projectRoot: null,
     games: [],
     icons: {},           // gameKey -> data URL of the game's own icon (www/icon/icon.png)
+    routePlans: {},      // gameKey -> static launch-route plan from the host
+    routeChoices: {},    // gameKey -> per-session user override (auto/shadow/dll/extension)
     scanning: false,
     sessions: [],
     pids: {},

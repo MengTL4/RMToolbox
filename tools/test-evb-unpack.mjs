@@ -7,7 +7,7 @@
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { detectEvb, parseEvbTree, extractEvb, ensureEvbUnpacked, EvbError } from "../core/evb-unpack.mjs";
+import { detectEvb, parseEvbTree, extractEvb, extractEvbAsync, ensureEvbUnpacked, ensureEvbUnpackedAsync, EvbError } from "../core/evb-unpack.mjs";
 
 let failures = 0;
 function check(label, ok, detail = "") {
@@ -128,6 +128,19 @@ try {
     readFileSync(path.join(first.dir, "Game.exe")).equals(GAME_EXE), first.dir);
   const second = ensureEvbUnpacked(packed);
   check("ensureEvbUnpacked reuses", second.extracted === false && second.dir === first.dir, JSON.stringify(second));
+
+  // The GUI path must yield while copying a packed image, even when the image
+  // contains only small files. This keeps NW responsive during real 40k-file
+  // EVB extractions without changing the synchronous CLI contract above.
+  const asyncPacked = path.join(tmp, "Async Game.exe");
+  writeFileSync(asyncPacked, buildEvbImage());
+  let yielded = false;
+  setImmediate(() => { yielded = true; });
+  let progress = 0;
+  const asyncFirst = await ensureEvbUnpackedAsync(asyncPacked, { onProgress: () => { progress += 1; } });
+  check("async extraction yields to event loop", yielded && asyncFirst.extracted === true && progress === 2, JSON.stringify({ yielded, progress, asyncFirst }));
+  const asyncSecond = await ensureEvbUnpackedAsync(asyncPacked);
+  check("async ensure reuses", asyncSecond.extracted === false && asyncSecond.dir === asyncFirst.dir, JSON.stringify(asyncSecond));
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }

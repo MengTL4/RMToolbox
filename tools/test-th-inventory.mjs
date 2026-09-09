@@ -65,3 +65,25 @@ assert.throws(()=>nativeAdapter.change(independent.owned[0],1),/基础装备/);
 assert.equal(nativeAdapter.change(independent.owned[0],-1),0);
 assert.equal(nativeAdapter.count(weapon),0);
 console.log('PASS native independent string IDs, aggregate base count and precise removal');
+
+// Encoded TH_ItemCore builds gate gainItem behind _GITHGT. The adapter must
+// open the gate only for the call and restore the original value afterwards.
+const encodedItems = [null, {id: 1, itypeId: 1, name: '丹', meta: {}}];
+const encoded = {
+  _items: {}, _weapons: {}, _armors: {}, _equipBaseRmPr: [], _GITHGT: false,
+  items(){ return Object.keys(this._items).filter(id => this._items[id]).map(id => encodedItems[Number(id)]); },
+  weapons(){ return []; }, armors(){ return []; },
+  numItems(data){ return this.thTyZhNumGet(this._items[data.id]); },
+  newNumItems(){ return 0; }, thTyGetOnOver(){ return 0; },
+  thTyZhNumGain(value){ return value == null ? value : `e${value}`; },
+  thTyZhNumGet(value){ return value == null ? 0 : Number(String(value).slice(1)) || 0; },
+  gainItem(data, amount){ if (!this._GITHGT) return; const next = this.numItems(data) + amount; if (next > 0) this._items[data.id] = this.thTyZhNumGain(next); else delete this._items[data.id]; }
+};
+const encodedAdapter = context.resolveCustomInventory(encoded);
+assert.ok(encodedAdapter, 'encoded gated inventory must be recognized');
+assert.equal(encodedAdapter.change(encodedItems[1], 3), 3);
+assert.equal(encoded._GITHGT, false, 'gate value must be restored');
+assert.equal(encodedAdapter.entries()[0].count, 3);
+assert.equal(encodedAdapter.change(encodedItems[1], -2), 1);
+assert.equal(encoded._GITHGT, false, 'gate value must remain restored after removal');
+console.log('PASS encoded inventory gate, encoded count and restore');

@@ -14,6 +14,7 @@
     getLog: function () { return ""; }, init: function () { return Promise.resolve(); },
     describe: function () { return { port: 47412, about: { appVersion: "UI preview" } }; },
     listLibrary: function () { return games; }, listSessions: function () { return host.sessions; },
+    plan: function () { return { family: "standard-nwjs", preferred: "shadow", selected: "shadow", candidates: [{ id: "shadow" }, { id: "dll" }] }; },
     gameIcon: function () { return null; }, iconSetImage: function () { return null; }, iconFileImage: function () { return null; },
     hasLocks: function () { return false; }, listBackups: function () { return []; },
     readBridgeLog: function () { return "预览数据，不连接真实游戏。"; },

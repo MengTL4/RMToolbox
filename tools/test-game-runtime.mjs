@@ -49,6 +49,18 @@ const shadowRuntime = new GameRuntime({
 });
 assert.equal(await shadowRuntime.launch(shadowOptions),"shadow");
 
+const dllSummary = { strategy: "dll", pid: 43 };
+const dllRuntime = new GameRuntime({
+  scan: () => ({ container: "nwjs", engine: { id: "MV" }, paths: { exe: "game.exe" }, protection: { flags: [] } }),
+  launch: async () => { throw Error("explicit dll route used normal launcher"); },
+  launchInject: async received => {
+    assert.deepEqual(received, { scan: dllRuntime.scan("game"), projectRoot: "toolbox", port: 47501 });
+    return dllSummary;
+  }
+});
+assert.strictEqual(await dllRuntime.launch({ gameRoot: "game", projectRoot: "toolbox", port: 47501, strategy: "dll" }), dllSummary);
+assert.equal(dllSummary.launchPlan.selected, "dll");
+
 // Refusal through the production interface must happen before any execution
 // or runtime output. This uses the real scanner and both real dispatchers.
 const root = mkdtempSync(path.join(tmpdir(), "rmch-runtime-"));
