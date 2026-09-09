@@ -36,6 +36,13 @@
       var summary = await run();
       if (summary && summary.pid) state.pids[key] = summary.pid;
       if (kind === "stopping") delete state.pids[key];
+      // RGSS/EVB images (宝可梦赤途: a 2.9GB tree) keep the window black for a
+      // minute while the engine loads, and the bridge is up long before that —
+      // without this the working trainer next to a black window looks like a
+      // failed launch.
+      if (kind === "launching" && summary && /rgss|evb/.test(summary.strategy || "")) {
+        store.info(game.title + "：游戏本体正在加载，窗口会先黑屏 1–2 分钟，属正常；工具箱显示「游戏加载中」时请等待标题画面。");
+      }
       state.operations[key] = { kind: kind, status: "success", text: kind === "stopping" ? "游戏已停止" : "接入步骤已完成，正在确认连接…" };
       return summary;
     } catch (error) {

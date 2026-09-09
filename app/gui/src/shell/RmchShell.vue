@@ -78,6 +78,14 @@ export default {
         return store.state.sessions.filter(function (session) { return session.alive; }).length;
       });
 
+      // Same distinction as the library card: a live bridge is not the same as a
+      // game on screen, and a black loading window must not read as a broken one.
+      var currentStatus = computed(function () {
+        var session = store.sessionFor(store.trainer.gameKey);
+        if (!session) return { label: "已断开", type: "warning" };
+        return store.sessionStatus(session);
+      });
+
       var about = computed(function () {
         var info = store.state.about || {};
         return {
@@ -105,6 +113,7 @@ export default {
         title: title,
         serverStatus: serverStatus,
         connected: connected,
+        currentStatus: currentStatus,
         about: about,
         openTrainer: openTrainer
       };
@@ -136,8 +145,16 @@ export default {
         <span class="rm-context-label">当前游戏</span>
         <n-select :value="store.trainer.gameKey" :options="store.currentGameOptions.value"
                   placeholder="选择已连接的游戏" size="small" filterable clearable @update:value="store.selectGame"/>
-        <n-tag v-if="store.trainer.gameKey" size="small" :bordered="false" :type="store.currentConnected.value ? 'success' : 'warning'">
-          {{ store.currentConnected.value ? "已连接" : "已断开" }}
+        <n-tooltip v-if="currentStatus.hint" trigger="hover">
+          <template #trigger>
+            <n-tag v-if="store.trainer.gameKey" size="small" :bordered="false" :type="currentStatus.type">
+              {{ currentStatus.label }}
+            </n-tag>
+          </template>
+          {{ currentStatus.hint }}
+        </n-tooltip>
+        <n-tag v-else-if="store.trainer.gameKey" size="small" :bordered="false" :type="currentStatus.type">
+          {{ currentStatus.label }}
         </n-tag>
       </div>
       <div style="flex: 1"></div>

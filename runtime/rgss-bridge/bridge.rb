@@ -2658,6 +2658,11 @@ module RMCH
         "bridgeVersion" => VERSION,
         "gameKey" => @game_key,
         "engine" => { "maker" => engine_label },
+        # The bridge starts long before the game draws its first frame (a 2.9GB
+        # Essentials image spends a minute loading), so "connected" on its own
+        # reads as a working trainer in front of a black window. $scene is nil
+        # until the engine reaches its first scene — the GUI says 加载中 then.
+        "scene" => (defined?($scene) && $scene ? $scene.class.name : nil),
         "gold" => gold,
         "map" => map_info_payload,
         "party" => party_state,
