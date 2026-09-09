@@ -76,6 +76,40 @@ import { createGameDrafts } from '../../src/state/drafts';
     return null;
   }
 
+  // A bridge can be connected long before the game shows anything: RGSS games
+  // with a multi-GB asset tree (宝可梦赤途) spend a minute loading while the
+  // window stays black, so a plain "已连接" reads as a working trainer in front
+  // of a broken game. The RGSS bridge reports the engine's current scene class
+  // (nil until the first scene starts); bridges that do not report it keep the
+  // plain connected state.
+  var SESSION_PHASES = {
+    disconnected: { label: "未连接", type: "default" },
+    loading: {
+      label: "游戏启动中",
+      type: "warning",
+      hint: "桥接已连上，游戏引擎还在启动；窗口会先黑屏，请等标题画面出现后再操作。",
+    },
+    menu: {
+      label: "已连接 · 标题/菜单",
+      type: "success",
+      hint: "游戏已经在标题/菜单画面。如果窗口仍是黑的，说明素材还在从磁盘加载（大型 RGSS 游戏首次启动约 1–2 分钟）。",
+    },
+    inGame: { label: "已连接", type: "success" },
+    connected: { label: "已连接", type: "success" },
+  };
+
+  function sessionPhase(session) {
+    if (!session || !session.alive) return "disconnected";
+    const live = session.state || {};
+    if (live.map) return "inGame";
+    if (typeof live.scene === "undefined") return "connected";
+    return live.scene ? "menu" : "loading";
+  }
+
+  function sessionStatus(session) {
+    return SESSION_PHASES[sessionPhase(session)] || SESSION_PHASES.connected;
+  }
+
   function titleFor(gameKey) {
     for (var i = 0; i < state.games.length; i += 1) {
       if (state.games[i].gameKey === gameKey) return state.games[i].title;
@@ -139,6 +173,8 @@ import { createGameDrafts } from '../../src/state/drafts';
       return new Promise(function (resolve) { setTimeout(resolve, ms); });
     },
     sessionFor: sessionFor,
+    sessionPhase: sessionPhase,
+    sessionStatus: sessionStatus,
     titleFor: titleFor,
     protectionTag: function (level) {
       return PROTECTION[level] || { label: "L" + level, type: "default" };
