@@ -57,6 +57,13 @@ const LAUNCH_ATTACH_DELAY_MS = 30000;
 // payload boots; inject only after that window closes.
 const GROVER_SETTLE_MS = 60000;
 const GROVER_COMPAT_SETTLE_MS = 0;
+// The loader can replace its first renderer while Windows is answering the
+// module query. Keep probing a fresh snapshot for a short window instead of
+// treating that expected process race as a fatal launch error. This also lets
+// compatibility modules which load a moment after the renderer be detected,
+// avoiding the 60s conservative fallback in the common case.
+const GROVER_MODULE_PROBE_MS = 10000;
+const GROVER_MODULE_PROBE_INTERVAL_MS = 500;
 const RGSS_EVAL_TIMEOUT_MS = 75000;
 
 // --- process discovery -------------------------------------------------------
@@ -917,6 +924,17 @@ async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
   const t0 = clock.now();
   const elapsed = () => Math.round((clock.now() - t0) / 100) / 10;
   const log = (m, e) => launchLog(projectRoot, scan.gameKey, m, e);
+  const queryProcesses = async (phase) => {
+    try {
+      return processesUnderRoot(await platform.listProcessesByExeName(exeName), scan.root);
+    } catch (error) {
+      log("process query error", {
+        phase,
+        error: String(error && error.message || error)
+      });
+      return null;
+    }
+  };
   launchLog(projectRoot, scan.gameKey, "launch begin", { exe: scan.paths.exe });
 
   // A RUNASADMIN compat flag would make the spawned game elevated (plus a UAC
@@ -983,7 +1001,8 @@ async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
   let rendererProcesses = moduleMonitor && appearedProcesses.some(p => /--type=renderer/.test(p.CommandLine || "")) ? appearedProcesses : [];
   while (!rendererProcesses.length) {
     await clock.sleep(400);
-    const procs = processesUnderRoot(await platform.listProcessesByExeName(exeName), scan.root);
+    const procs = await queryProcesses("renderer wait");
+    if (procs === null) continue;
     if (procs.some((p) => /--type=renderer/.test(p.CommandLine || ""))) { rendererProcesses = procs; break; }
     if (!procs.length) {
       launchLog(projectRoot, scan.gameKey, "launch failed: game exited during boot", { t: elapsed() });
@@ -997,18 +1016,66 @@ async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
   launchLog(projectRoot, scan.gameKey, "renderer appeared", { t: elapsed() });
 
   let compatibilityPrepared = false;
-  let compatibilityWindowRestored = false;
+  let groverCompatibilityDeliver = null;
+  let groverCompatibilityAttemptedPids = new Set();
+  let groverCompatibilityKnownPids = new Set();
+  let groverCompatibilityStatusPath = null;
+  let groverCompatibilityDelayedBootstrapPath = null;
   const restoreCompatibilityWindows = async (processes) => {
     for (const main of nwProcessTargets(processes).mains) {
-      const windows = await platform.showNwGameWindow(main.ProcessId);
-      log("Grover native game window restored", {pid:main.ProcessId, windows});
-      if (Array.isArray(windows) ? windows.length > 0 : !!windows) compatibilityWindowRestored = true;
+      try {
+        const windows = await platform.showNwGameWindow(main.ProcessId);
+        log("Grover native game window restored", {pid:main.ProcessId, windows});
+      } catch (error) {
+        log("Grover native game window restore failed", {
+          pid: main.ProcessId,
+          error: String(error && error.message || error)
+        });
+      }
     }
   };
   let monitorModules = [];
   if (moduleMonitor) {
-    const target = nwProcessTargets(rendererProcesses).targets[0];
-    if (target) monitorModules = await platform.listProcessModules(target.ProcessId, readPeArch(scan.paths.exe));
+    const arch = readPeArch(scan.paths.exe);
+    const probeDeadline = clock.now() + GROVER_MODULE_PROBE_MS;
+    let probeProcesses = rendererProcesses;
+    let probeAttempts = 0;
+    while (clock.now() <= probeDeadline) {
+      probeAttempts += 1;
+      let matched = [];
+      for (const target of nwProcessTargets(probeProcesses).targets) {
+        try {
+          const modules = await platform.listProcessModules(target.ProcessId, arch);
+          matched = (Array.isArray(modules) ? modules : [])
+            .filter(value => isKnownCompatibilityModule(value));
+          if (matched.length) {
+            monitorModules = modules;
+            rendererProcesses = probeProcesses;
+            break;
+          }
+        } catch (error) {
+          // The loader is allowed to replace a renderer during startup. A
+          // just-discovered PID can therefore disappear between WMI and
+          // Get-Process; refresh the process snapshot and keep probing.
+          log("Grover module query error", {
+            pid: target.ProcessId,
+            attempt: probeAttempts,
+            error: String(error && error.message || error)
+          });
+          break;
+        }
+      }
+      if (matched.length) break;
+      if (clock.now() >= probeDeadline) break;
+      await clock.sleep(GROVER_MODULE_PROBE_INTERVAL_MS);
+      const fresh = await queryProcesses("Grover module probe");
+      if (fresh && fresh.length) probeProcesses = fresh;
+    }
+    if (!rendererProcesses.length && probeProcesses.length) rendererProcesses = probeProcesses;
+    log("Grover module probe finished", {
+      attempts: probeAttempts,
+      matched: monitorModules.filter(value => isKnownCompatibilityModule(value)).length
+    });
   }
   if (monitorModules.some(value => isKnownCompatibilityModule(value))) {
     // Restore before the native hook: a hidden page may have no animation/V8
@@ -1031,35 +1098,62 @@ async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
     writeFileSync(delayedBootstrapPath, delayedBootstrap, "utf8");
     const bootstrap = buildGroverCompatibilityBootstrap(statusPath, { delayedBootstrapPath, delayMs: GROVER_COMPAT_SETTLE_MS, matchedModules: monitorModules.filter(value => isKnownCompatibilityModule(value)) });
     const results = [];
-    // mvhook waits up to 20 seconds for a suitable V8 context. Keep its pipe
-    // alive through that native deadline so it can report and unload cleanly.
-    for (const target of nwProcessTargets(rendererProcesses).targets) {
+    const attemptedPids = new Set();
+    groverCompatibilityAttemptedPids = attemptedPids;
+    groverCompatibilityKnownPids = new Set(
+      nwProcessTargets(rendererProcesses).targets.map(target => target.ProcessId)
+    );
+    groverCompatibilityStatusPath = statusPath;
+    groverCompatibilityDelayedBootstrapPath = delayedBootstrapPath;
+    const deliverCompatibility = async (target, payload) => {
+      attemptedPids.add(target.ProcessId);
       log("Grover compatibility delivery begin", {pid:target.ProcessId, t:elapsed()});
       const result = await platform.injectAndDeliver({
         projectRoot, arch: readPeArch(scan.paths.exe), pid: target.ProcessId,
-        dllName: "rmch-mvhook.dll", bootstrap, mode: "crt", timeoutMs: 30000
+        dllName: "rmch-mvhook.dll", bootstrap: payload, mode: "crt", timeoutMs: 30000
       });
       log("Grover compatibility delivery result", {pid:target.ProcessId, t:elapsed(), ...result});
       results.push(result);
+      return result;
+    };
+    groverCompatibilityDeliver = deliverCompatibility;
+    // mvhook waits up to 20 seconds for a suitable V8 context. Keep its pipe
+    // alive through that native deadline so it can report and unload cleanly.
+    for (const target of nwProcessTargets(rendererProcesses).targets) {
+      const result = await deliverCompatibility(target, bootstrap);
       if (result.ok) break;
     }
     // Grover can replace its loader renderer between discovery and delivery.
-    // Error 87 means OpenProcess never succeeded: no DLL was installed, so a
-    // single refresh is safe. Never repeat a timed-out or successful delivery.
-    if (results.length && results.every(r => !r.ok && /OpenProcess failed:\s*87/.test(r.detail || ""))) {
-      const fresh = processesUnderRoot(await platform.listProcessesByExeName(exeName), scan.root);
+    // Error 87 means OpenProcess never succeeded. A core timeout can mean the
+    // renderer was replaced while mvhook was waiting for a game page. In both
+    // cases a fresh PID is safe to try; never repeat a timed-out delivery on
+    // the same PID because the native hook may still be unwinding there.
+    const needsFreshRenderer = !results.some(r => r.ok) &&
+      results.some(r => !r.ok && /OpenProcess failed:\s*87|core-timeout/.test(r.detail || ""));
+    if (needsFreshRenderer) {
+      const fresh = (await queryProcesses("Grover compatibility refresh")) || [];
       const freshTargets = nwProcessTargets(fresh);
       for (const target of freshTargets.targets) {
-        const modules = await platform.listProcessModules(target.ProcessId, readPeArch(scan.paths.exe));
-        const matched = modules.filter(value => isKnownCompatibilityModule(value));
+        if (attemptedPids.has(target.ProcessId)) continue;
+        let modules;
+        try {
+          modules = await platform.listProcessModules(target.ProcessId, readPeArch(scan.paths.exe));
+        } catch (error) {
+          log("Grover module query error", {
+            pid: target.ProcessId,
+            phase: "Grover compatibility refresh",
+            error: String(error && error.message || error)
+          });
+          continue;
+        }
+        groverCompatibilityKnownPids.add(target.ProcessId);
+        const matched = (Array.isArray(modules) ? modules : [])
+          .filter(value => isKnownCompatibilityModule(value));
         if (!matched.length) continue;
         await restoreCompatibilityWindows(fresh);
-        const result = await platform.injectAndDeliver({
-          projectRoot, arch: readPeArch(scan.paths.exe), pid: target.ProcessId,
-          dllName: "rmch-mvhook.dll", mode: "crt", timeoutMs: 30000,
-          bootstrap: buildGroverCompatibilityBootstrap(statusPath, {delayedBootstrapPath, delayMs:GROVER_COMPAT_SETTLE_MS, matchedModules:matched})
-        });
-        results.push(result);
+        const result = await deliverCompatibility(target, buildGroverCompatibilityBootstrap(statusPath, {
+          delayedBootstrapPath, delayMs:GROVER_COMPAT_SETTLE_MS, matchedModules:matched
+        }));
         if (result.ok) break;
       }
     }
@@ -1093,11 +1187,46 @@ async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
     const readyDeadline = clock.now() + GROVER_BRIDGE_READY_MS + 1000;
     let nextWindowCheck = clock.now() + 2000;
     while (!fileBridgeHello(stateDir, clock.now()) && clock.now() < readyDeadline) {
-      // The renderer can appear before its titled application window. A single
-      // empty EnumWindows result must not leave the later page hidden/paused.
-      if (!compatibilityWindowRestored && clock.now() >= nextWindowCheck) {
-        const fresh = processesUnderRoot(await platform.listProcessesByExeName(exeName), scan.root);
-        await restoreCompatibilityWindows(fresh);
+      // The renderer can appear before its titled application window, and a
+      // later renderer replacement can hide it again. Keep restoring while the
+      // delayed bridge is pending instead of trusting one early EnumWindows
+      // snapshot.
+      if (clock.now() >= nextWindowCheck) {
+        const fresh = await queryProcesses("Grover bridge wait");
+        if (fresh) {
+          await restoreCompatibilityWindows(fresh);
+          // A successful compatibility eval can still land in the loader
+          // renderer just before Grover replaces it. Carry the same filtered
+          // bootstrap to a new renderer instead of waiting 60s on a dead
+          // context. Never reinject an already-timed-out PID.
+          for (const target of nwProcessTargets(fresh).targets) {
+            if (groverCompatibilityKnownPids.has(target.ProcessId)) continue;
+            if (groverCompatibilityAttemptedPids.has(target.ProcessId)) continue;
+            let modules;
+            try {
+              modules = await platform.listProcessModules(target.ProcessId, readPeArch(scan.paths.exe));
+            } catch (error) {
+              log("Grover module query error", {
+                pid: target.ProcessId,
+                phase: "Grover bridge wait",
+                error: String(error && error.message || error)
+              });
+              continue;
+            }
+            // Mark the PID only after a successful module snapshot. If the
+            // renderer vanished during Get-Process, the next poll must be
+            // allowed to retry the same replacement instead of losing it.
+            groverCompatibilityKnownPids.add(target.ProcessId);
+            const matched = (Array.isArray(modules) ? modules : [])
+              .filter(value => isKnownCompatibilityModule(value));
+            if (!matched.length || !groverCompatibilityDeliver) continue;
+            const result = await groverCompatibilityDeliver(target, buildGroverCompatibilityBootstrap(
+              groverCompatibilityStatusPath,
+              { delayedBootstrapPath: groverCompatibilityDelayedBootstrapPath, delayMs: GROVER_COMPAT_SETTLE_MS, matchedModules: matched }
+            ));
+            if (result.ok) break;
+          }
+        }
         nextWindowCheck = clock.now() + 2000;
       }
       await clock.sleep(250);
@@ -1108,8 +1237,8 @@ async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
       throw new AttachError("Grover compatibility completed, but the delayed game bridge did not become ready within " + (GROVER_BRIDGE_READY_MS / 1000) + "s" + (detail ? ": " + detail : ""));
     }
   }
-  const alive = processesUnderRoot(await platform.listProcessesByExeName(exeName), scan.root);
-  if (!alive.length) {
+  const alive = await queryProcesses("settle check");
+  if (alive && !alive.length) {
     launchLog(projectRoot, scan.gameKey, "launch failed: game exited during settle wait", { t: elapsed() });
     throw new AttachError("game exited during boot (before attach)");
   }
