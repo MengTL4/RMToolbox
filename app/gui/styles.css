@@ -8,7 +8,9 @@
    Resist adding component styles here — theme them in ui/theme.js instead.
    ============================================================ */
 
-html, body, #app {
+html,
+body,
+#app {
   height: 100%;
   margin: 0;
   padding: 0;
@@ -16,35 +18,61 @@ html, body, #app {
 
 body {
   overflow: hidden;
-  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
-               "Microsoft YaHei", system-ui, sans-serif;
+  font-family:
+    "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+    "Microsoft YaHei", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-*, *::before, *::after { box-sizing: border-box; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
 
 /* Native scrollbars still show up inside <pre>/n-log/table bodies. */
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
 ::-webkit-scrollbar-thumb {
   background: rgba(140, 152, 180, 0.38);
   border: 2px solid transparent;
   border-radius: 6px;
   background-clip: padding-box;
 }
-::-webkit-scrollbar-thumb:hover { background: rgba(140, 152, 180, 0.6); background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(140, 152, 180, 0.6);
+  background-clip: padding-box;
+}
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* Theme switch cross-fade. app.js hangs this class on <html> for ~220ms
    around the flip; only painted colours transition (never layout), and the
    reduced-motion rule above still wins. */
-.rm-theme-anim, .rm-theme-anim *, .rm-theme-anim *::before, .rm-theme-anim *::after {
-  transition: background-color 150ms ease, border-color 150ms ease,
-              color 150ms ease, box-shadow 150ms ease !important;
+.rm-theme-anim,
+.rm-theme-anim *,
+.rm-theme-anim *::before,
+.rm-theme-anim *::after {
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease,
+    box-shadow 150ms ease !important;
 }
 
 /* ---- flow containers used by the views ---------------------------------- */
@@ -106,29 +134,97 @@ body {
   flex-wrap: wrap;
   gap: 14px;
 }
-.rm-md-list { flex: 1 1 350px; min-width: 0; }
-.rm-md-detail { flex: 1 1 400px; min-width: 0; }
+.rm-md-list {
+  flex: 1 1 350px;
+  min-width: 0;
+}
+.rm-md-detail {
+  flex: 1 1 400px;
+  min-width: 0;
+}
 
 /* Shell and page flow. Component surfaces still use the shared theme. */
-.rm-header { min-height: 64px; padding: 12px 20px; display: flex; align-items: center; gap: 12px; }
-.rm-current-game { display: flex; align-items: center; gap: 8px; flex: 1; max-width: 480px; min-width: 220px; }
-.rm-current-game .n-select { flex: 1; min-width: 140px; }
-.rm-context-label { font-size: 12px; white-space: nowrap; opacity: .75; margin-left: 12px; }
-.rm-service-status { display: inline-flex; align-items: center; padding: 6px; }
-.rm-page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; padding: 2px 0 6px; }
-.rm-page-heading h1 { margin: 0 0 4px; font-size: 22px; font-weight: 650; letter-spacing: -.4px; }
-.rm-page-heading .n-text { font-size: 12px; }
-.rm-game-card { min-width: 0; }
-.rm-game-connected { border-inline-start: 3px solid var(--rm-connected) !important; }
-.rm-dark { --rm-connected: #4bcf8f; }
-.rm-light { --rm-connected: #22825b; }
-.rm-operation-status { font-size: 12px; overflow-wrap: anywhere; }
-.rm-empty-state { padding: 64px 20px; }
-.rm-main { height: calc(100% - 64px); }
+.rm-header {
+  min-height: 64px;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.rm-current-game {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  max-width: 480px;
+  min-width: 220px;
+}
+.rm-current-game .n-select {
+  flex: 1;
+  min-width: 140px;
+}
+.rm-context-label {
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0.75;
+  margin-left: 12px;
+}
+.rm-service-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px;
+}
+.rm-page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0 6px;
+}
+.rm-page-heading h1 {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.4px;
+}
+.rm-page-heading .n-text {
+  font-size: 12px;
+}
+.rm-game-card {
+  min-width: 0;
+}
+.rm-game-connected {
+  border-inline-start: 3px solid var(--rm-connected) !important;
+}
+.rm-dark {
+  --rm-connected: #4bcf8f;
+}
+.rm-light {
+  --rm-connected: #22825b;
+}
+.rm-operation-status {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.rm-empty-state {
+  padding: 64px 20px;
+}
+.rm-main {
+  height: calc(100% - 64px);
+}
 @media (max-width: 1020px) {
-  .rm-context-label, .rm-session-count { display: none; }
-  .rm-header { gap: 8px; padding-inline: 16px; }
-  .rm-md-list, .rm-md-detail { flex-basis: 100%; }
+  .rm-context-label,
+  .rm-session-count {
+    display: none;
+  }
+  .rm-header {
+    gap: 8px;
+    padding-inline: 16px;
+  }
+  .rm-md-list,
+  .rm-md-detail {
+    flex-basis: 100%;
+  }
 }
 
 /* Selected row in a master list. Naive has no "selected row" state of its own,
@@ -138,14 +234,24 @@ body {
 }
 
 /* Entry-list name cell with an optional in-game icon in front. */
-.rm-entry-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.rm-entry-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rm-entry-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.rm-entry-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Sliced IconSet tiles (ui/parts/iconset.js). */
 .rm-gicon {
   flex: none;
   border-radius: 4px;
-  image-rendering: -webkit-optimize-contrast;   /* nearest-neighbour for pixel art */
+  image-rendering: -webkit-optimize-contrast; /* nearest-neighbour for pixel art */
 }
 .rm-gicon-ph {
   display: inline-block;
@@ -166,9 +272,23 @@ body {
   padding-right: 8px;
   min-width: 0;
 }
-.rm-picker-item { display: inline-flex; flex-direction: column; min-width: 0; max-width: 560px; }
-.rm-picker-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.rm-picker-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rm-picker-item {
+  display: inline-flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 560px;
+}
+.rm-picker-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.rm-picker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* Skill/state notes are plugin action-sequence dumps in some games — one line. */
 .rm-picker-note {
   display: block;
@@ -179,9 +299,22 @@ body {
 }
 
 /* Actor param rows: name · current · delta field · ±buttons · apply. */
-.rm-params { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.rm-param-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.rm-param-name { flex: 0 0 62px; font-size: 12.5px; }
+.rm-params {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.rm-param-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.rm-param-name {
+  flex: 0 0 62px;
+  font-size: 12.5px;
+}
 .rm-param-cur {
   flex: 0 0 56px;
   text-align: right;
@@ -213,7 +346,12 @@ body {
   background: linear-gradient(135deg, #5b8cff, #8b5cf6);
   box-shadow: 0 2px 10px rgba(91, 140, 255, 0.35);
 }
-.rm-brand-text { display: flex; flex-direction: column; line-height: 1.15; white-space: nowrap; }
+.rm-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  white-space: nowrap;
+}
 
 /* Header service pill: coloured dot inside the n-tag. */
 .rm-status-dot {
@@ -240,7 +378,8 @@ body {
 /* Monospace output surfaces (console result / bridge log). */
 .rm-mono {
   margin: 0;
-  font-family: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+  font-family:
+    "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
   font-size: 12.5px;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -249,7 +388,8 @@ body {
 
 /* The console editor: Naive UI has no monospace variant of n-input. */
 .rm-code-input textarea {
-  font-family: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace !important;
+  font-family:
+    "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace !important;
   font-size: 12.5px !important;
   line-height: 1.6 !important;
 }
@@ -267,17 +407,72 @@ body {
   font-family: Consolas, monospace;
   font-size: 13px;
 }
-#boot-error .boot-error-item { margin-bottom: 18px; }
-#boot-error pre { margin: 6px 0 0; white-space: pre-wrap; color: #e6e8ef; }
-:root { --rm-event-border: rgba(128,145,167,.22); }
-.rm-event-hint { font-size:12px; opacity:.72; line-height:1.7; overflow-wrap:anywhere; }
-.rm-event-canvas { width:100%; height: min(54vh,560px); display:block; border-radius:8px; touch-action:none; cursor:crosshair; }
-.rm-event-conditions { border-left:3px solid #79a694; padding:8px 12px; background:rgba(111,155,139,.08); font-size:12px; }
-.rm-event-conditions p { margin:4px 0; }
-.rm-event-commands { max-height:54vh; overflow:auto; border:1px solid var(--rm-event-border); border-radius:8px; }
-.rm-event-command { padding:10px 12px; border-bottom:1px solid var(--rm-event-border); }
-.rm-event-command[data-current="true"] { background:rgba(90,161,220,.15); box-shadow:inset 3px 0 #69b5ef; }
-.rm-event-command pre { white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.7 Consolas,monospace; margin:6px 0; }
-.rm-event-command details { font-size:11px; opacity:.8; }
-.rm-event-command summary { cursor:pointer; }
-.rm-event-index { display:inline-block; min-width:42px; opacity:.55; font-variant-numeric:tabular-nums; }
+#boot-error .boot-error-item {
+  margin-bottom: 18px;
+}
+#boot-error pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  color: #e6e8ef;
+}
+:root {
+  --rm-event-border: rgba(128, 145, 167, 0.22);
+}
+.rm-event-hint {
+  font-size: 12px;
+  opacity: 0.72;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.rm-event-canvas {
+  width: 100%;
+  height: min(54vh, 560px);
+  display: block;
+  border-radius: 8px;
+  touch-action: none;
+  cursor: crosshair;
+}
+.rm-event-conditions {
+  border-left: 3px solid #79a694;
+  padding: 8px 12px;
+  background: rgba(111, 155, 139, 0.08);
+  font-size: 12px;
+}
+.rm-event-conditions p {
+  margin: 4px 0;
+}
+.rm-event-commands {
+  max-height: 54vh;
+  overflow: auto;
+  border: 1px solid var(--rm-event-border);
+  border-radius: 8px;
+}
+.rm-event-command {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rm-event-border);
+}
+.rm-event-command[data-current="true"] {
+  background: rgba(90, 161, 220, 0.15);
+  box-shadow: inset 3px 0 #69b5ef;
+}
+.rm-event-command pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font:
+    12px/1.7 Consolas,
+    monospace;
+  margin: 6px 0;
+}
+.rm-event-command details {
+  font-size: 11px;
+  opacity: 0.8;
+}
+.rm-event-command summary {
+  cursor: pointer;
+}
+.rm-event-index {
+  display: inline-block;
+  min-width: 42px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}

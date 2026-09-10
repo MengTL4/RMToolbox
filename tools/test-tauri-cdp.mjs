@@ -10,7 +10,14 @@
 //     markers) as container "tauri" instead of "unknown-nwjs"
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -53,25 +60,49 @@ function main() {
 
     const plain = path.join(tempRoot, "plain.exe");
     writeFileSync(plain, "MZ just some game binary without markers");
-    assert.equal(probeTauriShell(plain).isTauri, false, "plain exe must not probe as Tauri");
+    assert.equal(
+      probeTauriShell(plain).isTauri,
+      false,
+      "plain exe must not probe as Tauri"
+    );
 
     const replacement = buildPatchReplacement(region.length, 9333);
-    assert.equal(replacement.length, region.length, "replacement must be byte-exact");
+    assert.equal(
+      replacement.length,
+      region.length,
+      "replacement must be byte-exact"
+    );
     assert.ok(replacement.startsWith("--remote-debugging-port=9333 "));
     assert.throws(() => buildPatchReplacement(10, 9333), TauriLaunchError);
 
     const dest = path.join(tempRoot, "game.rmch-cdp.exe");
     const before = readFileSync(exe);
-    buildPatchedExe({ exePath: exe, destPath: dest, anchor: probe.anchor, cdpPort: 9333 });
-    assert.deepEqual(readFileSync(exe), before, "source exe must stay untouched");
+    buildPatchedExe({
+      exePath: exe,
+      destPath: dest,
+      anchor: probe.anchor,
+      cdpPort: 9333
+    });
+    assert.deepEqual(
+      readFileSync(exe),
+      before,
+      "source exe must stay untouched"
+    );
     const patched = readFileSync(dest);
-    assert.equal(patched.length, before.length, "patched copy keeps the exact file size");
+    assert.equal(
+      patched.length,
+      before.length,
+      "patched copy keeps the exact file size"
+    );
     assert.equal(
       patched.toString("latin1", region.offset, region.offset + region.length),
       replacement
     );
     // Nothing outside the region may change.
-    assert.equal(patched.toString("latin1", 0, region.offset), before.toString("latin1", 0, region.offset));
+    assert.equal(
+      patched.toString("latin1", 0, region.offset),
+      before.toString("latin1", 0, region.offset)
+    );
 
     // Mutated anchor in the source must be caught before any write.
     const mutated = path.join(tempRoot, "mutated.exe");
@@ -79,10 +110,19 @@ function main() {
     badBytes[region.offset] = 0x21; // '!' over '-'
     writeFileSync(mutated, badBytes);
     assert.throws(
-      () => buildPatchedExe({ exePath: mutated, destPath: path.join(tempRoot, "out.exe"), anchor: probe.anchor, cdpPort: 9333 }),
+      () =>
+        buildPatchedExe({
+          exePath: mutated,
+          destPath: path.join(tempRoot, "out.exe"),
+          anchor: probe.anchor,
+          cdpPort: 9333
+        }),
       /region mismatch/
     );
-    assert.ok(!existsSync(path.join(tempRoot, "out.exe")), "failed patch must not leave a copy");
+    assert.ok(
+      !existsSync(path.join(tempRoot, "out.exe")),
+      "failed patch must not leave a copy"
+    );
 
     // --- scanner ---------------------------------------------------------------
     const gameRoot = path.join(tempRoot, "Demon Fake");
@@ -93,7 +133,11 @@ function main() {
 
     const scan = scanGame(gameRoot);
     assert.equal(scan.container, "tauri");
-    assert.equal(scan.engine.id, "MV/MZ", "Tauri packaging alone cannot distinguish MV from MZ");
+    assert.equal(
+      scan.engine.id,
+      "MV/MZ",
+      "Tauri packaging alone cannot distinguish MV from MZ"
+    );
     assert.equal(scan.paths.exe, path.join(gameRoot, "game.exe"));
     assert.equal(scan.paths.saveDir, path.join(gameRoot, "save"));
     assert.equal(scan.saveDirKnown, true);
@@ -112,7 +156,11 @@ function main() {
     writeFileSync(path.join(foreignRoot, "game.exe"), "MZ not tauri at all");
     const foreign = scanGame(foreignRoot);
     assert.notEqual(foreign.container, "tauri");
-    assert.equal(foreign.engine.id, "unknown-nwjs", "unmarked game.exe still falls through to unknown-nwjs");
+    assert.equal(
+      foreign.engine.id,
+      "unknown-nwjs",
+      "unmarked game.exe still falls through to unknown-nwjs"
+    );
 
     console.log("test-tauri-cdp: all checks ok");
   } finally {

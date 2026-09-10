@@ -380,11 +380,11 @@ NW 路线由 `attach.mjs` 内的 `createNwAttachment` module 完整编排。它�
 
 当前传输选择按游戏壳和操作集中记录，结构改动保留已有实测行为：
 
-| 游戏壳 | 手动附加 | 启动时发现已运行 | 本次新启动 |
-| --- | --- | --- | --- |
-| nb-evalnwbin | 文件 | 文件 | 文件 |
-| enigma-nb | WS + sealed 重试 | 文件 | WS + sealed 重试 |
-| Grover | 普通 WS | 文件 | 文件 |
+| 游戏壳       | 手动附加         | 启动时发现已运行 | 本次新启动       |
+| ------------ | ---------------- | ---------------- | ---------------- |
+| nb-evalnwbin | 文件             | 文件             | 文件             |
+| enigma-nb    | WS + sealed 重试 | 文件             | WS + sealed 重试 |
+| Grover       | 普通 WS          | 文件             | 文件             |
 
 WS 以 DLL 报告执行成功为附加完成，文件路线还要确认新鲜 hello；这些成功条件不合并。
 `tools/test-nw-attachment.mjs` 穿过真实编排验证上述矩阵、成功即停和启动回退，替代原来只测

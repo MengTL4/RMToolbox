@@ -13,7 +13,10 @@ import { scanGame } from "../core/scanner.mjs";
 import { getToken } from "../core/token.mjs";
 import { launchGame } from "../core/launcher.mjs";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const projectRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  ".."
+);
 const PORT = 47412;
 
 const keep = process.argv.includes("--keep");
@@ -29,33 +32,44 @@ const token = getToken(projectRoot);
 
 function connectClient() {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://127.0.0.1:${PORT}/client?token=${encodeURIComponent(token)}`);
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${PORT}/client?token=${encodeURIComponent(token)}`
+    );
     const pending = new Map();
     let listResolver = null;
-    socket.onopen = () => resolve({
-      socket,
-      list() {
-        return new Promise((res, rej) => {
-          listResolver = { res, rej };
-          socket.send(JSON.stringify({ t: "list" }));
-          setTimeout(() => rej(new Error("list timed out")), 8000);
-        });
-      },
-      send(gameKey, type, args, timeoutMs = 25000) {
-        return new Promise((res, rej) => {
-          const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-          pending.set(id, { res, rej });
-          socket.send(JSON.stringify({ t: "send", id, gameKey, type, args: args || {} }));
-          setTimeout(() => {
-            if (pending.delete(id)) rej(new Error(`${type} timed out after ${timeoutMs}ms`));
-          }, timeoutMs);
-        });
-      }
-    });
-    socket.onerror = () => reject(new Error("cannot connect to the RMCH server"));
+    socket.onopen = () =>
+      resolve({
+        socket,
+        list() {
+          return new Promise((res, rej) => {
+            listResolver = { res, rej };
+            socket.send(JSON.stringify({ t: "list" }));
+            setTimeout(() => rej(new Error("list timed out")), 8000);
+          });
+        },
+        send(gameKey, type, args, timeoutMs = 25000) {
+          return new Promise((res, rej) => {
+            const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            pending.set(id, { res, rej });
+            socket.send(
+              JSON.stringify({ t: "send", id, gameKey, type, args: args || {} })
+            );
+            setTimeout(() => {
+              if (pending.delete(id))
+                rej(new Error(`${type} timed out after ${timeoutMs}ms`));
+            }, timeoutMs);
+          });
+        }
+      });
+    socket.onerror = () =>
+      reject(new Error("cannot connect to the RMCH server"));
     socket.onmessage = (event) => {
       let message = null;
-      try { message = JSON.parse(event.data); } catch (_) { return; }
+      try {
+        message = JSON.parse(event.data);
+      } catch (_) {
+        return;
+      }
       if (message.t === "list" && listResolver) {
         const { res } = listResolver;
         listResolver = null;
@@ -77,7 +91,9 @@ function connectClient() {
 const results = [];
 function check(name, ok, detail) {
   results.push({ name, ok });
-  console.log(`${ok ? "[OK]  " : "[FAIL]"} ${name}${detail ? " — " + detail : ""}`);
+  console.log(
+    `${ok ? "[OK]  " : "[FAIL]"} ${name}${detail ? " — " + detail : ""}`
+  );
 }
 
 // Run one check step; a throw (bridge error / timeout) becomes a FAIL instead
@@ -99,7 +115,12 @@ async function waitDataReady(client, gameKey, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const probe = await client.send(gameKey, "catalog.query", { kind: "item", limit: 1 }, 15000);
+      const probe = await client.send(
+        gameKey,
+        "catalog.query",
+        { kind: "item", limit: 1 },
+        15000
+      );
       if (probe && probe.total > 0) return true;
     } catch (_) {}
     await sleep(2000);
@@ -109,7 +130,7 @@ async function waitDataReady(client, gameKey, timeoutMs) {
 
 function summarize(detail) {
   const text = JSON.stringify(detail);
-  return text && text.length > 140 ? `${text.slice(0, 140)}…` : (text || "");
+  return text && text.length > 140 ? `${text.slice(0, 140)}…` : text || "";
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -118,7 +139,9 @@ async function waitBridge(client, gameKey, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     let sessions = [];
-    try { sessions = await client.list(); } catch (_) {}
+    try {
+      sessions = await client.list();
+    } catch (_) {}
     const session = sessions.find((entry) => entry.gameKey === gameKey);
     if (session && session.alive !== false) return session;
     await sleep(1000);
@@ -130,16 +153,26 @@ async function waitBridge(client, gameKey, timeoutMs) {
 
 const scan = scanGame(gameRootArg);
 console.log(`\n=== M2 acceptance: ${scan.title} ===`);
-console.log(`engine=${scan.engine.id} protection=L${scan.protection.level} key=${scan.gameKey}`);
+console.log(
+  `engine=${scan.engine.id} protection=L${scan.protection.level} key=${scan.gameKey}`
+);
 
-const summary = await launchGame({ gameRoot: scan.root, projectRoot, port: PORT });
+const summary = await launchGame({
+  gameRoot: scan.root,
+  projectRoot,
+  port: PORT
+});
 console.log(`launched: strategy=${summary.strategy} pid=${summary.pid}`);
 
 const client = await connectClient();
 const session = await waitBridge(client, summary.gameKey, 90000);
-check("bridge connects to GUI server", !!session, session
-  ? `v${session.bridgeVersion || "?"} engine=${session.engine ? session.engine.maker : "?"}`
-  : "session never appeared in /client list");
+check(
+  "bridge connects to GUI server",
+  !!session,
+  session
+    ? `v${session.bridgeVersion || "?"} engine=${session.engine ? session.engine.maker : "?"}`
+    : "session never appeared in /client list"
+);
 
 if (!session) {
   console.error("\nresult: FAILED (bridge never connected)");
@@ -148,41 +181,86 @@ if (!session) {
 
 // -- data-layer commands (work from the title screen)
 const dataReady = await waitDataReady(client, summary.gameKey, 150000);
-check("data layer ready ($dataSystem/$dataItems loaded)", dataReady, dataReady ? "" : "timed out after 90s");
+check(
+  "data layer ready ($dataSystem/$dataItems loaded)",
+  dataReady,
+  dataReady ? "" : "timed out after 90s"
+);
 
 const state = await step("ping / state snapshot", async () => {
   const payload = await client.send(summary.gameKey, "ping", {});
-  check("ping / state snapshot", !!payload && !!payload.engine, summarize({ engine: payload.engine, map: payload.map, gold: payload.gold, party: (payload.party || []).length }));
+  check(
+    "ping / state snapshot",
+    !!payload && !!payload.engine,
+    summarize({
+      engine: payload.engine,
+      map: payload.map,
+      gold: payload.gold,
+      party: (payload.party || []).length
+    })
+  );
   return payload;
 });
 
 await step("runtime.info", async () => {
   const runtime = await client.send(summary.gameKey, "runtime.info", {});
-  check("runtime.info", !!runtime && !!runtime.bridgeVersion, summarize(runtime));
+  check(
+    "runtime.info",
+    !!runtime && !!runtime.bridgeVersion,
+    summarize(runtime)
+  );
 });
 
 let options = null;
 await step("trainer.options.get", async () => {
-  options = (await client.send(summary.gameKey, "trainer.options.get", {})).options;
-  check("trainer.options.get", !!options && typeof options.invincible === "boolean", `invincible=${options.invincible}`);
+  options = (await client.send(summary.gameKey, "trainer.options.get", {}))
+    .options;
+  check(
+    "trainer.options.get",
+    !!options && typeof options.invincible === "boolean",
+    `invincible=${options.invincible}`
+  );
 });
 
 await step("trainer.options.set", async () => {
-  const result = (await client.send(summary.gameKey, "trainer.options.set", { options: { invincible: true, expRate: 2 } })).options;
-  check("trainer.options.set", result.invincible === true && result.expRate === 2, summarize({ invincible: result.invincible, expRate: result.expRate }));
-  await client.send(summary.gameKey, "trainer.options.set", { options: { invincible: false, expRate: 1 } });
+  const result = (
+    await client.send(summary.gameKey, "trainer.options.set", {
+      options: { invincible: true, expRate: 2 }
+    })
+  ).options;
+  check(
+    "trainer.options.set",
+    result.invincible === true && result.expRate === 2,
+    summarize({ invincible: result.invincible, expRate: result.expRate })
+  );
+  await client.send(summary.gameKey, "trainer.options.set", {
+    options: { invincible: false, expRate: 1 }
+  });
 });
 
 let catalog = null;
 await step("catalog.query items", async () => {
-  catalog = await client.send(summary.gameKey, "catalog.query", { kind: "item", limit: 3 });
-  check("catalog.query items", catalog.total > 0 && catalog.entries.length > 0,
-    `total=${catalog.total} first=#${catalog.entries[0] && catalog.entries[0].id} "${catalog.entries[0] && catalog.entries[0].name}"`);
+  catalog = await client.send(summary.gameKey, "catalog.query", {
+    kind: "item",
+    limit: 3
+  });
+  check(
+    "catalog.query items",
+    catalog.total > 0 && catalog.entries.length > 0,
+    `total=${catalog.total} first=#${catalog.entries[0] && catalog.entries[0].id} "${catalog.entries[0] && catalog.entries[0].name}"`
+  );
 });
 
 await step("switch.list", async () => {
-  const switches = await client.send(summary.gameKey, "switch.list", { offset: 1, limit: 3 });
-  check("switch.list", Array.isArray(switches.entries), `count=${switches.entries.length}`);
+  const switches = await client.send(summary.gameKey, "switch.list", {
+    offset: 1,
+    limit: 3
+  });
+  check(
+    "switch.list",
+    Array.isArray(switches.entries),
+    `count=${switches.entries.length}`
+  );
 });
 
 await step("map.list", async () => {
@@ -192,11 +270,17 @@ await step("map.list", async () => {
 
 await step("save.list", async () => {
   const saves = await client.send(summary.gameKey, "save.list", {});
-  check("save.list", !!saves.dir, `dir=${saves.dir} files=${(saves.entries || []).length}`);
+  check(
+    "save.list",
+    !!saves.dir,
+    `dir=${saves.dir} files=${(saves.entries || []).length}`
+  );
 });
 
 await step("console.eval", async () => {
-  const evalResult = await client.send(summary.gameKey, "console.eval", { code: "6*7" });
+  const evalResult = await client.send(summary.gameKey, "console.eval", {
+    code: "6*7"
+  });
   check("console.eval", evalResult.result === 42, `6*7=${evalResult.result}`);
 });
 
@@ -220,7 +304,9 @@ if (!((state && state.party) || []).length) {
     try {
       await client.send(summary.gameKey, "game.newGame", {});
     } catch (error) {
-      console.log(`  new-game path failed (${String(error.message).slice(0, 80)}…), trying save load`);
+      console.log(
+        `  new-game path failed (${String(error.message).slice(0, 80)}…), trying save load`
+      );
     }
     await sleep(6000);
     if (await partyMemberCount()) return;
@@ -244,52 +330,88 @@ if (!((state && state.party) || []).length) {
       if (await partyMemberCount()) return;
     }
     if (!(await partyMemberCount())) {
-      throw new Error(`party still empty after new-game and save-load attempts (slots tried: ${[...new Set(saveIds)].slice(0, 3).join(", ") || "none"})`);
+      throw new Error(
+        `party still empty after new-game and save-load attempts (slots tried: ${[...new Set(saveIds)].slice(0, 3).join(", ") || "none"})`
+      );
     }
   });
 }
 
 const party = await step("party.info", async () => {
   const payload = await client.send(summary.gameKey, "party.info", {});
-  check("party.info", (payload.members || []).length > 0,
-    (payload.members || []).map((m) => `#${m.id} ${m.name} Lv${m.level}`).join(", ") || "empty party");
+  check(
+    "party.info",
+    (payload.members || []).length > 0,
+    (payload.members || [])
+      .map((m) => `#${m.id} ${m.name} Lv${m.level}`)
+      .join(", ") || "empty party"
+  );
   return payload;
 });
 
 if (party && (party.members || []).length > 0) {
   await step("gold.set", async () => {
-    const gold = await client.send(summary.gameKey, "gold.set", { value: 123456 });
+    const gold = await client.send(summary.gameKey, "gold.set", {
+      value: 123456
+    });
     check("gold.set", gold.gold === 123456, `gold=${gold.gold}`);
   });
 
   await step("item.add", async () => {
     const firstItem = catalog && catalog.entries[0];
-    if (!firstItem) return check("item.add", false, "no catalog entry available");
-    const item = await client.send(summary.gameKey, "item.add", { kind: "item", id: firstItem.id, amount: 2 });
-    check("item.add", item.ok !== false && item.id === firstItem.id, `+${item.amount} item#${item.id} "${firstItem.name}"`);
+    if (!firstItem)
+      return check("item.add", false, "no catalog entry available");
+    const item = await client.send(summary.gameKey, "item.add", {
+      kind: "item",
+      id: firstItem.id,
+      amount: 2
+    });
+    check(
+      "item.add",
+      item.ok !== false && item.id === firstItem.id,
+      `+${item.amount} item#${item.id} "${firstItem.name}"`
+    );
   });
 
   await step("actor.vitals.set", async () => {
     const actor = party.members[0];
-    const vitals = await client.send(summary.gameKey, "actor.vitals.set", { id: actor.id, hp: actor.mhp, mp: actor.mmp, tp: 100 });
-    check("actor.vitals.set", vitals.actor && vitals.actor.hp === actor.mhp, `#${actor.id} hp=${vitals.actor.hp}/${vitals.actor.mhp}`);
+    const vitals = await client.send(summary.gameKey, "actor.vitals.set", {
+      id: actor.id,
+      hp: actor.mhp,
+      mp: actor.mmp,
+      tp: 100
+    });
+    check(
+      "actor.vitals.set",
+      vitals.actor && vitals.actor.hp === actor.mhp,
+      `#${actor.id} hp=${vitals.actor.hp}/${vitals.actor.mhp}`
+    );
   });
 
   await step("switch.set", async () => {
-    const sw = await client.send(summary.gameKey, "switch.set", { id: 1, value: true });
+    const sw = await client.send(summary.gameKey, "switch.set", {
+      id: 1,
+      value: true
+    });
     check("switch.set", sw.value === true, `#1=${sw.value}`);
   });
 
   await step("live state reflects edits", async () => {
     const state2 = await client.send(summary.gameKey, "ping", {});
-    check("live state reflects edits", state2.gold === 123456, `gold=${state2.gold}`);
+    check(
+      "live state reflects edits",
+      state2.gold === 123456,
+      `gold=${state2.gold}`
+    );
   });
 }
 
 // -- teardown
 if (!keep) {
   await new Promise((resolve) => {
-    execFile("taskkill", ["/PID", String(summary.pid), "/T", "/F"], () => resolve());
+    execFile("taskkill", ["/PID", String(summary.pid), "/T", "/F"], () =>
+      resolve()
+    );
   });
   // The server can take up to ~25s to notice (ping interval + pong timeout),
   // so poll for the session to disappear instead of sampling once.
@@ -300,13 +422,23 @@ if (!keep) {
     try {
       const sessions = await client.list();
       lastCount = sessions.length;
-      gone = !sessions.some((entry) => entry.gameKey === summary.gameKey && entry.alive !== false);
+      gone = !sessions.some(
+        (entry) => entry.gameKey === summary.gameKey && entry.alive !== false
+      );
     } catch (_) {}
   }
-  check("game stopped, session closed", gone, gone ? "" : `session still listed (${lastCount} total)`);
-  try { client.socket.close(); } catch (_) {}
+  check(
+    "game stopped, session closed",
+    gone,
+    gone ? "" : `session still listed (${lastCount} total)`
+  );
+  try {
+    client.socket.close();
+  } catch (_) {}
 }
 
 const failed = results.filter((entry) => !entry.ok);
-console.log(`\nresult: ${failed.length ? `FAILED (${failed.length}/${results.length})` : `PASSED (${results.length}/${results.length})`}\n`);
+console.log(
+  `\nresult: ${failed.length ? `FAILED (${failed.length}/${results.length})` : `PASSED (${results.length}/${results.length})`}\n`
+);
 process.exit(failed.length ? 1 : 0);

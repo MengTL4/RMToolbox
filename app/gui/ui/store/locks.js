@@ -17,11 +17,14 @@
   }
 
   function loadLocks() {
-    return store.tracked(data.loading, "locks",
+    return store.tracked(
+      data.loading,
+      "locks",
       store.cmd("lock.list", {}).then(function (p) {
         applyLockSnapshot(p);
         return p;
-      }));
+      })
+    );
   }
 
   function isLocked(kind, id) {
@@ -50,13 +53,15 @@
   }
 
   function clearLocks(kind) {
-    return store.cmd("lock.clear", kind ? { kind: kind } : {}).then(function (p) {
-      if (p) {
-        applyLockSnapshot(p);
-        store.ok(kind ? "已清空 " + kind + " 锁定" : "已清空全部锁定");
-      }
-      return p;
-    });
+    return store
+      .cmd("lock.clear", kind ? { kind: kind } : {})
+      .then(function (p) {
+        if (p) {
+          applyLockSnapshot(p);
+          store.ok(kind ? "已清空 " + kind + " 锁定" : "已清空全部锁定");
+        }
+        return p;
+      });
   }
 
   function saveLockFile() {
@@ -93,12 +98,15 @@
     var epoch = store.state.selectionEpoch;
     data.tree.loading = true;
     data.tree.error = null;
-    return store.send(store.trainer.gameKey, "save.contents.get", {})
+    return store
+      .send(store.trainer.gameKey, "save.contents.get", {})
       .then(function (payload) {
         if (epoch !== store.state.selectionEpoch) return null;
         data.tree.json = payload.json;
         data.tree.bytes = payload.bytes;
-        store.ok("已拉取存档数据（" + Math.round(payload.bytes / 1024) + " KB）");
+        store.ok(
+          "已拉取存档数据（" + Math.round(payload.bytes / 1024) + " KB）"
+        );
         return payload;
       })
       .catch(function (error) {
@@ -107,17 +115,25 @@
         store.fail("拉取存档数据失败：" + error.message);
         return null;
       })
-      .finally(function () { if (epoch === store.state.selectionEpoch) data.tree.loading = false; });
+      .finally(function () {
+        if (epoch === store.state.selectionEpoch) data.tree.loading = false;
+      });
   }
 
   function applySaveTree(json, reload) {
     var epoch = store.state.selectionEpoch;
     data.tree.applying = true;
-    return store.send(store.trainer.gameKey, "save.contents.apply", { json: json, reload: reload !== false })
+    return store
+      .send(store.trainer.gameKey, "save.contents.apply", {
+        json: json,
+        reload: reload !== false
+      })
       .then(function (payload) {
         if (epoch !== store.state.selectionEpoch) return null;
         data.tree.json = json;
-        store.ok("已应用至游戏" + (payload.reloaded ? "（已重载地图）" : "（未重载）"));
+        store.ok(
+          "已应用至游戏" + (payload.reloaded ? "（已重载地图）" : "（未重载）")
+        );
         return payload;
       })
       .catch(function (error) {
@@ -125,7 +141,9 @@
         store.fail("应用失败：" + error.message);
         return null;
       })
-      .finally(function () { if (epoch === store.state.selectionEpoch) data.tree.applying = false; });
+      .finally(function () {
+        if (epoch === store.state.selectionEpoch) data.tree.applying = false;
+      });
   }
 
   // --- scenes / repair ---------------------------------------------------------

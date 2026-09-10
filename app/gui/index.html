@@ -1,23 +1,23 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <title>RM 工具箱</title>
-  <link rel="stylesheet" href="styles.css">
-  <!-- jsoneditor ships a real stylesheet (Naive UI is CSS-in-JS, this is not);
+  <head>
+    <meta charset="UTF-8" />
+    <title>RM 工具箱</title>
+    <link rel="stylesheet" href="styles.css" />
+    <!-- jsoneditor ships a real stylesheet (Naive UI is CSS-in-JS, this is not);
        jsoneditor-theme.css re-skins it for our dark/light themes. -->
-  <link rel="stylesheet" href="vendor/jsoneditor/jsoneditor.min.css">
-  <link rel="stylesheet" href="jsoneditor-theme.css">
-</head>
-<body>
-  <div id="app"></div>
+    <link rel="stylesheet" href="vendor/jsoneditor/jsoneditor.min.css" />
+    <link rel="stylesheet" href="jsoneditor-theme.css" />
+  </head>
+  <body>
+    <div id="app"></div>
 
-  <!-- Boot failure fallback: an empty NW window is impossible to diagnose, so
+    <!-- Boot failure fallback: an empty NW window is impossible to diagnose, so
        any uncaught error before/while mounting paints itself here. -->
-  <div id="boot-error" hidden></div>
-  <script src="ui/boot-guard.js"></script>
+    <div id="boot-error" hidden></div>
+    <script src="ui/boot-guard.js"></script>
 
-  <!--
+    <!--
     NW.js injects the CommonJS globals (module/exports/require) into the page.
     The Naive UI and jsoneditor bundles are UMD: with `module` visible they take
     the CJS branch and never touch `window`, so Naive dies on require("vue") and
@@ -25,30 +25,46 @@
     globals while the vendor bundles evaluate, then put them back (host.cjs
     needs them).
   -->
-  <script>
-    window.__rmchCjs = {
-      module: typeof module !== "undefined" ? module : undefined,
-      exports: typeof exports !== "undefined" ? exports : undefined,
-      define: typeof define !== "undefined" ? define : undefined
-    };
-    try { module = undefined; } catch (_) {}
-    try { exports = undefined; } catch (_) {}
-    try { define = undefined; } catch (_) {}
-  </script>
-  <script src="vendor/vue.global.prod.js"></script>
-  <script src="vendor/naive-ui.prod.js"></script>
-  <script src="vendor/jsoneditor/jsoneditor.min.js"></script>
-  <script>
-    try { module = window.__rmchCjs.module; } catch (_) {}
-    try { exports = window.__rmchCjs.exports; } catch (_) {}
-    try { define = window.__rmchCjs.define; } catch (_) {}
-    if (!window.Vue) throw new Error("vendor/vue.global.prod.js 未加载");
-    if (!window.naive) throw new Error("vendor/naive-ui.prod.js 未加载（UMD 检测未被屏蔽？）");
-    if (!window.JSONEditor) throw new Error("vendor/jsoneditor/jsoneditor.min.js 未加载（UMD 检测未被屏蔽？）");
-  </script>
+    <script>
+      window.__rmchCjs = {
+        module: typeof module !== "undefined" ? module : undefined,
+        exports: typeof exports !== "undefined" ? exports : undefined,
+        define: typeof define !== "undefined" ? define : undefined
+      };
+      try {
+        module = undefined;
+      } catch (_) {}
+      try {
+        exports = undefined;
+      } catch (_) {}
+      try {
+        define = undefined;
+      } catch (_) {}
+    </script>
+    <script src="vendor/vue.global.prod.js"></script>
+    <script src="vendor/naive-ui.prod.js"></script>
+    <script src="vendor/jsoneditor/jsoneditor.min.js"></script>
+    <script>
+      try {
+        module = window.__rmchCjs.module;
+      } catch (_) {}
+      try {
+        exports = window.__rmchCjs.exports;
+      } catch (_) {}
+      try {
+        define = window.__rmchCjs.define;
+      } catch (_) {}
+      if (!window.Vue) throw new Error("vendor/vue.global.prod.js 未加载");
+      if (!window.naive)
+        throw new Error("vendor/naive-ui.prod.js 未加载（UMD 检测未被屏蔽？）");
+      if (!window.JSONEditor)
+        throw new Error(
+          "vendor/jsoneditor/jsoneditor.min.js 未加载（UMD 检测未被屏蔽？）"
+        );
+    </script>
 
-  <!-- All component templates and module dependencies are built by Vite. -->
-  <script src="ui/modern.js"></script>
-  <script src="ui/main.js"></script>
-</body>
+    <!-- All component templates and module dependencies are built by Vite. -->
+    <script src="ui/modern.js"></script>
+    <script src="ui/main.js"></script>
+  </body>
 </html>

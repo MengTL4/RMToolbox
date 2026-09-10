@@ -69,7 +69,8 @@ function junctionDir(source, dest) {
   // rmSync(link, {force:true}) throws ERR_FS_EISDIR. recursive rm unlinks the
   // junction itself without following it (verified: target contents survive),
   // and equally handles real dirs left by the bg-script carve-out below.
-  if (lstatSync(dest, { throwIfNoEntry: false })) rmSync(dest, { recursive: true, force: true });
+  if (lstatSync(dest, { throwIfNoEntry: false }))
+    rmSync(dest, { recursive: true, force: true });
   symlinkSync(source, dest, "junction");
 }
 
@@ -89,10 +90,18 @@ function mergeSaveFiles(srcDir, dstDir) {
 }
 
 function shadowExecutableRelative(scan) {
-  const source = scan.paths && scan.paths.exe || path.join(scan.root, "Game.exe");
+  const source =
+    (scan.paths && scan.paths.exe) || path.join(scan.root, "Game.exe");
   const relative = path.relative(scan.root, source);
-  if (!relative || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
-    throw new Error(`shadow executable must be inside the game root: ${source}`);
+  if (
+    !relative ||
+    relative === ".." ||
+    relative.startsWith(".." + path.sep) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error(
+      `shadow executable must be inside the game root: ${source}`
+    );
   }
   return relative;
 }
@@ -180,7 +189,8 @@ function linkShadowEntry(source, dest, relSkip) {
     // the real game tree — a real directory is required here, never a link.
     // (recursive rm: plain rmSync on a junction throws EISDIR on Node 16.1.)
     const existing = lstatSync(dest, { throwIfNoEntry: false });
-    if (existing && existing.isSymbolicLink()) rmSync(dest, { recursive: true, force: true });
+    if (existing && existing.isSymbolicLink())
+      rmSync(dest, { recursive: true, force: true });
     mkdirSync(dest, { recursive: true });
     for (const child of readdirSync(source)) {
       const childSource = path.join(source, child);
@@ -203,26 +213,42 @@ function linkShadowEntry(source, dest, relSkip) {
 // Callers only supply the game-specific source transformation.
 function buildShadowApp({ projectRoot, scan, gameKey, scriptRel, patch }) {
   const executableRelative = shadowExecutableRelative(scan);
-  const parts = String(scriptRel).split(/[\\/]+/).filter((part) => part && part !== ".");
-  if (path.isAbsolute(scriptRel) || /^[A-Za-z]:/.test(scriptRel) || parts.includes("..") || !parts.length) {
+  const parts = String(scriptRel)
+    .split(/[\\/]+/)
+    .filter((part) => part && part !== ".");
+  if (
+    path.isAbsolute(scriptRel) ||
+    /^[A-Za-z]:/.test(scriptRel) ||
+    parts.includes("..") ||
+    !parts.length
+  ) {
     throw new Error(`invalid shadow patch path: ${scriptRel}`);
   }
   const script = parts.join("/");
   const sourcePath = path.join(scan.root, ...parts);
-  if (!existsSync(sourcePath)) throw new Error(`shadow patch source not found: ${sourcePath}`);
+  if (!existsSync(sourcePath))
+    throw new Error(`shadow patch source not found: ${sourcePath}`);
   // A missing patch anchor must fail before rebuilding the directory tree.
   const patched = patch(readFileSync(sourcePath, "utf8"));
   const shadowBase = path.resolve(projectRoot, SHADOW_ROOT);
   const appDir = path.resolve(shadowBase, gameKey);
   const relative = path.relative(shadowBase, appDir);
-  if (!relative || relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+  if (
+    !relative ||
+    relative === ".." ||
+    relative.startsWith(".." + path.sep) ||
+    path.isAbsolute(relative)
+  ) {
     throw new Error(`invalid shadow game key: ${gameKey}`);
   }
   const appStat = lstatSync(appDir, { throwIfNoEntry: false });
-  if (appStat && appStat.isSymbolicLink()) throw new Error(`shadow root must be a real directory: ${appDir}`);
+  if (appStat && appStat.isSymbolicLink())
+    throw new Error(`shadow root must be a real directory: ${appDir}`);
   mkdirSync(appDir, { recursive: true });
 
-  const isWwwLayout = scan.layout ? scan.layout === "www" : existsSync(path.join(scan.root, "www"));
+  const isWwwLayout = scan.layout
+    ? scan.layout === "www"
+    : existsSync(path.join(scan.root, "www"));
   const saveRel = isWwwLayout ? path.join("www", "save") : "save";
   const realSaveDir = path.join(scan.root, saveRel);
   const shadowSaveDir = path.join(appDir, saveRel);
@@ -230,8 +256,16 @@ function buildShadowApp({ projectRoot, scan, gameKey, scriptRel, patch }) {
   if (shadowStat && !shadowStat.isSymbolicLink() && shadowStat.isDirectory()) {
     // A www junction can make this path resolve into the real game. Only
     // rescue/remove an independent directory physically inside this shadow.
-    const owned = path.relative(realpathSync(appDir), realpathSync(shadowSaveDir));
-    if (owned && owned !== ".." && !owned.startsWith(".." + path.sep) && !path.isAbsolute(owned)) {
+    const owned = path.relative(
+      realpathSync(appDir),
+      realpathSync(shadowSaveDir)
+    );
+    if (
+      owned &&
+      owned !== ".." &&
+      !owned.startsWith(".." + path.sep) &&
+      !path.isAbsolute(owned)
+    ) {
       mergeSaveFiles(shadowSaveDir, realSaveDir);
       rmSync(shadowSaveDir, { recursive: true, force: true });
     }
@@ -241,22 +275,36 @@ function buildShadowApp({ projectRoot, scan, gameKey, scriptRel, patch }) {
   mkdirSync(realSaveDir, { recursive: true });
 
   for (const entry of readdirSync(scan.root)) {
-    if (entry === "package.json" || SKIP_FILES.has(entry.toLowerCase()) || entry === script) continue;
-    const relSkip = script.startsWith(entry + "/") ? script.slice(entry.length + 1) : null;
-    linkShadowEntry(path.join(scan.root, entry), path.join(appDir, entry), relSkip);
+    if (
+      entry === "package.json" ||
+      SKIP_FILES.has(entry.toLowerCase()) ||
+      entry === script
+    )
+      continue;
+    const relSkip = script.startsWith(entry + "/")
+      ? script.slice(entry.length + 1)
+      : null;
+    linkShadowEntry(
+      path.join(scan.root, entry),
+      path.join(appDir, entry),
+      relSkip
+    );
   }
   const manifestPath = path.join(appDir, "package.json");
-  if (lstatSync(manifestPath, { throwIfNoEntry: false })) rmSync(manifestPath, { recursive: true, force: true });
+  if (lstatSync(manifestPath, { throwIfNoEntry: false }))
+    rmSync(manifestPath, { recursive: true, force: true });
   copyFileSync(path.join(scan.root, "package.json"), manifestPath);
 
   const patchedPath = path.join(appDir, ...parts);
   // The parent is private after the carve-out. Unlink the leaf too: an older
   // build may have left a hardlink to the original script at this location.
-  if (lstatSync(patchedPath, { throwIfNoEntry: false })) rmSync(patchedPath, { recursive: true, force: true });
+  if (lstatSync(patchedPath, { throwIfNoEntry: false }))
+    rmSync(patchedPath, { recursive: true, force: true });
   mkdirSync(path.dirname(patchedPath), { recursive: true });
   writeFileSync(patchedPath, patched, "utf8");
   const gameExe = path.join(appDir, executableRelative);
-  if (!existsSync(gameExe)) throw new Error(`shadow executable missing: ${gameExe}`);
+  if (!existsSync(gameExe))
+    throw new Error(`shadow executable missing: ${gameExe}`);
   return { appDir, gameExe, patchedPath };
 }
 
@@ -365,20 +413,43 @@ function buildGroverBootstrap({ bridgePath, logPath }) {
 
 export function setupShadowApp({ projectRoot, scan, gameKey }) {
   const bgScriptName = scan.manifest && scan.manifest.bgScript;
-  if (!bgScriptName) throw new Error("game has no bg-script; shadow strategy does not apply");
-  const grover = scan.protection && scan.protection.flags && scan.protection.flags.includes("grover-boot");
+  if (!bgScriptName)
+    throw new Error("game has no bg-script; shadow strategy does not apply");
+  const grover =
+    scan.protection &&
+    scan.protection.flags &&
+    scan.protection.flags.includes("grover-boot");
   const shimSource = path.join(projectRoot, "runtime", "bin", "wmic.exe");
   if (grover && !existsSync(shimSource)) {
-    throw new Error(`grover-boot needs the wmic shim: build it with tools/build-wmic-shim.mjs (${shimSource} missing)`);
+    throw new Error(
+      `grover-boot needs the wmic shim: build it with tools/build-wmic-shim.mjs (${shimSource} missing)`
+    );
   }
-  const bridgePath = path.join(projectRoot, "runtime", "bridge", "page-bridge.js");
-  const bridgeStateDir = path.join(projectRoot, "runtime", "bridge-state", gameKey);
+  const bridgePath = path.join(
+    projectRoot,
+    "runtime",
+    "bridge",
+    "page-bridge.js"
+  );
+  const bridgeStateDir = path.join(
+    projectRoot,
+    "runtime",
+    "bridge-state",
+    gameKey
+  );
   const logPath = path.join(bridgeStateDir, "bg-bridge.log");
   const result = buildShadowApp({
-    projectRoot, scan, gameKey, scriptRel: bgScriptName,
+    projectRoot,
+    scan,
+    gameKey,
+    scriptRel: bgScriptName,
     patch(source) {
-      return buildPrelude(scan.root, shadowExecutableRelative(scan)) + (grover ? buildGroverBootstrap({ bridgePath, logPath }) : "")
-        + source + buildSuffix({ bridgePath, logPath, gameKey });
+      return (
+        buildPrelude(scan.root, shadowExecutableRelative(scan)) +
+        (grover ? buildGroverBootstrap({ bridgePath, logPath }) : "") +
+        source +
+        buildSuffix({ bridgePath, logPath, gameKey })
+      );
     }
   });
   mkdirSync(bridgeStateDir, { recursive: true });
@@ -391,16 +462,22 @@ export function setupShadowApp({ projectRoot, scan, gameKey }) {
     // execs `wmic ...` which resolves cwd-then-PATH) finds our shim and never
     // the missing system wmic.
     const shimPath = path.join(result.appDir, "wmic.exe");
-    if (lstatSync(shimPath, { throwIfNoEntry: false })) rmSync(shimPath, { recursive: true, force: true });
+    if (lstatSync(shimPath, { throwIfNoEntry: false }))
+      rmSync(shimPath, { recursive: true, force: true });
     copyFileSync(shimSource, shimPath);
   } else if (!existsSync(path.join(scan.root, "wmic.exe"))) {
     // Switching from the guarded strategy must also remove its generated
     // executable: Windows command lookup searches cwd even without PATH edits.
     const shimPath = path.join(result.appDir, "wmic.exe");
     const shim = lstatSync(shimPath, { throwIfNoEntry: false });
-    if (shim && (shim.isFile() || shim.isSymbolicLink())) rmSync(shimPath, { force: true });
+    if (shim && (shim.isFile() || shim.isSymbolicLink()))
+      rmSync(shimPath, { force: true });
   }
-  return { appDir: result.appDir, gameExe: result.gameExe, bgScriptPath: result.patchedPath };
+  return {
+    appDir: result.appDir,
+    gameExe: result.gameExe,
+    bgScriptPath: result.patchedPath
+  };
 }
 
 // grover-boot games launch through the ordinary direct spawn below, with one
@@ -417,7 +494,10 @@ export function launchShadowGame({ projectRoot, scan, gameKey, port, token }) {
   rmSync(profileDir, { recursive: true, force: true });
   mkdirSync(profileDir, { recursive: true });
 
-  const grover = scan.protection && scan.protection.flags && scan.protection.flags.includes("grover-boot");
+  const grover =
+    scan.protection &&
+    scan.protection.flags &&
+    scan.protection.flags.includes("grover-boot");
   const env = {
     ...process.env,
     RMCH_GAME_ROOT: scan.root,
@@ -430,18 +510,19 @@ export function launchShadowGame({ projectRoot, scan, gameKey, port, token }) {
       : {})
   };
 
-  const child = spawn(gameExe, [
-    `--user-data-dir=${profileDir}`,
-    "--force-color-profile=srgb"
-  ], {
-    cwd: appDir,
-    detached: true,
-    stdio: "ignore",
-    env,
-    // No windowsHide (see launcher.mjs): SW_HIDE in STARTUPINFO makes old
-    // NW.js builds create the game window invisible.
-    windowsHide: false
-  });
+  const child = spawn(
+    gameExe,
+    [`--user-data-dir=${profileDir}`, "--force-color-profile=srgb"],
+    {
+      cwd: appDir,
+      detached: true,
+      stdio: "ignore",
+      env,
+      // No windowsHide (see launcher.mjs): SW_HIDE in STARTUPINFO makes old
+      // NW.js builds create the game window invisible.
+      windowsHide: false
+    }
+  );
   child.unref();
   return { appDir, gameExe, profileDir, pid: child.pid };
 }
@@ -474,18 +555,59 @@ export function launchShadowGame({ projectRoot, scan, gameKey, port, token }) {
 // unmodified. eval() resolves each name in the bundle's own scope chain; a
 // name the family variant lacks throws and is skipped.
 const BUNDLED_PUBLISH_NAMES = [
-  "Utils", "JsonEx", "Graphics", "Input", "TouchInput",
-  "DataManager", "SceneManager", "BattleManager", "ConfigManager",
-  "StorageManager", "ImageManager", "AudioManager", "TextManager",
-  "Scene_Map", "Scene_Title", "Scene_Battle", "Scene_Item", "Scene_Skill",
-  "Scene_Equip", "Scene_Status", "Scene_Menu", "Scene_Save", "Scene_Load",
-  "Scene_Options", "Scene_Debug", "Scene_Shop", "Scene_Name", "Scene_GameEnd",
-  "Game_BattlerBase", "Game_Battler", "Game_Actor", "Game_Actors",
-  "Game_Party", "Game_Player", "Game_Enemy", "Game_Troop", "Game_Map",
-  "Game_System", "Game_Screen", "Game_Temp", "Game_Switches",
-  "Game_Variables", "Game_SelfSwitches", "Game_Follower", "Game_Followers",
-  "Game_Event", "Game_CommonEvent", "Game_Interpreter", "Game_Action",
-  "Game_Item", "Game_Timer", "Game_Message", "Game_Vehicle"
+  "Utils",
+  "JsonEx",
+  "Graphics",
+  "Input",
+  "TouchInput",
+  "DataManager",
+  "SceneManager",
+  "BattleManager",
+  "ConfigManager",
+  "StorageManager",
+  "ImageManager",
+  "AudioManager",
+  "TextManager",
+  "Scene_Map",
+  "Scene_Title",
+  "Scene_Battle",
+  "Scene_Item",
+  "Scene_Skill",
+  "Scene_Equip",
+  "Scene_Status",
+  "Scene_Menu",
+  "Scene_Save",
+  "Scene_Load",
+  "Scene_Options",
+  "Scene_Debug",
+  "Scene_Shop",
+  "Scene_Name",
+  "Scene_GameEnd",
+  "Game_BattlerBase",
+  "Game_Battler",
+  "Game_Actor",
+  "Game_Actors",
+  "Game_Party",
+  "Game_Player",
+  "Game_Enemy",
+  "Game_Troop",
+  "Game_Map",
+  "Game_System",
+  "Game_Screen",
+  "Game_Temp",
+  "Game_Switches",
+  "Game_Variables",
+  "Game_SelfSwitches",
+  "Game_Follower",
+  "Game_Followers",
+  "Game_Event",
+  "Game_CommonEvent",
+  "Game_Interpreter",
+  "Game_Action",
+  "Game_Item",
+  "Game_Timer",
+  "Game_Message",
+  "Game_Vehicle"
 ];
 
 // $data*/$game* are closure VARIABLES too (measured on 命运II离线版: nothing
@@ -494,25 +616,51 @@ const BUNDLED_PUBLISH_NAMES = [
 // publish goes stale immediately: publish accessors instead, each getter
 // re-reading the live closure variable via direct eval.
 const BUNDLED_PUBLISH_VARS = [
-  "$dataSystem", "$dataItems", "$dataWeapons", "$dataArmors", "$dataSkills",
-  "$dataStates", "$dataActors", "$dataEnemies", "$dataTroops", "$dataMapInfos",
-  "$dataCommonEvents", "$dataMap", "$dataClasses", "$dataAnimations",
+  "$dataSystem",
+  "$dataItems",
+  "$dataWeapons",
+  "$dataArmors",
+  "$dataSkills",
+  "$dataStates",
+  "$dataActors",
+  "$dataEnemies",
+  "$dataTroops",
+  "$dataMapInfos",
+  "$dataCommonEvents",
+  "$dataMap",
+  "$dataClasses",
+  "$dataAnimations",
   "$dataTilesets",
-  "$gameParty", "$gameSystem", "$gameSwitches", "$gameVariables",
-  "$gameSelfSwitches", "$gameActors", "$gameTroop", "$gameTemp", "$gameMap",
-  "$gamePlayer", "$gameScreen", "$gameMessage"
+  "$gameParty",
+  "$gameSystem",
+  "$gameSwitches",
+  "$gameVariables",
+  "$gameSelfSwitches",
+  "$gameActors",
+  "$gameTroop",
+  "$gameTemp",
+  "$gameMap",
+  "$gamePlayer",
+  "$gameScreen",
+  "$gameMessage"
 ];
 
 function bundledPublishSnippet() {
-  return ";try{var __rmchPub=" + JSON.stringify(BUNDLED_PUBLISH_NAMES) + ";"
-    + "for(var __rmchI=0;__rmchI<__rmchPub.length;__rmchI++){var __rmchN=__rmchPub[__rmchI];"
-    + "try{if(window[__rmchN]==null){var __rmchV=eval(__rmchN);if(__rmchV!=null)window[__rmchN]=__rmchV}}catch(e){}}"
-    + "var __rmchVars=" + JSON.stringify(BUNDLED_PUBLISH_VARS) + ";"
-    + "for(var __rmchJ=0;__rmchJ<__rmchVars.length;__rmchJ++){var __rmchV2=__rmchVars[__rmchJ];"
-    + "try{if(window[__rmchV2]==null){(function(n){"
-    + "try{eval(n);}catch(e){return;}"
-    + "Object.defineProperty(window,n,{configurable:true,enumerable:true,get:function(){try{return eval(n)}catch(e){return null}}});"
-    + "})(__rmchV2)}}catch(e){}}}catch(e){}\n";
+  return (
+    ";try{var __rmchPub=" +
+    JSON.stringify(BUNDLED_PUBLISH_NAMES) +
+    ";" +
+    "for(var __rmchI=0;__rmchI<__rmchPub.length;__rmchI++){var __rmchN=__rmchPub[__rmchI];" +
+    "try{if(window[__rmchN]==null){var __rmchV=eval(__rmchN);if(__rmchV!=null)window[__rmchN]=__rmchV}}catch(e){}}" +
+    "var __rmchVars=" +
+    JSON.stringify(BUNDLED_PUBLISH_VARS) +
+    ";" +
+    "for(var __rmchJ=0;__rmchJ<__rmchVars.length;__rmchJ++){var __rmchV2=__rmchVars[__rmchJ];" +
+    "try{if(window[__rmchV2]==null){(function(n){" +
+    "try{eval(n);}catch(e){return;}" +
+    "Object.defineProperty(window,n,{configurable:true,enumerable:true,get:function(){try{return eval(n)}catch(e){return null}}});" +
+    "})(__rmchV2)}}catch(e){}}}catch(e){}\n"
+  );
 }
 
 // Patch the engine script text: insert the publish snippet INSIDE the
@@ -523,37 +671,71 @@ function bundledPublishSnippet() {
 export function patchBundledEngineScript(source) {
   const snippet = bundledPublishSnippet();
   const wrapperTail = source.lastIndexOf("}.call(this)");
-  if (wrapperTail !== -1 && source.length - (wrapperTail + "}.call(this);".length) < 8) {
+  if (
+    wrapperTail !== -1 &&
+    source.length - (wrapperTail + "}.call(this);".length) < 8
+  ) {
     return source.slice(0, wrapperTail) + snippet + source.slice(wrapperTail);
   }
   const trainerAnchor = source.lastIndexOf("__nbTrainerAPI=");
   if (trainerAnchor !== -1) {
-    return source.slice(0, trainerAnchor) + snippet + source.slice(trainerAnchor);
+    return (
+      source.slice(0, trainerAnchor) + snippet + source.slice(trainerAnchor)
+    );
   }
-  throw new Error("bundled engine script anchor not found (no trailing }.call(this); and no __nbTrainerAPI= marker)");
+  throw new Error(
+    "bundled engine script anchor not found (no trailing }.call(this); and no __nbTrainerAPI= marker)"
+  );
 }
 
 export function setupBundledShadowApp({ projectRoot, scan, gameKey }) {
   const scriptRel = scan.bundled && scan.bundled.scriptRel;
-  if (!scriptRel) throw new Error("bundled engine script not recorded in scan (scan.bundled.scriptRel)");
-  const result = buildShadowApp({ projectRoot, scan, gameKey, scriptRel, patch: patchBundledEngineScript });
-  return { appDir: result.appDir, gameExe: result.gameExe, patchedScript: result.patchedPath };
+  if (!scriptRel)
+    throw new Error(
+      "bundled engine script not recorded in scan (scan.bundled.scriptRel)"
+    );
+  const result = buildShadowApp({
+    projectRoot,
+    scan,
+    gameKey,
+    scriptRel,
+    patch: patchBundledEngineScript
+  });
+  return {
+    appDir: result.appDir,
+    gameExe: result.gameExe,
+    patchedScript: result.patchedPath
+  };
 }
 
-export function launchBundledShadowGame({ projectRoot, scan, gameKey, profileDir, extraEnv }) {
-  const { appDir, gameExe } = setupBundledShadowApp({ projectRoot, scan, gameKey });
-  const child = spawn(gameExe, [
-    `--user-data-dir=${profileDir}`,
-    `--load-extension=${path.join(projectRoot, "runtime", "bridge")}`
-  ], {
-    cwd: appDir,
-    detached: true,
-    stdio: "ignore",
-    env: { ...process.env, ...extraEnv },
-    // No windowsHide (see launcher.mjs): SW_HIDE in STARTUPINFO makes old
-    // NW.js builds create the game window invisible.
-    windowsHide: false
+export function launchBundledShadowGame({
+  projectRoot,
+  scan,
+  gameKey,
+  profileDir,
+  extraEnv
+}) {
+  const { appDir, gameExe } = setupBundledShadowApp({
+    projectRoot,
+    scan,
+    gameKey
   });
+  const child = spawn(
+    gameExe,
+    [
+      `--user-data-dir=${profileDir}`,
+      `--load-extension=${path.join(projectRoot, "runtime", "bridge")}`
+    ],
+    {
+      cwd: appDir,
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, ...extraEnv },
+      // No windowsHide (see launcher.mjs): SW_HIDE in STARTUPINFO makes old
+      // NW.js builds create the game window invisible.
+      windowsHide: false
+    }
+  );
   child.unref();
   return { appDir, gameExe, pid: child.pid };
 }

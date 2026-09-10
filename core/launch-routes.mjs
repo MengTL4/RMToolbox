@@ -157,13 +157,50 @@ export const ROUTES = Object.freeze({
 // in the same log/summary field, so they are registered here too: every strategy
 // string the toolbox can emit has a name and a mechanism.
 export const ATTACH_ROUTES = Object.freeze({
-  "nw-inject": { id: "nw-inject", label: "附加到运行中（DLL）", mechanism: "dll", operation: "attach" },
-  "nw-inject-file": { id: "nw-inject-file", label: "附加到运行中（DLL·文件通道）", mechanism: "dll", operation: "attach" },
-  "nw-launch-inject": { id: "nw-launch-inject", label: "启动并注入（DLL）", mechanism: "dll", operation: "launch" },
-  "nw-launch-inject-file": { id: "nw-launch-inject-file", label: "启动并注入（DLL·文件通道）", mechanism: "dll", operation: "launch" },
-  "rgss-inject": { id: "rgss-inject", label: "RGSS 附加（脚本注入）", mechanism: "script", operation: "attach" },
-  "sealed-relaunch": { id: "sealed-relaunch", label: "接管重启（封闭 MZ）", mechanism: "extension", operation: "takeover", alsoUses: ["cdp"] },
-  "bundled-relaunch": { id: "bundled-relaunch", label: "接管重启（合体引擎）", mechanism: "copy", operation: "takeover", alsoUses: ["script"] }
+  "nw-inject": {
+    id: "nw-inject",
+    label: "附加到运行中（DLL）",
+    mechanism: "dll",
+    operation: "attach"
+  },
+  "nw-inject-file": {
+    id: "nw-inject-file",
+    label: "附加到运行中（DLL·文件通道）",
+    mechanism: "dll",
+    operation: "attach"
+  },
+  "nw-launch-inject": {
+    id: "nw-launch-inject",
+    label: "启动并注入（DLL）",
+    mechanism: "dll",
+    operation: "launch"
+  },
+  "nw-launch-inject-file": {
+    id: "nw-launch-inject-file",
+    label: "启动并注入（DLL·文件通道）",
+    mechanism: "dll",
+    operation: "launch"
+  },
+  "rgss-inject": {
+    id: "rgss-inject",
+    label: "RGSS 附加（脚本注入）",
+    mechanism: "script",
+    operation: "attach"
+  },
+  "sealed-relaunch": {
+    id: "sealed-relaunch",
+    label: "接管重启（封闭 MZ）",
+    mechanism: "extension",
+    operation: "takeover",
+    alsoUses: ["cdp"]
+  },
+  "bundled-relaunch": {
+    id: "bundled-relaunch",
+    label: "接管重启（合体引擎）",
+    mechanism: "copy",
+    operation: "takeover",
+    alsoUses: ["script"]
+  }
 });
 
 const ALL = { ...ROUTES, ...ATTACH_ROUTES };
@@ -205,11 +242,19 @@ export function preflightOf(scan, routeId) {
   const items = route.preflight || [];
   if (items.includes("bg-script")) {
     const bgScript = !!(scan && scan.manifest && scan.manifest.bgScript);
-    if (!bgScript) return { ok: false, reason: "影子路线需要可打补丁的 bg-script，这个游戏没有" };
+    if (!bgScript)
+      return {
+        ok: false,
+        reason: "影子路线需要可打补丁的 bg-script，这个游戏没有"
+      };
   }
   if (items.includes("game-executable")) {
     const hasExe = !!(scan && scan.paths && scan.paths.exe);
-    if (!hasExe) return { ok: false, reason: "没有确定的游戏 EXE，无法用原版 Game.exe 启动" };
+    if (!hasExe)
+      return {
+        ok: false,
+        reason: "没有确定的游戏 EXE，无法用原版 Game.exe 启动"
+      };
   }
   return { ok: true, reason: null };
 }

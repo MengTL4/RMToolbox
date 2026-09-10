@@ -18,7 +18,13 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const srcDir = path.join(root, "runtime", "inject", "src");
-const minhookDir = path.join(root, "runtime", "inject", "third_party", "minhook");
+const minhookDir = path.join(
+  root,
+  "runtime",
+  "inject",
+  "third_party",
+  "minhook"
+);
 const outRoot = path.join(root, "runtime", "inject", "bin");
 
 function which(bin) {
@@ -37,11 +43,19 @@ function findToolchain(kind) {
   const prefix = kind === "x64" ? "x86_64-w64-mingw32" : "i686-w64-mingw32";
   const envKey = kind === "x64" ? "RMCH_MINGW_X64" : "RMCH_MINGW_X86";
   const candidates = [];
-  if (process.env[envKey]) candidates.push(path.join(process.env[envKey], "bin"));
-  for (const dir of (process.env.PATH || "").split(path.delimiter)) candidates.push(dir);
-  for (const msysRoot of [process.env.MSYS2_PREFIX, "C:\\msys64", "E:\\Path\\msys64"]) {
+  if (process.env[envKey])
+    candidates.push(path.join(process.env[envKey], "bin"));
+  for (const dir of (process.env.PATH || "").split(path.delimiter))
+    candidates.push(dir);
+  for (const msysRoot of [
+    process.env.MSYS2_PREFIX,
+    "C:\\msys64",
+    "E:\\Path\\msys64"
+  ]) {
     if (!msysRoot) continue;
-    candidates.push(path.join(msysRoot, kind === "x64" ? "ucrt64" : "mingw32", "bin"));
+    candidates.push(
+      path.join(msysRoot, kind === "x64" ? "ucrt64" : "mingw32", "bin")
+    );
     candidates.push(path.join(msysRoot, "mingw64", "bin"));
   }
   for (const dir of candidates) {
@@ -61,8 +75,13 @@ const ARCHES = {
 };
 
 const CXXFLAGS = [
-  "-Os", "-fno-exceptions", "-fno-rtti", "-Wall", "-Wextra",
-  `-I${srcDir}`, `-I${path.join(minhookDir, "include")}`
+  "-Os",
+  "-fno-exceptions",
+  "-fno-rtti",
+  "-Wall",
+  "-Wextra",
+  `-I${srcDir}`,
+  `-I${path.join(minhookDir, "include")}`
 ];
 // ld.lld: binutils ld 2.46.1 segfaults on these objects (both with and without
 // -fno-weak), so we link with LLVM lld. One ld.lld handles both i386 and x86_64;
@@ -84,13 +103,18 @@ function run(cmd, args) {
   // Prepend the tool's own bin dir to PATH: cc1plus/as/ld need their
   // matching-arch runtime DLLs (libgmp etc.), and another toolchain's bin dir
   // earlier on PATH (e.g. ucrt64 with x64 DLLs) would shadow them.
-  const env = { ...process.env, PATH: path.dirname(cmd) + path.delimiter + process.env.PATH };
+  const env = {
+    ...process.env,
+    PATH: path.dirname(cmd) + path.delimiter + process.env.PATH
+  };
   try {
     execFileSync(cmd, args, { stdio: ["inherit", "inherit", "pipe"], env });
   } catch (e) {
     const stderr = e.stderr ? e.stderr.toString() : "";
     if (stderr.trim()) console.error(stderr);
-    console.error(`[build-inject] command failed (${e.code || e.status || e.signal}): ${cmd}`);
+    console.error(
+      `[build-inject] command failed (${e.code || e.status || e.signal}): ${cmd}`
+    );
     throw e;
   }
 }
@@ -122,28 +146,62 @@ function buildArch(archKey, tc) {
 
   // injector.exe
   compile(tc.gxx, path.join(srcDir, "injector.cpp"), obj("injector"), CXXFLAGS);
-  link(tc.gxx, [obj("injector")], path.join(outDir, "rmch-inject.exe"), ["-luser32"]);
+  link(tc.gxx, [obj("injector")], path.join(outDir, "rmch-inject.exe"), [
+    "-luser32"
+  ]);
 
   // rmch-mvhook.dll (+ MinHook)
   const mhSrc = path.join(minhookDir, "src");
   const mhObjs = [];
-  for (const f of ["buffer.c", "hook.c", "trampoline.c", path.join("hde", hde)]) {
+  for (const f of [
+    "buffer.c",
+    "hook.c",
+    "trampoline.c",
+    path.join("hde", hde)
+  ]) {
     const o = obj("mh-" + path.basename(f, ".c"));
-    compile(tc.gcc, path.join(mhSrc, f), o, ["-Os", `-I${path.join(minhookDir, "include")}`]);
+    compile(tc.gcc, path.join(mhSrc, f), o, [
+      "-Os",
+      `-I${path.join(minhookDir, "include")}`
+    ]);
     mhObjs.push(o);
   }
   compile(tc.gxx, path.join(srcDir, "mvhook.cpp"), obj("mvhook"), cxxFlags);
-  link(tc.gxx, [obj("mvhook"), ...mhObjs], path.join(outDir, "rmch-mvhook.dll"), ["-shared"]);
+  link(
+    tc.gxx,
+    [obj("mvhook"), ...mhObjs],
+    path.join(outDir, "rmch-mvhook.dll"),
+    ["-shared"]
+  );
 
   // rmch-rgsshook.dll
   compile(tc.gxx, path.join(srcDir, "rgsshook.cpp"), obj("rgsshook"), cxxFlags);
-  link(tc.gxx, [obj("rgsshook")], path.join(outDir, "rmch-rgsshook.dll"), ["-shared", "-luser32", ...killAt]);
+  link(tc.gxx, [obj("rgsshook")], path.join(outDir, "rmch-rgsshook.dll"), [
+    "-shared",
+    "-luser32",
+    ...killAt
+  ]);
 
   // test binaries (not shipped in releases)
-  compile(tc.gxx, path.join(srcDir, "test-target.cpp"), obj("test-target"), CXXFLAGS);
-  link(tc.gxx, [obj("test-target")], path.join(testDir, "test-target.exe"), ["-luser32"]);
-  compile(tc.gxx, path.join(srcDir, "test-echo.cpp"), obj("test-echo"), CXXFLAGS);
-  link(tc.gxx, [obj("test-echo")], path.join(testDir, "rmch-test-echo.dll"), ["-shared", ...killAt]);
+  compile(
+    tc.gxx,
+    path.join(srcDir, "test-target.cpp"),
+    obj("test-target"),
+    CXXFLAGS
+  );
+  link(tc.gxx, [obj("test-target")], path.join(testDir, "test-target.exe"), [
+    "-luser32"
+  ]);
+  compile(
+    tc.gxx,
+    path.join(srcDir, "test-echo.cpp"),
+    obj("test-echo"),
+    CXXFLAGS
+  );
+  link(tc.gxx, [obj("test-echo")], path.join(testDir, "rmch-test-echo.dll"), [
+    "-shared",
+    ...killAt
+  ]);
 
   return readdirSync(outDir);
 }
@@ -159,8 +217,12 @@ const onlyArch = process.argv[2]; // optional: "x64" | "win32"
   }
   lldFlags = findLld(dirs);
   if (!lldFlags) {
-    console.error("[build-inject] ld.lld NOT found (binutils ld 2.46.1 segfaults on these objects).");
-    console.error("  Install with: pacman -S --needed mingw-w64-ucrt-x86_64-lld  (in an MSYS2 shell)");
+    console.error(
+      "[build-inject] ld.lld NOT found (binutils ld 2.46.1 segfaults on these objects)."
+    );
+    console.error(
+      "  Install with: pacman -S --needed mingw-w64-ucrt-x86_64-lld  (in an MSYS2 shell)"
+    );
     process.exit(1);
   }
   LINKFLAGS = [...LINKFLAGS, ...lldFlags];
@@ -172,14 +234,18 @@ for (const archKey of Object.keys(ARCHES)) {
   const tc = findToolchain(archKey);
   if (!tc) {
     console.error(`[build-inject] ${archKey}: toolchain NOT found.`);
-    console.error(archKey === "win32"
-      ? "  Install with: pacman -S --needed mingw-w64-i686-gcc   (in an MSYS2 shell)"
-      : "  Install with: pacman -S --needed mingw-w64-ucrt-x86_64-gcc  (in an MSYS2 shell)");
+    console.error(
+      archKey === "win32"
+        ? "  Install with: pacman -S --needed mingw-w64-i686-gcc   (in an MSYS2 shell)"
+        : "  Install with: pacman -S --needed mingw-w64-ucrt-x86_64-gcc  (in an MSYS2 shell)"
+    );
     failed = true;
     continue;
   }
   console.log(`[build-inject] ${archKey}: ${tc.gxx}`);
   buildArch(archKey, tc);
-  console.log(`[build-inject] ${archKey}: done -> ${path.join(outRoot, ARCHES[archKey].dir)}`);
+  console.log(
+    `[build-inject] ${archKey}: done -> ${path.join(outRoot, ARCHES[archKey].dir)}`
+  );
 }
 process.exit(failed ? 1 : 0);

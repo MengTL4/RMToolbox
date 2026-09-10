@@ -16,9 +16,13 @@ if (!gameRoot) {
   process.exit(2);
 }
 
-const projectRoot = process.env.RMCH_PROJECT || path.resolve(import.meta.dirname, "..");
+const projectRoot =
+  process.env.RMCH_PROJECT || path.resolve(import.meta.dirname, "..");
 const resolved = path.resolve(gameRoot);
-const gameKey = path.basename(resolved).replace(/[^a-z0-9_-]+/gi, "_").slice(0, 60);
+const gameKey = path
+  .basename(resolved)
+  .replace(/[^a-z0-9_-]+/gi, "_")
+  .slice(0, 60);
 
 const detect = detectRgss(resolved);
 if (!detect) {
@@ -28,7 +32,9 @@ if (!detect) {
 
 console.log(`game    : ${detect.title}`);
 console.log(`engine  : ${detect.engine} (${detect.library})`);
-console.log(`archive : ${detect.hasArchive ? path.basename(detect.archivePath) : "none (loose Data/)"}`);
+console.log(
+  `archive : ${detect.hasArchive ? path.basename(detect.archivePath) : "none (loose Data/)"}`
+);
 console.log(`scripts : ${detect.scriptsRel}`);
 if (detect.rtp.length) console.log(`rtp     : ${detect.rtp.join(", ")}`);
 
@@ -75,7 +81,9 @@ for (const [type, args] of commands) {
 // The live state push should have arrived at least once by now (the bridge
 // sends one right after hello).
 if (session.state) {
-  console.log(`  state push     ok   gold=${session.state.gold} engine=${session.state.engine?.maker || "?"}`);
+  console.log(
+    `  state push     ok   gold=${session.state.gold} engine=${session.state.engine?.maker || "?"}`
+  );
 } else {
   failures += 1;
   console.log("  state push     FAIL no state frame received");
@@ -105,5 +113,7 @@ function summarise(type, payload) {
 }
 
 handle.stop();
-console.log(failures ? `rgss-probe: FAIL (${failures} commands)` : "rgss-probe: PASS");
+console.log(
+  failures ? `rgss-probe: FAIL (${failures} commands)` : "rgss-probe: PASS"
+);
 process.exit(failures ? 1 : 0);

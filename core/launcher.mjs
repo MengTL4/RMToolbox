@@ -15,11 +15,26 @@ import { scanGame } from "./scanner.mjs";
 import { planLaunch } from "./launch-plan.mjs";
 import { buildBridge } from "./bridge-bundler.mjs";
 import { getToken } from "./token.mjs";
-import { launchShadowGame, launchBundledShadowGame } from "./shadow-launcher.mjs";
-import { launchRgssGame, getRgssSession, listRgssSessions } from "./rgss-launcher.mjs";
+import {
+  launchShadowGame,
+  launchBundledShadowGame
+} from "./shadow-launcher.mjs";
+import {
+  launchRgssGame,
+  getRgssSession,
+  listRgssSessions
+} from "./rgss-launcher.mjs";
 import { ensureEvbUnpackedAsync } from "./evb-unpack.mjs";
-import { launchTauriGame, getTauriSession, listTauriSessions } from "./tauri-cdp.mjs";
-import { pickFreePort, runSeededSeeder, appendSeedLog } from "./sealed-seed.mjs";
+import {
+  launchTauriGame,
+  getTauriSession,
+  listTauriSessions
+} from "./tauri-cdp.mjs";
+import {
+  pickFreePort,
+  runSeededSeeder,
+  appendSeedLog
+} from "./sealed-seed.mjs";
 
 // The GUI host routes commands/sessions through these; re-export so it only
 // ever talks to this module.
@@ -52,7 +67,8 @@ export async function ensureServer({ projectRoot, port, token }) {
     return { running: true, started: false };
   }
   const serveScript = path.join(projectRoot, "tools", "serve.mjs");
-  if (!existsSync(serveScript)) throw new Error(`serve script not found: ${serveScript}`);
+  if (!existsSync(serveScript))
+    throw new Error(`serve script not found: ${serveScript}`);
   const child = spawn(process.execPath, [serveScript, "--port", String(port)], {
     cwd: projectRoot,
     detached: true,
@@ -66,7 +82,14 @@ export async function ensureServer({ projectRoot, port, token }) {
   return { running: up, started: true, pid: child.pid };
 }
 
-export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy = "auto", build = true, onProgress }) {
+export async function launchGame({
+  gameRoot,
+  projectRoot,
+  port = 47412,
+  strategy = "auto",
+  build = true,
+  onProgress
+}) {
   const scan = scanGame(gameRoot);
   if (scan.container === "nb-shell") {
     // Measured (ACCEPTANCE v0.6.3): any extra launch flag (--load-extension,
@@ -74,7 +97,7 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
     // so even the flag-free parts of a toolbox launch are impossible.
     throw new Error(
       "nb-shell protected game (nbtool.node): the shell hash-verifies its boot files, refuses every launch flag and kills injected code — " +
-      "start it with its own exe; the toolbox cannot attach to this shell either"
+        "start it with its own exe; the toolbox cannot attach to this shell either"
     );
   }
   if (scan.container === "nb-evalnwbin") {
@@ -85,7 +108,7 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
     // routing host-side keeps the GUI bundle cycle-free. CLI: use attach.
     throw new Error(
       "nb-evalnwbin shell game: it refuses every launch flag, so the extension launch path would kill it — " +
-      'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
+        'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
     );
   }
   if (scan.container === "enigma-nb") {
@@ -94,29 +117,42 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
     // path is fatal. Plain spawn + DLL attach lives in attach.mjs.
     throw new Error(
       "enigma-nb boxed game: any launch flag makes the Enigma box exit, so the extension launch path would kill it — " +
-      'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
+        'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
     );
   }
-  if (strategy !== "shadow" && scan.protection && scan.protection.flags && scan.protection.flags.includes("grover-boot")) {
+  if (
+    strategy !== "shadow" &&
+    scan.protection &&
+    scan.protection.flags &&
+    scan.protection.flags.includes("grover-boot")
+  ) {
     // The Grover shell's toolbox-shadowed launch freezes the payload after its
     // (shim-assisted) verification, while the plainly launched real game runs
     // fine — its suicide paths fail on their own. Route like enigma-nb:
     // plain spawn + DLL attach lives in attach.mjs.
     throw new Error(
       "grover-boot shell game: the shadow launch freezes after the shell's verification — " +
-      'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
+        'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
     );
   }
   if (scan.engine.id === "RM2K") {
-    throw new Error(`engine "${scan.engine.id}" is not supported by the toolbox launch routes (${planLaunch(scan).error || "no route"})`);
+    throw new Error(
+      `engine "${scan.engine.id}" is not supported by the toolbox launch routes (${planLaunch(scan).error || "no route"})`
+    );
   }
   if (scan.container === "evb") {
     // Enigma Virtual Box: extract the embedded filesystem once (big images
     // take tens of seconds — 宝可梦赤途's 2.9GB exe unpacks in ~30s), then
     // hand the real directory to the standard RGSS path. The gameKey stays
     // derived from the ORIGINAL folder so bridge state survives re-unpacks.
-    const unpacked = await ensureEvbUnpackedAsync(scan.evb.exePath, { onProgress });
-    const handle = await launchRgssGame({ gameRoot: unpacked.dir, projectRoot, gameKey: scan.gameKey });
+    const unpacked = await ensureEvbUnpackedAsync(scan.evb.exePath, {
+      onProgress
+    });
+    const handle = await launchRgssGame({
+      gameRoot: unpacked.dir,
+      projectRoot,
+      gameKey: scan.gameKey
+    });
     return {
       game: scan.title,
       gameKey: scan.gameKey,
@@ -135,7 +171,11 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
   if (/^RGSS/i.test(scan.engine.id)) {
     // RGSS games need no ws server and no extension build: the bridge is a
     // Ruby entry spliced into the shadow copy's Scripts archive.
-    const handle = await launchRgssGame({ gameRoot: scan.root, projectRoot, gameKey: scan.gameKey });
+    const handle = await launchRgssGame({
+      gameRoot: scan.root,
+      projectRoot,
+      gameKey: scan.gameKey
+    });
     return {
       game: scan.title,
       gameKey: scan.gameKey,
@@ -165,7 +205,12 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
   if (!scan.paths.exe) throw new Error("Game.exe not found in game root");
 
   const plan = planLaunch(scan, { strategy });
-  let chosen = strategy === "auto" ? (scan.manifest && scan.manifest.bgScript ? "shadow" : "extension") : strategy;
+  let chosen =
+    strategy === "auto"
+      ? scan.manifest && scan.manifest.bgScript
+        ? "shadow"
+        : "extension"
+      : strategy;
   if (chosen === "shadow" && !(scan.manifest && scan.manifest.bgScript)) {
     throw new Error("shadow strategy requires a bg-script game");
   }
@@ -176,7 +221,8 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
   const token = getToken(projectRoot);
   if (build) buildBridge(projectRoot);
   const extensionDir = path.join(projectRoot, "runtime", "bridge");
-  if (!existsSync(path.join(extensionDir, "manifest.json"))) throw new Error(`bridge extension missing: ${extensionDir}`);
+  if (!existsSync(path.join(extensionDir, "manifest.json")))
+    throw new Error(`bridge extension missing: ${extensionDir}`);
 
   const server = await ensureServer({ projectRoot, port, token });
 
@@ -185,10 +231,25 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
     // Explicit shadow keeps the native startup chain used by older releases.
     // The additional Grover kill-path guards freeze otherwise working games
     // (verified with 再刷一把); default automatic launches still use DLL attach.
-    const shadowScan = strategy === "shadow" && scan.protection
-      ? { ...scan, protection: { ...scan.protection, flags: scan.protection.flags.filter(flag => flag !== "grover-boot") } }
-      : scan;
-    processInfo = launchShadowGame({ projectRoot, scan: shadowScan, gameKey: scan.gameKey, port, token });
+    const shadowScan =
+      strategy === "shadow" && scan.protection
+        ? {
+            ...scan,
+            protection: {
+              ...scan.protection,
+              flags: scan.protection.flags.filter(
+                (flag) => flag !== "grover-boot"
+              )
+            }
+          }
+        : scan;
+    processInfo = launchShadowGame({
+      projectRoot,
+      scan: shadowScan,
+      gameKey: scan.gameKey,
+      port,
+      token
+    });
   } else {
     // Per-game private profile. Most RM games keep the manifest default name
     // ("rmmz-game" — even MV titles), so without this they all share one
@@ -198,30 +259,36 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
     // already does this; extension launches get the same isolation. The dir
     // is persistent (NOT wiped per launch) so plugin data that lands in
     // nw.App.dataPath survives across runs.
-    const profileDir = path.join(projectRoot, "runtime", "profiles", scan.gameKey);
+    const profileDir = path.join(
+      projectRoot,
+      "runtime",
+      "profiles",
+      scan.gameKey
+    );
     mkdirSync(profileDir, { recursive: true });
-    const child = spawn(scan.paths.exe, [
-      `--user-data-dir=${profileDir}`,
-      `--load-extension=${extensionDir}`
-    ], {
-      cwd: scan.root,
-      detached: true,
-      stdio: "ignore",
-      env: {
-        ...process.env,
-        RMCH_GAME_ROOT: scan.root,
-        RMCH_PROJECT_ROOT: projectRoot,
-        RMCH_GAME_KEY: scan.gameKey,
-        RMCH_WS_PORT: String(port),
-        RMCH_WS_TOKEN: token
-      },
-      // Do NOT set windowsHide here: it lands in the child's STARTUPINFO as
-      // SW_HIDE, and old NW.js builds (0.29-era MV games) create their main
-      // window with SW_SHOWDEFAULT, which honors it — the game window is born
-      // invisible while the page runs normally. Game.exe is GUI-subsystem,
-      // so there is no console window to hide anyway.
-      windowsHide: false
-    });
+    const child = spawn(
+      scan.paths.exe,
+      [`--user-data-dir=${profileDir}`, `--load-extension=${extensionDir}`],
+      {
+        cwd: scan.root,
+        detached: true,
+        stdio: "ignore",
+        env: {
+          ...process.env,
+          RMCH_GAME_ROOT: scan.root,
+          RMCH_PROJECT_ROOT: projectRoot,
+          RMCH_GAME_KEY: scan.gameKey,
+          RMCH_WS_PORT: String(port),
+          RMCH_WS_TOKEN: token
+        },
+        // Do NOT set windowsHide here: it lands in the child's STARTUPINFO as
+        // SW_HIDE, and old NW.js builds (0.29-era MV games) create their main
+        // window with SW_SHOWDEFAULT, which honors it — the game window is born
+        // invisible while the page runs normally. Game.exe is GUI-subsystem,
+        // so there is no console window to hide anyway.
+        windowsHide: false
+      }
+    );
     await once(child, "spawn");
     child.unref();
     processInfo = { pid: child.pid, profileDir };
@@ -234,7 +301,10 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
     engine: scan.engine.id,
     protection: scan.protection,
     strategy: chosen,
-    strategyReason: chosen === "shadow" ? "bg-script startup chain: shadow dir + patched bg-script" : (plan.selectedReason || plan.error),
+    strategyReason:
+      chosen === "shadow"
+        ? "bg-script startup chain: shadow dir + patched bg-script"
+        : plan.selectedReason || plan.error,
     pid: processInfo.pid,
     shadowApp: processInfo.appDir || null,
     profileDir: processInfo.profileDir || null,
@@ -263,7 +333,12 @@ export async function launchGame({ gameRoot, projectRoot, port = 47412, strategy
 // execPath when it actually is Node (the CLI path), fall back to "node" from
 // PATH, and if even that fails run the seeder loop in-process so seeding never
 // depends on a standalone Node install.
-export function startSealedSeeder({ projectRoot, gameKey, gameRoot, seedPort }) {
+export function startSealedSeeder({
+  projectRoot,
+  gameKey,
+  gameRoot,
+  seedPort
+}) {
   const env = {
     ...process.env,
     RMCH_SEED_CDP_PORT: String(seedPort),
@@ -272,7 +347,10 @@ export function startSealedSeeder({ projectRoot, gameKey, gameRoot, seedPort }) 
     RMCH_PROJECT_ROOT: projectRoot
   };
   const seederScript = path.join(projectRoot, "tools", "seed-sealed.mjs");
-  const isNodeSelf = path.basename(process.execPath).toLowerCase().startsWith("node");
+  const isNodeSelf = path
+    .basename(process.execPath)
+    .toLowerCase()
+    .startsWith("node");
   const seeder = spawn(isNodeSelf ? process.execPath : "node", [seederScript], {
     detached: true,
     stdio: "ignore",
@@ -282,7 +360,8 @@ export function startSealedSeeder({ projectRoot, gameKey, gameRoot, seedPort }) 
   seeder.on("error", () => {
     // No standalone Node available (GUI install without a dev toolchain):
     // the poll loop is plain fs/net code, so run it in this process instead.
-    const log = (message, extra) => appendSeedLog(projectRoot, gameKey, message, extra);
+    const log = (message, extra) =>
+      appendSeedLog(projectRoot, gameKey, message, extra);
     runSeededSeeder({ cdpPort: seedPort, log }).catch(() => {});
   });
   seeder.unref();
@@ -300,16 +379,24 @@ export function startSealedSeeder({ projectRoot, gameKey, gameRoot, seedPort }) 
 // extension bridge sees a completely normal MV/MZ game. No seeder, no CDP.
 async function launchBundledGame({ scan, projectRoot, port }) {
   if (!scan.paths.exe) {
-    throw new Error(`game exe not found in ${scan.root} (looked for Game.exe, <manifest name>.exe, or a single root exe)`);
+    throw new Error(
+      `game exe not found in ${scan.root} (looked for Game.exe, <manifest name>.exe, or a single root exe)`
+    );
   }
   const token = getToken(projectRoot);
   buildBridge(projectRoot);
   const extensionDir = path.join(projectRoot, "runtime", "bridge");
-  if (!existsSync(path.join(extensionDir, "manifest.json"))) throw new Error(`bridge extension missing: ${extensionDir}`);
+  if (!existsSync(path.join(extensionDir, "manifest.json")))
+    throw new Error(`bridge extension missing: ${extensionDir}`);
 
   const server = await ensureServer({ projectRoot, port, token });
 
-  const profileDir = path.join(projectRoot, "runtime", "profiles", scan.gameKey);
+  const profileDir = path.join(
+    projectRoot,
+    "runtime",
+    "profiles",
+    scan.gameKey
+  );
   mkdirSync(profileDir, { recursive: true });
   const info = launchBundledShadowGame({
     projectRoot,
@@ -344,45 +431,63 @@ async function launchBundledGame({ scan, projectRoot, port }) {
 
 async function launchSealedGame({ scan, projectRoot, port }) {
   if (!scan.paths.exe) {
-    throw new Error(`game exe not found in ${scan.root} (looked for Game.exe, <manifest name>.exe, or a single root exe)`);
+    throw new Error(
+      `game exe not found in ${scan.root} (looked for Game.exe, <manifest name>.exe, or a single root exe)`
+    );
   }
   const token = getToken(projectRoot);
   buildBridge(projectRoot);
   const extensionDir = path.join(projectRoot, "runtime", "bridge");
-  if (!existsSync(path.join(extensionDir, "manifest.json"))) throw new Error(`bridge extension missing: ${extensionDir}`);
+  if (!existsSync(path.join(extensionDir, "manifest.json")))
+    throw new Error(`bridge extension missing: ${extensionDir}`);
 
   const server = await ensureServer({ projectRoot, port, token });
   const seedPort = await pickFreePort();
 
-  const profileDir = path.join(projectRoot, "runtime", "profiles", scan.gameKey);
+  const profileDir = path.join(
+    projectRoot,
+    "runtime",
+    "profiles",
+    scan.gameKey
+  );
   mkdirSync(profileDir, { recursive: true });
-  const child = spawn(scan.paths.exe, [
-    `--user-data-dir=${profileDir}`,
-    `--load-extension=${extensionDir}`,
-    `--remote-debugging-port=${seedPort}`
-  ], {
-    cwd: scan.root,
-    detached: true,
-    stdio: "ignore",
-    env: {
-      ...process.env,
-      RMCH_GAME_ROOT: scan.root,
-      RMCH_PROJECT_ROOT: projectRoot,
-      RMCH_GAME_KEY: scan.gameKey,
-      RMCH_WS_PORT: String(port),
-      RMCH_WS_TOKEN: token,
-      RMCH_SEALED: "1",
-      RMCH_SEED_CDP_PORT: String(seedPort)
-    },
-    // See the extension-path note above: windowsHide lands as SW_HIDE in old
-    // NW.js builds and leaves the game window invisible.
-    windowsHide: false
-  });
+  const child = spawn(
+    scan.paths.exe,
+    [
+      `--user-data-dir=${profileDir}`,
+      `--load-extension=${extensionDir}`,
+      `--remote-debugging-port=${seedPort}`
+    ],
+    {
+      cwd: scan.root,
+      detached: true,
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        RMCH_GAME_ROOT: scan.root,
+        RMCH_PROJECT_ROOT: projectRoot,
+        RMCH_GAME_KEY: scan.gameKey,
+        RMCH_WS_PORT: String(port),
+        RMCH_WS_TOKEN: token,
+        RMCH_SEALED: "1",
+        RMCH_SEED_CDP_PORT: String(seedPort)
+      },
+      // See the extension-path note above: windowsHide lands as SW_HIDE in old
+      // NW.js builds and leaves the game window invisible.
+      windowsHide: false
+    }
+  );
   await once(child, "spawn");
   child.unref();
 
   const family = scan.container === "nwjs-bundled" ? "bundled" : "sealed";
-  startSealedSeeder({ projectRoot, gameKey: scan.gameKey, gameRoot: scan.root, seedPort, family });
+  startSealedSeeder({
+    projectRoot,
+    gameKey: scan.gameKey,
+    gameRoot: scan.root,
+    seedPort,
+    family
+  });
 
   return {
     game: scan.title,

@@ -33,7 +33,17 @@
 // rolling index key advances by field (nameLen, name byte, size) regardless of
 // content, so every other entry is copied through verbatim.
 
-import { openSync, readSync, writeSync, closeSync, fstatSync, copyFileSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  openSync,
+  readSync,
+  writeSync,
+  closeSync,
+  fstatSync,
+  copyFileSync,
+  appendFileSync,
+  readFileSync,
+  writeFileSync
+} from "node:fs";
 
 const MAGIC = Buffer.from("RGSSAD", "latin1");
 const V1_INITIAL_KEY = 0xdeadcafe;
@@ -43,8 +53,8 @@ const M32 = 0xffffffff;
 
 // JS bitwise ops yield signed 32-bit results; RGSS arithmetic is unsigned, so
 // every step is normalised back with >>> 0.
-const nextKey = (k) => ((Math.imul(k, 7) + 3) >>> 0);
-const xor32 = (a, b) => ((a ^ b) >>> 0);
+const nextKey = (k) => (Math.imul(k, 7) + 3) >>> 0;
+const xor32 = (a, b) => (a ^ b) >>> 0;
 
 function u32(buf, offset) {
   return buf.readUInt32LE(offset);
@@ -77,14 +87,15 @@ export function readIndex(archivePath) {
   try {
     const header = Buffer.alloc(8);
     readSync(fd, header, 0, 8, 0);
-    if (!header.subarray(0, 6).equals(MAGIC)) throw new ArchiveError("not an RGSSAD archive");
+    if (!header.subarray(0, 6).equals(MAGIC))
+      throw new ArchiveError("not an RGSSAD archive");
     const version = header[7];
     const entries = new Map();
 
     if (version === 3) {
       const stored = Buffer.alloc(4);
       readSync(fd, stored, 0, 4, 8);
-      const key = ((Math.imul(u32(stored, 0), 9) + 3) >>> 0);
+      const key = (Math.imul(u32(stored, 0), 9) + 3) >>> 0;
       let pos = 12;
       const chunk = Buffer.alloc(16);
       for (;;) {
@@ -163,7 +174,9 @@ export function extractEntry(archivePath, name, fileKey = DEFAULT_FILE_KEY) {
     // field (verified against a real sample). v2 is read-index only — its
     // payload derivation is unverified, refuse rather than return garbage.
     if (index.version !== 1) {
-      throw new ArchiveError(`encrypted v${index.version} archives are not supported yet: ${archivePath}`);
+      throw new ArchiveError(
+        `encrypted v${index.version} archives are not supported yet: ${archivePath}`
+      );
     }
     const fd = openSync(archivePath, "r");
     try {
@@ -215,13 +228,22 @@ function patchEntryV1({ src, dst, entry, data, index }) {
  * game: it rewrites bytes in place. The v1 path reads src whole and writes dst
  * fresh, so the two may not alias either.
  */
-export function patchEntry({ src, dst, entry, data, fileKey = DEFAULT_FILE_KEY }) {
+export function patchEntry({
+  src,
+  dst,
+  entry,
+  data,
+  fileKey = DEFAULT_FILE_KEY
+}) {
   const index = readIndex(src);
-  if (index.version === 1) return patchEntryV1({ src, dst, entry, data, index });
+  if (index.version === 1)
+    return patchEntryV1({ src, dst, entry, data, index });
   if (index.version !== 3) {
     // v2 index entries are inline like v1's, but without a verified payload
     // derivation there is nothing safe to write.
-    throw new ArchiveError(`patching is only supported for v1 and v3 archives: ${src}`);
+    throw new ArchiveError(
+      `patching is only supported for v1 and v3 archives: ${src}`
+    );
   }
   const target = index.entries.get(entry);
   if (!target) throw new ArchiveError(`entry not found: ${entry}`);
@@ -263,5 +285,8 @@ export function patchEntry({ src, dst, entry, data, fileKey = DEFAULT_FILE_KEY }
 
 export function listEntries(archivePath) {
   const index = readIndex(archivePath);
-  return [...index.entries.entries()].map(([name, meta]) => ({ name, ...meta }));
+  return [...index.entries.entries()].map(([name, meta]) => ({
+    name,
+    ...meta
+  }));
 }

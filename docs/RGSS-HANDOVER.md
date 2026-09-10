@@ -14,13 +14,13 @@ Chrome 扩展，bridge 在游戏页面里 monkey-patch `$gameParty` 等全局对
 本次工作为它增加了 **RGSS 系列**（XP / VX / VX Ace）支持，**含 GUI 接入**。
 这两类引擎的注入机制**完全不同**，需要分开理解：
 
-| | MV/MZ | RGSS |
-|---|---|---|
-| 运行时 | NW.js（Chromium） | Ruby（RGSS1/2 = 1.8.1，RGSS3 = 1.9.2） |
-| 注入 | `--load-extension` 挂扩展 | 往脚本归档里插一个 Ruby 条目 |
-| 通信 | WebSocket（ws-server） | append-only 文件对（详见 §5） |
-| 入口 | `core/launcher.mjs` | `core/launcher.mjs` 分发到 `core/rgss-launcher.mjs` |
-| 命令词汇 | `gold.set` / `party.info` / ... | **同一套**（bridge.rb 镜像实现，GUI 零改动） |
+|          | MV/MZ                           | RGSS                                                |
+| -------- | ------------------------------- | --------------------------------------------------- |
+| 运行时   | NW.js（Chromium）               | Ruby（RGSS1/2 = 1.8.1，RGSS3 = 1.9.2）              |
+| 注入     | `--load-extension` 挂扩展       | 往脚本归档里插一个 Ruby 条目                        |
+| 通信     | WebSocket（ws-server）          | append-only 文件对（详见 §5）                       |
+| 入口     | `core/launcher.mjs`             | `core/launcher.mjs` 分发到 `core/rgss-launcher.mjs` |
+| 命令词汇 | `gold.set` / `party.info` / ... | **同一套**（bridge.rb 镜像实现，GUI 零改动）        |
 
 **项目原则**：绝不修改游戏安装目录里的任何文件；所有改动仅限内存或 shadow 副本。
 （存档例外且是有意的：游戏在 shadow 里运行时写的存档，退出时同步回真实目录，见 §4.12。）
@@ -31,26 +31,26 @@ Chrome 扩展，bridge 在游戏页面里 monkey-patch `$gameParty` 等全局对
 
 ### 2.1 文件清单
 
-| 文件 | 职责 |
-|---|---|
-| `core/rgss-marshal.mjs` | 最小 Ruby Marshal 读写。追加条目用**字节拼接**而非重序列化 |
-| `core/rgss-archive.mjs` | RGSSAD v1/v3 归档的索引解析、提取、打补丁（v3 免重建；v1 字节流重写，已实测；v2 抛错） |
-| `core/rgss-savecode.mjs` | tagged JSON 树 → Ruby 源码 codegen（`save.contents.apply` 用，bridge eval 重建对象） |
-| `core/rgss.mjs` | 引擎识别（读 `Game.ini` 的 `Library` 字段）、shadow 构建、注入 |
-| `core/rgss-launcher.mjs` | 文件轮询传输层 + 进程管理 + 会话注册表 + 存档回同步 |
-| `core/scanner.mjs` | RGSS 分支返回 `RGSS1/2/3` + `result.rgss` 元数据 |
-| `core/launcher.mjs` | `launchGame` 按引擎分发；re-export `getRgssSession`/`listRgssSessions` |
-| `app/gui/host.cjs` | `send()` 按 gameKey 路由到 RgssSession；`listSessions()` 合并两类会话 |
-| `runtime/rgss-bridge/bridge.rb` | 注入游戏内的 Ruby bridge，**镜像 MV/MZ 命令词汇**，必须兼容 Ruby 1.8.1 |
-| `tools/rgss-probe.mjs` | 冒烟测试：注入→启动→连桥→读写数据 |
-| `tools/test-rgss-hooks.mjs` | hook 包实测：options/锁/hook/无敌/一击必杀/倍率/战斗命令，全程真实战斗 |
-| `tools/rgss-dump-scripts.mjs` | 从（加密）归档 dump 脚本到目录，用于核实 hook 方法名 |
-| `tools/test-host-rgss.cjs` | host 层集成测试（无 NW）：launch→listSessions→send→state 推送 |
-| `tools/test-rgss-marshal.mjs` | Marshal 字节级测试（含 Ruby 生成的黄金参考） |
-| `tools/test-rgss-archive.mjs` | 归档读写与打补丁测试（v1 防护用合成归档，无样本也能跑） |
-| `tools/test-rgss-contents.mjs` | 存档 JSON 树编辑实测：get→Node 改树→apply→`save.save`/`save.load` Marshal 往返 |
-| `tools/fixtures/rgss-marshal.json` | 52 例字节级黄金参考，由真实 Ruby 生成 |
-| `tools/winwatch.py` | 轮询可见顶层窗口、自动截屏新出现的弹窗（抓游戏错误对话框用，配合 `winshot.py`） |
+| 文件                               | 职责                                                                                   |
+| ---------------------------------- | -------------------------------------------------------------------------------------- |
+| `core/rgss-marshal.mjs`            | 最小 Ruby Marshal 读写。追加条目用**字节拼接**而非重序列化                             |
+| `core/rgss-archive.mjs`            | RGSSAD v1/v3 归档的索引解析、提取、打补丁（v3 免重建；v1 字节流重写，已实测；v2 抛错） |
+| `core/rgss-savecode.mjs`           | tagged JSON 树 → Ruby 源码 codegen（`save.contents.apply` 用，bridge eval 重建对象）   |
+| `core/rgss.mjs`                    | 引擎识别（读 `Game.ini` 的 `Library` 字段）、shadow 构建、注入                         |
+| `core/rgss-launcher.mjs`           | 文件轮询传输层 + 进程管理 + 会话注册表 + 存档回同步                                    |
+| `core/scanner.mjs`                 | RGSS 分支返回 `RGSS1/2/3` + `result.rgss` 元数据                                       |
+| `core/launcher.mjs`                | `launchGame` 按引擎分发；re-export `getRgssSession`/`listRgssSessions`                 |
+| `app/gui/host.cjs`                 | `send()` 按 gameKey 路由到 RgssSession；`listSessions()` 合并两类会话                  |
+| `runtime/rgss-bridge/bridge.rb`    | 注入游戏内的 Ruby bridge，**镜像 MV/MZ 命令词汇**，必须兼容 Ruby 1.8.1                 |
+| `tools/rgss-probe.mjs`             | 冒烟测试：注入→启动→连桥→读写数据                                                      |
+| `tools/test-rgss-hooks.mjs`        | hook 包实测：options/锁/hook/无敌/一击必杀/倍率/战斗命令，全程真实战斗                 |
+| `tools/rgss-dump-scripts.mjs`      | 从（加密）归档 dump 脚本到目录，用于核实 hook 方法名                                   |
+| `tools/test-host-rgss.cjs`         | host 层集成测试（无 NW）：launch→listSessions→send→state 推送                          |
+| `tools/test-rgss-marshal.mjs`      | Marshal 字节级测试（含 Ruby 生成的黄金参考）                                           |
+| `tools/test-rgss-archive.mjs`      | 归档读写与打补丁测试（v1 防护用合成归档，无样本也能跑）                                |
+| `tools/test-rgss-contents.mjs`     | 存档 JSON 树编辑实测：get→Node 改树→apply→`save.save`/`save.load` Marshal 往返         |
+| `tools/fixtures/rgss-marshal.json` | 52 例字节级黄金参考，由真实 Ruby 生成                                                  |
+| `tools/winwatch.py`                | 轮询可见顶层窗口、自动截屏新出现的弹窗（抓游戏错误对话框用，配合 `winshot.py`）        |
 
 `package.json` 已加：`npm run test:rgss`、`npm run rgss:probe`，
 且 `npm test` 已串入两个新测试。**改完 core 后必须重建 GUI bundle**：
@@ -81,19 +81,19 @@ Chrome 扩展，bridge 在游戏页面里 monkey-patch `$gameParty` 等全局对
 
 ### 2.3 验证状态（真实游戏，非模拟）
 
-| 引擎 | Ruby | 打包形态 | 实测结果 |
-|---|---|---|---|
-| RGSS1 XP（Knight Blade） | 1.8.1 | 明文 Data/ | PASS — 40 物品 / 8 角色 / 178 地图 |
-| RGSS2 VX（Legionwood） | 1.8.1 | 明文 Data/ | PASS — 114 物品 / 20 角色 / 101 变量 |
-| RGSS3 VX Ace（Homework Salesman） | 1.9.2 | **加密归档 111MB** | PASS — 500 物品 / 5 角色 / 200 变量+开关 |
-| RGSS3 VX Ace（BLACK SOULS 1.1，ATB 战斗） | 1.9.2 | **加密归档 147MB** | PASS — 412 物品 / 35 角色 / 574 开关 / 147 地图 |
-| RGSS3 VX Ace（BLACK SOULS II，LNX ATB 战斗） | 1.9.2 | **加密归档 700MB** | PASS — 390 物品 / 200 角色 / 1020 变量 / 1100 开关 / 410 地图 |
-| 自制引擎 rgss1（武界风云传 1.63，RGSS103J） | **3.1.2** | **v1 归档 27.6MB（仅 Data/）+ loose 资源** | PASS — catalog/map/save/中文搜索；修复 super 递归钩子（§4.25）、save.load $game_temp（§4.26）、iconName 图标（§4.27）（2026-09-04 实机） |
-| host 集成（VX Ace，无 NW） | — | — | PASS — launch/listSessions/send/state 推送/停止 |
-| hook 包（三引擎逐一实测） | — | — | PASS — 每代 24 项检查全绿，详见 §5.1 |
-| 存档包（三引擎逐一实测） | — | — | PASS — 每代 12 项检查全绿，详见 §5.2 |
-| 存档 JSON 树编辑（三引擎逐一实测） | — | — | PASS — get/apply/Marshal 往返，详见 §5.2a |
-| 物品图标（RGSS3 加密 + RGSS2 明文，GUI 实机截图） | — | — | PASS — 数据页图标列正确渲染，详见 §5.5 |
+| 引擎                                              | Ruby      | 打包形态                                   | 实测结果                                                                                                                                 |
+| ------------------------------------------------- | --------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| RGSS1 XP（Knight Blade）                          | 1.8.1     | 明文 Data/                                 | PASS — 40 物品 / 8 角色 / 178 地图                                                                                                       |
+| RGSS2 VX（Legionwood）                            | 1.8.1     | 明文 Data/                                 | PASS — 114 物品 / 20 角色 / 101 变量                                                                                                     |
+| RGSS3 VX Ace（Homework Salesman）                 | 1.9.2     | **加密归档 111MB**                         | PASS — 500 物品 / 5 角色 / 200 变量+开关                                                                                                 |
+| RGSS3 VX Ace（BLACK SOULS 1.1，ATB 战斗）         | 1.9.2     | **加密归档 147MB**                         | PASS — 412 物品 / 35 角色 / 574 开关 / 147 地图                                                                                          |
+| RGSS3 VX Ace（BLACK SOULS II，LNX ATB 战斗）      | 1.9.2     | **加密归档 700MB**                         | PASS — 390 物品 / 200 角色 / 1020 变量 / 1100 开关 / 410 地图                                                                            |
+| 自制引擎 rgss1（武界风云传 1.63，RGSS103J）       | **3.1.2** | **v1 归档 27.6MB（仅 Data/）+ loose 资源** | PASS — catalog/map/save/中文搜索；修复 super 递归钩子（§4.25）、save.load $game_temp（§4.26）、iconName 图标（§4.27）（2026-09-04 实机） |
+| host 集成（VX Ace，无 NW）                        | —         | —                                          | PASS — launch/listSessions/send/state 推送/停止                                                                                          |
+| hook 包（三引擎逐一实测）                         | —         | —                                          | PASS — 每代 24 项检查全绿，详见 §5.1                                                                                                     |
+| 存档包（三引擎逐一实测）                          | —         | —                                          | PASS — 每代 12 项检查全绿，详见 §5.2                                                                                                     |
+| 存档 JSON 树编辑（三引擎逐一实测）                | —         | —                                          | PASS — get/apply/Marshal 往返，详见 §5.2a                                                                                                |
+| 物品图标（RGSS3 加密 + RGSS2 明文，GUI 实机截图） | —         | —                                          | PASS — 数据页图标列正确渲染，详见 §5.5                                                                                                   |
 
 复现方式：
 
@@ -464,13 +464,13 @@ XP 系条目（item/weapon/armor/skill）只有 `icon_name`，图标是
 
 实测（`tools/test-rgss-hooks.mjs`，每代 24 项检查，真实开新档 + 真实战斗）：
 
-| 样本 | 引擎 | 结果 |
-|---|---|---|
-| Homework Salesman（自定义战斗系统+自定义 SceneManager+TRGSSX 运行时） | RGSS3 | PASS |
-| Legionwood（SBS 侧视战斗+KGC 扩展） | RGSS2 | PASS（含 exp 5→10 实证） |
-| KNight-Blade（开场自动演出+RTP 依赖） | RGSS1 | PASS（exp 检查为 inert：该游戏全部敌人 exp=0，无经验体系） |
-| BLACK SOULS（LNX ATB 战斗系统+魔改底层脚本+steam_api 成就） | RGSS3 | PASS（2026-08-29，随垫片门控修正，见 §4.16） |
-| BLACK SOULS II（LNX ATB，加密归档 700MB） | RGSS3 | PASS（2026-08-29，门控 2 补 `current_symbol` 分支，见 §4.16；lockHp 钳制见 §4.24） |
+| 样本                                                                  | 引擎  | 结果                                                                               |
+| --------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------- |
+| Homework Salesman（自定义战斗系统+自定义 SceneManager+TRGSSX 运行时） | RGSS3 | PASS                                                                               |
+| Legionwood（SBS 侧视战斗+KGC 扩展）                                   | RGSS2 | PASS（含 exp 5→10 实证）                                                           |
+| KNight-Blade（开场自动演出+RTP 依赖）                                 | RGSS1 | PASS（exp 检查为 inert：该游戏全部敌人 exp=0，无经验体系）                         |
+| BLACK SOULS（LNX ATB 战斗系统+魔改底层脚本+steam_api 成就）           | RGSS3 | PASS（2026-08-29，随垫片门控修正，见 §4.16）                                       |
+| BLACK SOULS II（LNX ATB，加密归档 700MB）                             | RGSS3 | PASS（2026-08-29，门控 2 补 `current_symbol` 分支，见 §4.16；lockHp 钳制见 §4.24） |
 
 相关坑见 §4.16–§4.20。**剩余差距**：存档 JSON 树编辑已随 §5.2a 完成。
 
@@ -624,12 +624,12 @@ XP/VX 不受影响。
 
 ### 测试样本：`E:\rmch-samples\`（项目外，不入库）
 
-| 目录 | 引擎 | 说明 |
-|---|---|---|
-| `knight-blade/KN_E/` | RGSS1 XP | 明文 Data/，**需 XP RTP**；已补 `Audio/BGM/012-Theme01.mid` 静音占位；XP RTP 已装到注册表指向的 `E:\rgss-test\rtp\xp`（用 `E:\rmch-samples\xp_rtp.exe //VERYSILENT //DIR=...` 可重装） |
-| `leg-x/Legionwood.../` | RGSS2 VX | 明文 Data/，无 RTP 依赖；从自解压 exe 用 7-Zip 按 Cab 提取 |
-| `crysalis-x/` | RGSS3 VX Ace | 明文 Data/，需 VX Ace RTP；同样是 InstallShield 自解压 |
-| `hs/` | RGSS3 VX Ace | **`Game.rgss3a` 加密归档 111MB**，无 RTP 依赖 —— 主要测试目标 |
+| 目录                   | 引擎         | 说明                                                                                                                                                                                   |
+| ---------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `knight-blade/KN_E/`   | RGSS1 XP     | 明文 Data/，**需 XP RTP**；已补 `Audio/BGM/012-Theme01.mid` 静音占位；XP RTP 已装到注册表指向的 `E:\rgss-test\rtp\xp`（用 `E:\rmch-samples\xp_rtp.exe //VERYSILENT //DIR=...` 可重装） |
+| `leg-x/Legionwood.../` | RGSS2 VX     | 明文 Data/，无 RTP 依赖；从自解压 exe 用 7-Zip 按 Cab 提取                                                                                                                             |
+| `crysalis-x/`          | RGSS3 VX Ace | 明文 Data/，需 VX Ace RTP；同样是 InstallShield 自解压                                                                                                                                 |
+| `hs/`                  | RGSS3 VX Ace | **`Game.rgss3a` 加密归档 111MB**，无 RTP 依赖 —— 主要测试目标                                                                                                                          |
 
 均为 rpgmakerweb.com 官方免费发布的完整游戏（Free Game Bundles）。
 
@@ -651,4 +651,3 @@ BLACK SOULS 1.1，RGSS3 加密归档 147MB，LNX ATB 战斗系统 + 魔改底层
 - Windows + Node 22（项目要求 ≥18）
 - **运行时不依赖 Ruby**。Ruby 4.0.2（本机有）仅用于生成 fixture 和离线分析
 - 7-Zip 在 `C:\Program Files\7-Zip\7z.exe`（解自解压包用）
-

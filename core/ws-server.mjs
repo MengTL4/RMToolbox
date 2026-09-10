@@ -35,8 +35,8 @@ const COMMAND_TIMEOUT_MS = 20000;
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 // state.json is rewritten by the bridge every second; younger than this = alive.
 const FILE_FRESH_MS = 4000;
-const FILE_SCAN_MS = 1500;   // adoption scan period
-const FILE_POLL_MS = 250;    // events.jsonl / state.json poll per file session
+const FILE_SCAN_MS = 1500; // adoption scan period
+const FILE_POLL_MS = 250; // events.jsonl / state.json poll per file session
 // App-level ping a WS newcomer must answer before it may replace a live file
 // session (zombie filter — see proveWebSocketSession).
 const PROBE_TIMEOUT_MS = 8000;
@@ -44,7 +44,9 @@ const PROBE_TIMEOUT_MS = 8000;
 export class BridgeServerError extends Error {}
 
 function acceptKey(key) {
-  return createHash("sha1").update(key + WS_GUID).digest("base64");
+  return createHash("sha1")
+    .update(key + WS_GUID)
+    .digest("base64");
 }
 
 class WebSocketConnection {
@@ -67,12 +69,16 @@ class WebSocketConnection {
   close() {
     if (this.closed) return;
     this.closed = true;
-    try { this.socket.destroy(); } catch (_) {}
+    try {
+      this.socket.destroy();
+    } catch (_) {}
     if (this.onclose) this.onclose();
   }
 
   feed(chunk) {
-    this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
+    this.buffer = this.buffer.length
+      ? Buffer.concat([this.buffer, chunk])
+      : chunk;
     while (true) {
       const frame = this.tryReadFrame();
       if (!frame) break;
@@ -125,7 +131,8 @@ class WebSocketConnection {
 
   handleFrame(frame) {
     switch (frame.opcode) {
-      case 0x0: { // continuation
+      case 0x0: {
+        // continuation
         if (!this.fragments.length) return true;
         this.fragments.push(frame.payload);
         if (frame.fin) {
@@ -133,12 +140,14 @@ class WebSocketConnection {
           const payload = Buffer.concat(this.fragments);
           this.fragments = [];
           this.fragOpcode = 0;
-          if (opcode === 0x1 && this.onmessage) this.onmessage(payload.toString("utf8"));
+          if (opcode === 0x1 && this.onmessage)
+            this.onmessage(payload.toString("utf8"));
         }
         return true;
       }
       case 0x1: // text
-      case 0x2: { // binary
+      case 0x2: {
+        // binary
         if (!frame.fin) {
           this.fragments = [frame.payload];
           this.fragOpcode = frame.opcode;
@@ -147,18 +156,22 @@ class WebSocketConnection {
         if (this.onmessage) this.onmessage(frame.payload.toString("utf8"));
         return true;
       }
-      case 0x8: { // close
+      case 0x8: {
+        // close
         try {
           this.socket.write(encodeFrame(0x8, Buffer.alloc(0)));
         } catch (_) {}
         this.close();
         return false;
       }
-      case 0x9: { // ping
-        try { this.socket.write(encodeFrame(0xA, frame.payload)); } catch (_) {}
+      case 0x9: {
+        // ping
+        try {
+          this.socket.write(encodeFrame(0xa, frame.payload));
+        } catch (_) {}
         return true;
       }
-      case 0xA: // pong
+      case 0xa: // pong
         return true;
       default:
         return true;
@@ -203,7 +216,12 @@ function encodeFrame(opcode, payload) {
 }
 
 export class BridgeServer extends EventEmitter {
-  constructor({ port = 47412, token, host = "127.0.0.1", stateDir = null } = {}) {
+  constructor({
+    port = 47412,
+    token,
+    host = "127.0.0.1",
+    stateDir = null
+  } = {}) {
     super();
     this.port = port;
     this.host = host;
@@ -233,7 +251,10 @@ export class BridgeServer extends EventEmitter {
     this.pingTimer = setInterval(() => this.pingAll(), PING_INTERVAL_MS);
     this.pingTimer.unref?.();
     if (this.stateDir) {
-      this.fileScanTimer = setInterval(() => this.scanFileSessions(), FILE_SCAN_MS);
+      this.fileScanTimer = setInterval(
+        () => this.scanFileSessions(),
+        FILE_SCAN_MS
+      );
       this.fileScanTimer.unref?.();
       this.scanFileSessions();
     }
@@ -244,7 +265,8 @@ export class BridgeServer extends EventEmitter {
     this.stopped = true;
     clearInterval(this.pingTimer);
     clearInterval(this.fileScanTimer);
-    for (const session of this.sessions.values()) session.drop("server stopped");
+    for (const session of this.sessions.values())
+      session.drop("server stopped");
     this.sessions.clear();
     if (this.clients) {
       for (const client of this.clients) client.close();
@@ -260,7 +282,11 @@ export class BridgeServer extends EventEmitter {
   handleUpgrade(req, socket) {
     const url = new URL(req.url, "http://localhost");
     const isClient = url.pathname === "/client";
-    if (!isClient && url.pathname !== "/bridge" && !url.pathname.startsWith("/bridge/")) {
+    if (
+      !isClient &&
+      url.pathname !== "/bridge" &&
+      !url.pathname.startsWith("/bridge/")
+    ) {
       socket.destroy();
       return;
     }
@@ -270,11 +296,15 @@ export class BridgeServer extends EventEmitter {
       return;
     }
     const key = req.headers["sec-websocket-key"];
-    if (!key || String(req.headers.upgrade || "").toLowerCase() !== "websocket") {
+    if (
+      !key ||
+      String(req.headers.upgrade || "").toLowerCase() !== "websocket"
+    ) {
       socket.destroy();
       return;
     }
-    const gameKey = decodeURIComponent(url.pathname.slice("/bridge/".length)) || "unknown";
+    const gameKey =
+      decodeURIComponent(url.pathname.slice("/bridge/".length)) || "unknown";
     const handshake = [
       "HTTP/1.1 101 Switching Protocols",
       "Upgrade: websocket",
@@ -424,11 +454,24 @@ export class BridgeServer extends EventEmitter {
       case "send": {
         const { gameKey, type, args } = message;
         this.sendCommand(gameKey, type, args || {})
-          .then((payload) => connection.sendJson({ t: "result", id: message.id, ok: true, gameKey, payload }))
-          .catch((error) => connection.sendJson({
-            t: "result", id: message.id, ok: false, gameKey,
-            error: String(error && error.message || error)
-          }));
+          .then((payload) =>
+            connection.sendJson({
+              t: "result",
+              id: message.id,
+              ok: true,
+              gameKey,
+              payload
+            })
+          )
+          .catch((error) =>
+            connection.sendJson({
+              t: "result",
+              id: message.id,
+              ok: false,
+              gameKey,
+              error: String((error && error.message) || error)
+            })
+          );
         break;
       }
       default:
@@ -446,7 +489,8 @@ export class BridgeServer extends EventEmitter {
 
   addClientListener(event, connection) {
     if (!this.clientListeners) this.clientListeners = new Map();
-    if (!this.clientListeners.has(event)) this.clientListeners.set(event, new Set());
+    if (!this.clientListeners.has(event))
+      this.clientListeners.set(event, new Set());
     this.clientListeners.get(event).add(connection);
   }
 
@@ -460,13 +504,22 @@ export class BridgeServer extends EventEmitter {
   }
 
   listSessions() {
-    return Array.from(this.sessions.values()).map((session) => session.describe());
+    return Array.from(this.sessions.values()).map((session) =>
+      session.describe()
+    );
   }
 
-  sendCommand(gameKey, type, args = {}, { timeoutMs = COMMAND_TIMEOUT_MS } = {}) {
+  sendCommand(
+    gameKey,
+    type,
+    args = {},
+    { timeoutMs = COMMAND_TIMEOUT_MS } = {}
+  ) {
     const session = this.sessions.get(gameKey);
     if (!session) {
-      return Promise.reject(new BridgeServerError(`no running bridge for "${gameKey}"`));
+      return Promise.reject(
+        new BridgeServerError(`no running bridge for "${gameKey}"`)
+      );
     }
     return session.sendCommand(type, args, timeoutMs);
   }
@@ -477,7 +530,12 @@ class Session {
     this.gameKey = gameKey;
     this.connection = connection;
     this.server = server;
-    this.info = { gameKey, bridgeVersion: null, engine: null, connectedAt: Date.now() };
+    this.info = {
+      gameKey,
+      bridgeVersion: null,
+      engine: null,
+      connectedAt: Date.now()
+    };
     this.state = null;
     this.pending = new Map();
     this.lastPongAt = Date.now();
@@ -485,7 +543,11 @@ class Session {
   }
 
   describe() {
-    return { ...this.info, alive: !!this.connection && !this.connection.closed, state: this.state };
+    return {
+      ...this.info,
+      alive: !!this.connection && !this.connection.closed,
+      state: this.state
+    };
   }
 
   sendJson(value) {
@@ -509,7 +571,9 @@ class Session {
 
   drop(reason) {
     for (const entry of this.pending.values()) {
-      entry.reject(new BridgeServerError(`bridge connection dropped: ${reason}`));
+      entry.reject(
+        new BridgeServerError(`bridge connection dropped: ${reason}`)
+      );
     }
     this.pending.clear();
     this.connection.close();
@@ -535,7 +599,11 @@ class Session {
       case "state":
         this.state = message.state || null;
         this.server.emit("state", this.gameKey, this.state);
-        this.server.broadcastToClients({ t: "state", gameKey: this.gameKey, state: this.state });
+        this.server.broadcastToClients({
+          t: "state",
+          gameKey: this.gameKey,
+          state: this.state
+        });
         break;
       case "result": {
         const entry = this.pending.get(message.id);
@@ -543,7 +611,10 @@ class Session {
         this.pending.delete(message.id);
         clearTimeout(entry.timer);
         if (message.ok) entry.resolve(message.payload);
-        else entry.reject(new BridgeServerError(message.error || "command failed"));
+        else
+          entry.reject(
+            new BridgeServerError(message.error || "command failed")
+          );
         break;
       }
       default:
@@ -556,7 +627,11 @@ class Session {
       const id = `c${this.server.nextCommandId++}`;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new BridgeServerError(`command "${type}" timed out after ${timeoutMs}ms`));
+        reject(
+          new BridgeServerError(
+            `command "${type}" timed out after ${timeoutMs}ms`
+          )
+        );
         // Half-dead session: pong keeps flowing but commands never come back
         // (seen on a protected game's frozen renderer holding a zombie WS
         // while the live bridge talked over the file channel). Drop it so
@@ -598,7 +673,13 @@ class FileSession {
     this.statePath = path.join(dir, "state.json");
     this.commandPath = path.join(dir, "commands.jsonl");
     this.eventPath = path.join(dir, "events.jsonl");
-    this.info = { gameKey, bridgeVersion: null, engine: null, connectedAt: Date.now(), transport: "file" };
+    this.info = {
+      gameKey,
+      bridgeVersion: null,
+      engine: null,
+      connectedAt: Date.now(),
+      transport: "file"
+    };
     this.state = null;
     this.pending = new Map();
     this.lastStateText = "";
@@ -613,7 +694,10 @@ class FileSession {
 
   static isFresh(dir) {
     try {
-      return Date.now() - statSync(path.join(dir, "state.json")).mtimeMs < FILE_FRESH_MS;
+      return (
+        Date.now() - statSync(path.join(dir, "state.json")).mtimeMs <
+        FILE_FRESH_MS
+      );
     } catch (_) {
       return false;
     }
@@ -649,7 +733,11 @@ class FileSession {
       this.server.emit("bridge-info", this.gameKey, this.info);
     }
     this.server.emit("state", this.gameKey, state);
-    this.server.broadcastToClients({ t: "state", gameKey: this.gameKey, state });
+    this.server.broadcastToClients({
+      t: "state",
+      gameKey: this.gameKey,
+      state
+    });
   }
 
   readEvents() {
@@ -685,21 +773,33 @@ class FileSession {
   sendCommand(type, args, timeoutMs) {
     return new Promise((resolve, reject) => {
       if (!this.fresh()) {
-        reject(new BridgeServerError(`file bridge for "${this.gameKey}" is gone`));
+        reject(
+          new BridgeServerError(`file bridge for "${this.gameKey}" is gone`)
+        );
         return;
       }
       // A running game's processed-id set survives a toolbox restart.
       const id = `f${this.server.commandNamespace}-${this.server.nextCommandId++}`;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new BridgeServerError(`command "${type}" timed out after ${timeoutMs}ms`));
+        reject(
+          new BridgeServerError(
+            `command "${type}" timed out after ${timeoutMs}ms`
+          )
+        );
       }, timeoutMs);
       timer.unref?.();
       try {
-        appendFileSync(this.commandPath, JSON.stringify({ commandId: id, ts: Date.now(), type, args }) + "\n", "utf8");
+        appendFileSync(
+          this.commandPath,
+          JSON.stringify({ commandId: id, ts: Date.now(), type, args }) + "\n",
+          "utf8"
+        );
       } catch (error) {
         clearTimeout(timer);
-        reject(new BridgeServerError(`file queue write failed: ${error.message}`));
+        reject(
+          new BridgeServerError(`file queue write failed: ${error.message}`)
+        );
         return;
       }
       this.pending.set(id, { resolve, reject, timer });

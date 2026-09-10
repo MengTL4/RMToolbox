@@ -8,9 +8,16 @@ const gameRoot = process.argv[2];
 const exprs = process.argv.slice(3);
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const resolved = path.resolve(gameRoot);
-const gameKey = path.basename(resolved).replace(/[^a-z0-9_-]+/gi, "_").slice(0, 60);
+const gameKey = path
+  .basename(resolved)
+  .replace(/[^a-z0-9_-]+/gi, "_")
+  .slice(0, 60);
 
-const handle = await launchRgssGame({ gameRoot: resolved, projectRoot, gameKey });
+const handle = await launchRgssGame({
+  gameRoot: resolved,
+  projectRoot,
+  gameKey
+});
 const { session } = handle;
 console.log(`bridge: connected (${session.hello?.engine || "?"})`);
 

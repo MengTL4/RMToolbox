@@ -44,7 +44,8 @@ export class MarshalError extends Error {}
 // in little-endian order.
 export function encodeInt(value) {
   const n = Math.trunc(value);
-  if (!Number.isSafeInteger(n)) throw new MarshalError(`int out of safe range: ${value}`);
+  if (!Number.isSafeInteger(n))
+    throw new MarshalError(`int out of safe range: ${value}`);
   if (n === 0) return Buffer.from([0]);
   if (n > 0 && n < 123) return Buffer.from([n + 5]);
   if (n < 0 && n >= -123) return Buffer.from([n + 251]);
@@ -77,8 +78,10 @@ export function decodeInt(buf, pos) {
 
   // Byte count: 252..255 mean -4..-1, 1..4 mean 1..4.
   const count = c >= 252 ? 256 - c : c;
-  if (count < 1 || count > 8) throw new MarshalError(`int: bad length byte ${c}`);
-  if (pos + 1 + count > buf.length) throw new MarshalError("int: truncated payload");
+  if (count < 1 || count > 8)
+    throw new MarshalError(`int: bad length byte ${c}`);
+  if (pos + 1 + count > buf.length)
+    throw new MarshalError("int: truncated payload");
 
   let value = 0;
   for (let i = 0; i < count; i += 1) {
@@ -163,7 +166,9 @@ function skipValue(buf, pos, ruby19) {
       return 1 + int.size;
     }
     default:
-      throw new MarshalError(`skip: unsupported type 0x${type.toString(16)} at ${pos}`);
+      throw new MarshalError(
+        `skip: unsupported type 0x${type.toString(16)} at ${pos}`
+      );
   }
 }
 
@@ -183,9 +188,15 @@ function readString(buf, pos) {
   if (buf[pos] === TYPE_STRING) {
     const int = decodeInt(buf, pos + 1);
     const start = pos + 1 + int.size;
-    return { value: buf.subarray(start, start + int.value), size: 1 + int.size + int.value, ivar: false };
+    return {
+      value: buf.subarray(start, start + int.value),
+      size: 1 + int.size + int.value,
+      ivar: false
+    };
   }
-  throw new MarshalError(`expected a string at ${pos}, got 0x${buf[pos].toString(16)}`);
+  throw new MarshalError(
+    `expected a string at ${pos}, got 0x${buf[pos].toString(16)}`
+  );
 }
 
 // --- script archive --------------------------------------------------------
@@ -195,7 +206,8 @@ function assertHeader(buf) {
   if (buf[0] !== MARSHAL_MAJOR || buf[1] !== MARSHAL_MINOR) {
     throw new MarshalError(`unsupported marshal version ${buf[0]}.${buf[1]}`);
   }
-  if (buf[2] !== TYPE_ARRAY) throw new MarshalError("script archive root is not an array");
+  if (buf[2] !== TYPE_ARRAY)
+    throw new MarshalError("script archive root is not an array");
   return decodeInt(buf, 3);
 }
 
@@ -275,7 +287,11 @@ export function encodeScriptEntry(id, name, zlibPayload, options = {}) {
           payload,
           UTF8_IVAR_TAIL
         ])
-      : Buffer.concat([Buffer.from([TYPE_STRING]), encodeInt(payload.length), payload]);
+      : Buffer.concat([
+          Buffer.from([TYPE_STRING]),
+          encodeInt(payload.length),
+          payload
+        ]);
 
   return Buffer.concat([
     Buffer.from([TYPE_ARRAY, ...encodeInt(3)]),
@@ -290,14 +306,24 @@ export function encodeScriptEntry(id, name, zlibPayload, options = {}) {
  * Splice a new entry into an archive before `insertIndex`.
  * Everything else keeps its original bytes; only the array length grows.
  */
-export function insertScriptEntry(buf, insertIndex, id, name, zlibPayload, options = {}) {
+export function insertScriptEntry(
+  buf,
+  insertIndex,
+  id,
+  name,
+  zlibPayload,
+  options = {}
+) {
   const parsed = parseScripts(buf, options);
   if (insertIndex < 0 || insertIndex > parsed.count) {
-    throw new MarshalError(`insert index ${insertIndex} out of range (0..${parsed.count})`);
+    throw new MarshalError(
+      `insert index ${insertIndex} out of range (0..${parsed.count})`
+    );
   }
-  const at = insertIndex === parsed.count
-    ? buf.length
-    : parsed.entries[insertIndex].entryStart;
+  const at =
+    insertIndex === parsed.count
+      ? buf.length
+      : parsed.entries[insertIndex].entryStart;
 
   const entry = encodeScriptEntry(id, name, zlibPayload, {
     nameIvar: options.nameIvar ?? options.ruby19 ?? parsed.nameIvar,

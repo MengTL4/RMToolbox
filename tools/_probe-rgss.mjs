@@ -6,7 +6,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { injectAndDeliver } from "../core/attach.mjs";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const projectRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  ".."
+);
 const [, , pidArg, rubyFile] = process.argv;
 if (!pidArg || !rubyFile) {
   console.error("usage: node tools/_probe-rgss.mjs <pid> <rubyFile>");

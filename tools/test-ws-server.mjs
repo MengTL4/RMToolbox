@@ -12,7 +12,8 @@ function connect(port, gameKey, token) {
     const pending = [];
     socket.onmessage = (event) => {
       const message = JSON.parse(event.data);
-      if (message.t === "hello" && message.ok) resolve({ socket, messages: pending, message });
+      if (message.t === "hello" && message.ok)
+        resolve({ socket, messages: pending, message });
       else pending.push(message);
     };
     socket.onerror = () => reject(new Error("connection failed"));
@@ -26,7 +27,11 @@ function waitMessage(client, predicate, timeoutMs = 5000) {
     const cleanup = () => client.socket.removeEventListener("message", handler);
     const timer = setTimeout(() => {
       cleanup();
-      reject(new Error(`message wait timeout; pending=${JSON.stringify(client.messages.map((m) => m.t))}`));
+      reject(
+        new Error(
+          `message wait timeout; pending=${JSON.stringify(client.messages.map((m) => m.t))}`
+        )
+      );
     }, timeoutMs);
     const check = () => {
       const index = client.messages.findIndex(predicate);
@@ -58,28 +63,50 @@ async function main() {
   assert.equal(server.listSessions().length, 1);
 
   // 3. bridge hello info
-  client.socket.send(JSON.stringify({ t: "hello", bridgeVersion: "0.3.0", engine: "MV" }));
+  client.socket.send(
+    JSON.stringify({ t: "hello", bridgeVersion: "0.3.0", engine: "MV" })
+  );
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(server.session("game-a").info.bridgeVersion, "0.3.0");
   assert.equal(server.session("game-a").info.engine, "MV");
 
   // 4. state broadcast
-  const stateEvent = new Promise((resolve) => server.once("state", (gameKey, state) => resolve(state)));
+  const stateEvent = new Promise((resolve) =>
+    server.once("state", (gameKey, state) => resolve(state))
+  );
   client.socket.send(JSON.stringify({ t: "state", state: { gold: 123 } }));
   assert.deepEqual(await stateEvent, { gold: 123 });
 
   // 5. command round-trip: server sends cmd, bridge replies result
-  const replyPromise = server.sendCommand("game-a", "gold.add", { amount: 500 });
+  const replyPromise = server.sendCommand("game-a", "gold.add", {
+    amount: 500
+  });
   const cmd = await waitMessage(client, (m) => m.t === "cmd");
   assert.equal(cmd.type, "gold.add");
   assert.deepEqual(cmd.args, { amount: 500 });
-  client.socket.send(JSON.stringify({ t: "result", id: cmd.id, ok: true, payload: { gold: 623 } }));
+  client.socket.send(
+    JSON.stringify({
+      t: "result",
+      id: cmd.id,
+      ok: true,
+      payload: { gold: 623 }
+    })
+  );
   assert.deepEqual(await replyPromise, { gold: 623 });
 
   // 6. command failure propagates the error message
-  const failPromise = server.sendCommand("game-a", "bad.command", {}).catch((error) => error);
+  const failPromise = server
+    .sendCommand("game-a", "bad.command", {})
+    .catch((error) => error);
   const failCmd = await waitMessage(client, (m) => m.t === "cmd");
-  client.socket.send(JSON.stringify({ t: "result", id: failCmd.id, ok: false, error: "unknown command type" }));
+  client.socket.send(
+    JSON.stringify({
+      t: "result",
+      id: failCmd.id,
+      ok: false,
+      error: "unknown command type"
+    })
+  );
   assert.match(String(await failPromise), /unknown command type/);
 
   // 7. pong keeps the session alive
@@ -104,6 +131,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error && error.stack || error);
+  console.error((error && error.stack) || error);
   process.exit(1);
 });

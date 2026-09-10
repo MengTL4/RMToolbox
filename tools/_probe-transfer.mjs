@@ -4,7 +4,10 @@ import { launchRgssGame } from "../core/rgss-launcher.mjs";
 
 const gameRoot = path.resolve(process.argv[2]);
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const gameKey = path.basename(gameRoot).replace(/[^a-z0-9_-]+/gi, "_").slice(0, 60);
+const gameKey = path
+  .basename(gameRoot)
+  .replace(/[^a-z0-9_-]+/gi, "_")
+  .slice(0, 60);
 const handle = await launchRgssGame({ gameRoot, projectRoot, gameKey });
 const { session } = handle;
 console.log("connected");
@@ -14,7 +17,9 @@ async function cmd(type, args = {}, timeout = 30000) {
   try {
     const payload = await session.send(type, args, timeout);
     const text = JSON.stringify(payload);
-    console.log(`>> ${type}\n   ${text.length > 400 ? text.slice(0, 400) + "…(" + text.length + " bytes)" : text}`);
+    console.log(
+      `>> ${type}\n   ${text.length > 400 ? text.slice(0, 400) + "…(" + text.length + " bytes)" : text}`
+    );
     return payload;
   } catch (error) {
     console.log(`>> ${type}\n   FAIL ${error.message}`);

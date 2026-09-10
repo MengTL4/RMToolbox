@@ -6,8 +6,10 @@
 
   var RMCH = (window.RMCH = window.RMCH || {});
 
-  var FONT = '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif';
-  var MONO = '"Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace';
+  var FONT =
+    '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif';
+  var MONO =
+    '"Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace';
 
   // Brand ramp: indigo primary, violet info, shared by both schemes.
   var brand = {

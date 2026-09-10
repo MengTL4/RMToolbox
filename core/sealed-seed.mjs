@@ -31,7 +31,9 @@ import { openCdpSession, listTargets } from "./cdp-client.mjs";
 
 export class SealedSeedError extends Error {}
 
-export const SEED_TIMEOUT_MS = Number(process.env.RMCH_SEED_TIMEOUT_MS || 45 * 60 * 1000);
+export const SEED_TIMEOUT_MS = Number(
+  process.env.RMCH_SEED_TIMEOUT_MS || 45 * 60 * 1000
+);
 const POLL_MS = 2500;
 const CDP_DEAD_GRACE_MS = 90000;
 
@@ -420,14 +422,17 @@ export async function seedAttempt(cdpPort) {
 
   const session = await openCdpSession({ port: cdpPort });
   try {
-    const state = await session.evaluate(`(function () {
+    const state = await session.evaluate(
+      `(function () {
       if (window.__rmchSealed && window.__rmchSealed.seeded) return "already-seeded";
       if (typeof document === "undefined" || !document.body) return "booting";
       if (window.__PIXI_APP__) return "game";
       var button = document.querySelector(".action");
       if (button) return "launcher:" + String(button.textContent || "").trim();
       return "booting";
-    })()`, 8000);
+    })()`,
+      8000
+    );
 
     if (state === "already-seeded") return { status: "already-seeded" };
     if (state === "booting") return { status: "booting" };
@@ -439,7 +444,8 @@ export async function seedAttempt(cdpPort) {
       // is left alone.
       if (text.indexOf("开始游戏") !== -1) {
         await session.evaluate(
-          "var b = document.querySelector('.action'); b && b.click(); 'clicked'", 8000
+          "var b = document.querySelector('.action'); b && b.click(); 'clicked'",
+          8000
         );
         return { status: "clicked-start" };
       }
@@ -450,35 +456,58 @@ export async function seedAttempt(cdpPort) {
     // entered a session (new game or a loaded save) — before that the scan
     // legitimately finds nothing and the caller keeps polling.
     await session.call("Runtime.enable", {}, 10000);
-    const proto = await session.call("Runtime.evaluate", {
-      expression: "Object.prototype",
-      objectGroup: "rmch-seed",
-      returnByValue: false
-    }, 10000);
-    if (!proto.result || !proto.result.objectId) throw new SealedSeedError("Object.prototype handle missing");
-    const query = await session.call("Runtime.queryObjects", {
-      prototypeObjectId: proto.result.objectId,
-      objectGroup: "rmch-seed"
-    }, 120000);
-    if (!query.objects || !query.objects.objectId) throw new SealedSeedError("queryObjects returned no object id");
+    const proto = await session.call(
+      "Runtime.evaluate",
+      {
+        expression: "Object.prototype",
+        objectGroup: "rmch-seed",
+        returnByValue: false
+      },
+      10000
+    );
+    if (!proto.result || !proto.result.objectId)
+      throw new SealedSeedError("Object.prototype handle missing");
+    const query = await session.call(
+      "Runtime.queryObjects",
+      {
+        prototypeObjectId: proto.result.objectId,
+        objectGroup: "rmch-seed"
+      },
+      120000
+    );
+    if (!query.objects || !query.objects.objectId)
+      throw new SealedSeedError("queryObjects returned no object id");
 
-    const result = await session.call("Runtime.callFunctionOn", {
-      objectId: query.objects.objectId,
-      functionDeclaration: SEALED_SEED_FN,
-      returnByValue: true
-    }, 120000);
+    const result = await session.call(
+      "Runtime.callFunctionOn",
+      {
+        objectId: query.objects.objectId,
+        functionDeclaration: SEALED_SEED_FN,
+        returnByValue: true
+      },
+      120000
+    );
     if (result.exceptionDetails) {
-      throw new SealedSeedError("seed threw: " + JSON.stringify(result.exceptionDetails).slice(0, 400));
+      throw new SealedSeedError(
+        "seed threw: " + JSON.stringify(result.exceptionDetails).slice(0, 400)
+      );
     }
     const summary = result.result.value;
-    if (!summary || !summary.published || !summary.published.length || summary.partial) {
+    if (
+      !summary ||
+      !summary.published ||
+      !summary.published.length ||
+      summary.partial
+    ) {
       return { status: "waiting-objects", counts: summary && summary.counts };
     }
     return { status: "seeded", summary };
   } finally {
     // Closing the session releases the rmch-seed object group (the ~10^5-object
     // query array) — without this the page leaks the whole snapshot.
-    try { session.close(); } catch (_) {}
+    try {
+      session.close();
+    } catch (_) {}
   }
 }
 
@@ -500,7 +529,9 @@ export async function runSeededSeeder({ cdpPort, log }) {
   let seededOnce = false;
   for (;;) {
     if (!seededOnce && Date.now() - startedAt > SEED_TIMEOUT_MS) {
-      log("seed timed out", { minutes: Math.round((Date.now() - startedAt) / 60000) });
+      log("seed timed out", {
+        minutes: Math.round((Date.now() - startedAt) / 60000)
+      });
       return { status: "timeout" };
     }
     let attempt;
@@ -512,7 +543,9 @@ export async function runSeededSeeder({ cdpPort, log }) {
     switch (attempt.status) {
       case "seeded":
         if (seededOnce) {
-          log("re-seeded after page reload", { published: attempt.summary && attempt.summary.published });
+          log("re-seeded after page reload", {
+            published: attempt.summary && attempt.summary.published
+          });
         } else {
           log("seeded", attempt.summary);
           seededOnce = true;
@@ -530,11 +563,17 @@ export async function runSeededSeeder({ cdpPort, log }) {
         log("auto-clicked launcher start button", { clicks });
         break;
       case "launcher":
-        if (clicks < 3) log("launcher visible without a start button", { text: attempt.text });
+        if (clicks < 3)
+          log("launcher visible without a start button", {
+            text: attempt.text
+          });
         break;
       case "waiting-objects":
         seedAttempts += 1;
-        if (seedAttempts % 10 === 1) log("game booted, waiting for engine singletons (enter a save or start a game)");
+        if (seedAttempts % 10 === 1)
+          log(
+            "game booted, waiting for engine singletons (enter a save or start a game)"
+          );
         break;
       case "no-cdp":
         if (!lastCdpErrorAt) lastCdpErrorAt = Date.now();

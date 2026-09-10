@@ -1,6 +1,6 @@
-import {execFileSync} from 'node:child_process';
+import { execFileSync } from "node:child_process";
 
-const psString = value => "'" + value.replaceAll("'", "''") + "'";
+const psString = (value) => "'" + value.replaceAll("'", "''") + "'";
 
 // Verify the compressed artifact, not just the directory it was built from.
 // Stream hashes so the large NW DLL need not be read wholly into memory.
@@ -43,5 +43,9 @@ try {
  Write-Output "ZIP integrity PASS: $count files match staging"
 } finally { $archive.Dispose() }
 `;
-  execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {stdio: 'inherit', windowsHide: true});
+  execFileSync(
+    "powershell",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { stdio: "inherit", windowsHide: true }
+  );
 }

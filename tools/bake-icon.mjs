@@ -14,7 +14,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const projectRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  ".."
+);
 
 // ---------------------------------------------------------------------------
 // Design (tile space: 0..1, y down)
@@ -22,7 +25,7 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const TILE = {
   // Rounded-square badge with the brand gradient (theme.js primary → info).
   margin: 0.06,
-  radius: 0.20,
+  radius: 0.2,
   gradFrom: [0x5b, 0x8c, 0xff], // #5b8cff
   gradTo: [0x8b, 0x5c, 0xf6], //   #8b5cf6
   // The Lucide 24x24 "sliders" glyph is mapped into this sub-region so the
@@ -79,7 +82,15 @@ function raster(size, ss) {
       const v = (y + 0.5) / hi;
       const o = (y * hi + x) * 4;
 
-      const dBadge = sdRoundBox(u, v, 0.5, 0.5, side / 2, side / 2, TILE.radius);
+      const dBadge = sdRoundBox(
+        u,
+        v,
+        0.5,
+        0.5,
+        side / 2,
+        side / 2,
+        TILE.radius
+      );
       if (dBadge >= 0) continue; // transparent outside the badge
 
       // 135° gradient across the badge.
@@ -89,15 +100,17 @@ function raster(size, ss) {
       let b = TILE.gradFrom[2] + (TILE.gradTo[2] - TILE.gradFrom[2]) * t;
 
       // Glyph: nearest capsule wins; white when inside the stroke.
-      const gu = (u - TILE.glyphFrom) / glyphScale * 24;
-      const gv = (v - TILE.glyphFrom) / glyphScale * 24;
+      const gu = ((u - TILE.glyphFrom) / glyphScale) * 24;
+      const gv = ((v - TILE.glyphFrom) / glyphScale) * 24;
       let dGlyph = Infinity;
       for (const [x1, y1, x2, y2] of TILE.glyph) {
         const d = sdCapsule(gu, gv, x1, y1, x2, y2, TILE.stroke / 2);
         if (d < dGlyph) dGlyph = d;
       }
       if (dGlyph < 0) {
-        r = 255; g = 255; b = 255;
+        r = 255;
+        g = 255;
+        b = 255;
       }
 
       px[o] = r;
@@ -111,11 +124,17 @@ function raster(size, ss) {
   const out = Buffer.alloc(size * size * 4);
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
-      let r = 0, g = 0, b = 0, a = 0;
+      let r = 0,
+        g = 0,
+        b = 0,
+        a = 0;
       for (let sy = 0; sy < ss; sy += 1) {
         for (let sx = 0; sx < ss; sx += 1) {
           const o = ((y * ss + sy) * hi + (x * ss + sx)) * 4;
-          r += px[o]; g += px[o + 1]; b += px[o + 2]; a += px[o + 3];
+          r += px[o];
+          g += px[o + 1];
+          b += px[o + 2];
+          a += px[o + 3];
         }
       }
       const n = ss * ss;
@@ -140,7 +159,8 @@ const CRC_TABLE = new Uint32Array(256).map((_, n) => {
 
 function crc32(buf) {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i += 1) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i += 1)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 

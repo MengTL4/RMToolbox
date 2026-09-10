@@ -2703,6 +2703,7 @@
   Object.assign(commandHandlers, {
     "ping": () => collectState(),
 
+    // 桥接自检：版本、识别到的引擎、游戏标识、已加载的游戏配置与打上的钩子。
     "runtime.info": () => ({
       bridgeVersion: bridge.version,
       engine: engineInfo(),
@@ -2713,6 +2714,7 @@
       location: String(window.location && window.location.href || "")
     }),
 
+    // 读取当前修改器开关（无敌、倍率、穿墙等）。
     "trainer.options.get": () => ({ options: { ...bridge.options }, hooks: patchTrainerHooks() }),
 
     // Accepts either {options:{...}} or the option map directly, because the CLI
@@ -2863,6 +2865,7 @@
 
     // --- gold -----------------------------------------------------------------
 
+    // 增加金币；负数为扣除。倍率在内部被抑制，所以加多少就是多少。
     "gold.add": (args) => {
       const party = requireParty();
       const amount = Math.floor(requireNumber(args.amount, "amount"));
@@ -2870,6 +2873,7 @@
       return { gold: safeGold(party) };
     },
 
+    // 把金币设成指定数量（最小 0）。按差值走引擎自身的接口，保留游戏的上限与提示。
     "gold.set": (args) => {
       const party = requireParty();
       const value = Math.max(0, Math.floor(requireNumber(args.value, "value")));
@@ -2881,6 +2885,7 @@
 
     // --- catalogs -------------------------------------------------------------
 
+    // 按名字或 ID 搜索物品/武器/防具/技能/状态等目录，用于找到要改的 ID。
     "catalog.query": (args) => {
       const kind = String(args.kind || "");
       if (!CATALOG_KINDS.includes(kind)) throw new Error(`unsupported catalog kind: ${kind}`);
@@ -2889,6 +2894,7 @@
 
     // --- inventory ------------------------------------------------------------
 
+    // 增加道具。amount 可负；结果为 0 时从背包移除。
     "item.add": (args) => {
       const party = requireParty("gainItem");
       const kind = normalizeDropKind(args.kind || "item");
@@ -2929,6 +2935,7 @@
       return { entries };
     },
 
+    // 把某件道具的数量设为固定值（0 表示移除）。
     "item.set": (args) => {
       const party = requireParty("gainItem");
       const kind = normalizeDropKind(args.kind || "item");
@@ -2949,6 +2956,7 @@
 
     // --- party ----------------------------------------------------------------
 
+    // 队伍总览：金币、同行成员、参战成员与最大参战人数。
     "party.info": () => {
       const party = resolveParty();
       return {
@@ -2959,6 +2967,7 @@
       };
     },
 
+    // 全队恢复到满 HP / MP / TP 并清除状态。
     "party.recover": () => {
       const members = getPartyMembers(resolveParty());
       members.forEach((actor) => {
@@ -2978,6 +2987,7 @@
       return { recovered: members.length, members: members.map(actorInfo) };
     },
 
+    // 把某角色加入队伍；id 是 $dataActors 里的角色 ID。
     "party.addActor": (args) => {
       const party = requireParty("addActor");
       const { id } = requireDataEntry("actor", args.id, "actor id");
@@ -2986,6 +2996,7 @@
       return { id, actor: actorInfo(requireActor(id)) };
     },
 
+    // 把某角色移出队伍（不影响角色自身数据）。
     "party.removeActor": (args) => {
       const party = requireParty("removeActor");
       const id = Math.floor(requireNumber(args.id, "id"));
@@ -2996,8 +3007,10 @@
 
     // --- actors ---------------------------------------------------------------
 
+    // 单个角色的详细状态：等级、经验、HP/MP/TP、属性、技能与状态。
     "actor.info": (args) => ({ actor: actorInfo(requireActor(requireNumber(args.id, "id"))) }),
 
+    // 单个角色回满。注意部分游戏的原生 recoverAll 不含 MP，这里会一并补上。
     "actor.recover": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       if (typeof actor.recoverAll === "function") actor.recoverAll();
@@ -3011,6 +3024,7 @@
       return { actor: actorInfo(actor) };
     },
 
+    // 设置等级（上限取角色 maxLevel，默认 999），经验与属性按引擎规则重算。
     "actor.level.set": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       let maxLevel = 999;
@@ -3038,6 +3052,7 @@
       return { actor: actorInfo(actor) };
     },
 
+    // 增加经验值，允许因此升级（不会降级）。
     "actor.exp.add": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       const amount = Math.floor(requireNumber(args.amount, "amount"));
@@ -3061,6 +3076,7 @@
       return { actor: actorInfo(actor), amount };
     },
 
+    // 设置 HP / MP / TP；只处理传入的字段，数值自动夹在 0..上限 之间。
     "actor.vitals.set": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       // Vitals locks would immediately undo these writes, hence the suppression.
@@ -3080,6 +3096,7 @@
       return { actor: actorInfo(actor) };
     },
 
+    // 给基础属性加点：paramId 0..7 依次为 最大HP/最大MP/攻击/防御/魔攻/魔防/敏捷/幸运。
     "actor.param.add": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       const paramId = Math.floor(requireNumber(args.paramId, "paramId"));
@@ -3110,6 +3127,7 @@
       return { actor: actorInfo(actor), paramId, value };
     },
 
+    // 改名。
     "actor.name.set": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       const name = String(args.name || "");
@@ -3119,6 +3137,7 @@
       return { actor: actorInfo(actor) };
     },
 
+    // 设置称号（仅带称号系统的游戏有效）。
     "actor.nickname.set": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       const nickname = String(args.nickname == null ? "" : args.nickname);
@@ -3128,6 +3147,7 @@
       return { actor: actorInfo(actor) };
     },
 
+    // 转职；keepExp 默认 true 保留当前经验。原生规则决定职业的游戏会明确拒绝。
     "actor.class.set": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       const classId = requireId(args.classId, "classId");
@@ -3156,6 +3176,7 @@
       return { actor: info };
     },
 
+    // 学会技能；skillId 必须是 $dataSkills 里存在的技能。
     "actor.skill.learn": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       const { id: skillId } = requireDataEntry("skill", args.skillId, "skillId");
@@ -3166,6 +3187,7 @@
       return { actor: actorInfo(actor), skillId };
     },
 
+    // 遗忘技能。
     "actor.skill.forget": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       const { id: skillId } = requireDataEntry("skill", args.skillId, "skillId");
@@ -3176,6 +3198,7 @@
       return { actor: actorInfo(actor), skillId };
     },
 
+    // 附加状态；stateId 是 $dataStates 里的 ID。
     "actor.state.add": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       const stateId = Math.floor(requireNumber(args.stateId, "stateId"));
@@ -3188,6 +3211,7 @@
       return { actor: actorInfo(actor) };
     },
 
+    // 解除状态。
     "actor.state.remove": (args) => {
       const actor = requireActor(requireNumber(args.id, "id"));
       const stateId = Math.floor(requireNumber(args.stateId, "stateId"));

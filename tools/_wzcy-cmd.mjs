@@ -4,17 +4,30 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-const stateDir = path.join("E:\\project\\RMToolbox", "runtime", "bridge-state", "_V1.2.2_B电脑端");
+const stateDir = path.join(
+  "E:\\project\\RMToolbox",
+  "runtime",
+  "bridge-state",
+  "_V1.2.2_B电脑端"
+);
 const commandsPath = path.join(stateDir, "commands.jsonl");
 const eventsPath = path.join(stateDir, "events.jsonl");
 const type = process.argv[2];
 const args = process.argv[3] ? JSON.parse(process.argv[3]) : {};
-if (!type) { console.error("usage: _wzcy-cmd.mjs <type> [jsonArgs]"); process.exit(2); }
+if (!type) {
+  console.error("usage: _wzcy-cmd.mjs <type> [jsonArgs]");
+  process.exit(2);
+}
 
 const id = `m${Date.now()}`;
 const before = existsSync(eventsPath)
-  ? readFileSync(eventsPath, "utf8").split(/\r?\n/).filter(Boolean).length : 0;
-writeFileSync(commandsPath, JSON.stringify({ commandId: id, ts: Date.now(), type, args }) + "\n", { flag: "a" });
+  ? readFileSync(eventsPath, "utf8").split(/\r?\n/).filter(Boolean).length
+  : 0;
+writeFileSync(
+  commandsPath,
+  JSON.stringify({ commandId: id, ts: Date.now(), type, args }) + "\n",
+  { flag: "a" }
+);
 const deadline = Date.now() + 8000;
 while (Date.now() < deadline) {
   await new Promise((r) => setTimeout(r, 250));

@@ -18,7 +18,9 @@ const outDir = path.resolve(outArg ?? exe.replace(/\.exe$/i, "") + "_unpacked");
 
 const evb = detectEvb(exe);
 if (!evb) {
-  console.error(`not an Enigma Virtual Box image (no .enigma1/.enigma2 sections): ${exe}`);
+  console.error(
+    `not an Enigma Virtual Box image (no .enigma1/.enigma2 sections): ${exe}`
+  );
   process.exit(1);
 }
 console.log(`EVB image (${evb.arch}): ${exe}`);
@@ -28,15 +30,21 @@ if (existsSync(outDir)) {
 
 const t0 = Date.now();
 const { files } = parseEvbTree(exe);
-console.log(`node table: ${files.length} files, ${(files.reduce((s, f) => s + f.storedSize, 0) / 1024 / 1024).toFixed(1)} MB stored`);
+console.log(
+  `node table: ${files.length} files, ${(files.reduce((s, f) => s + f.storedSize, 0) / 1024 / 1024).toFixed(1)} MB stored`
+);
 let lastReport = 0;
 const result = extractEvb(exe, outDir, {
   onProgress: ({ files: done, filesTotal, bytes }) => {
     const now = Date.now();
     if (now - lastReport > 2000) {
       lastReport = now;
-      console.log(`  ${done}/${filesTotal} files, ${(bytes / 1024 / 1024).toFixed(0)} MB`);
+      console.log(
+        `  ${done}/${filesTotal} files, ${(bytes / 1024 / 1024).toFixed(0)} MB`
+      );
     }
   }
 });
-console.log(`done: ${result.files} files, ${(result.bytes / 1024 / 1024).toFixed(1)} MB in ${((Date.now() - t0) / 1000).toFixed(1)}s -> ${outDir}`);
+console.log(
+  `done: ${result.files} files, ${(result.bytes / 1024 / 1024).toFixed(1)} MB in ${((Date.now() - t0) / 1000).toFixed(1)}s -> ${outDir}`
+);

@@ -68,6 +68,18 @@
     return store.state.projectRoot + "/backups/" + gameKey;
   }
 
+  // Open an http(s) link in the user's browser. Distinct from openPath, which
+  // stats a filesystem path and routes it through nw.Shell.openPath.
+  function openExternal(url) {
+    try {
+      server.openExternal(url);
+      return true;
+    } catch (error) {
+      store.fail("打开链接失败：" + error.message);
+      return false;
+    }
+  }
+
   function openPath(target) {
     try {
       server.openPath(target);
@@ -85,6 +97,7 @@
     deleteBackup: deleteBackup,
     deleteSaveFile: deleteSaveFile,
     backupsDir: backupsDir,
-    openPath: openPath
+    openPath: openPath,
+    openExternal: openExternal
   });
 })();

@@ -5,20 +5,31 @@ import { launchRgssGame } from "../core/rgss-launcher.mjs";
 
 const gameRoot = path.resolve(process.argv[2]);
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const gameKey = path.basename(gameRoot).replace(/[^a-z0-9_-]+/gi, "_").slice(0, 60);
+const gameKey = path
+  .basename(gameRoot)
+  .replace(/[^a-z0-9_-]+/gi, "_")
+  .slice(0, 60);
 const handle = await launchRgssGame({ gameRoot, projectRoot, gameKey });
 const { session } = handle;
 console.log("connected");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // load a save first
-await session.send("save.load", { id: 1 }, 30000).then((p) => console.log("loaded", JSON.stringify(p))).catch((e) => console.log("load FAIL", e.message));
+await session
+  .send("save.load", { id: 1 }, 30000)
+  .then((p) => console.log("loaded", JSON.stringify(p)))
+  .catch((e) => console.log("load FAIL", e.message));
 await sleep(4000);
 
 const t0 = Date.now();
-session.send("item.add", { id: "POTION", amount: 3 }, 60000)
-  .then((p) => console.log(`item.add OK after ${Date.now() - t0}ms:`, JSON.stringify(p)))
-  .catch((e) => console.log(`item.add FAIL after ${Date.now() - t0}ms:`, e.message));
+session
+  .send("item.add", { id: "POTION", amount: 3 }, 60000)
+  .then((p) =>
+    console.log(`item.add OK after ${Date.now() - t0}ms:`, JSON.stringify(p))
+  )
+  .catch((e) =>
+    console.log(`item.add FAIL after ${Date.now() - t0}ms:`, e.message)
+  );
 
 for (let i = 0; i < 6; i++) {
   await sleep(1500);

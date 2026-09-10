@@ -10,7 +10,11 @@ const re = nameRe ? new RegExp(nameRe, "i") : null;
 for (const e of parsed.entries) {
   if (re && !re.test(e.name)) continue;
   let src = "";
-  try { src = zlib.inflateSync(e.zlib).toString("utf8"); } catch { src = "<inflate failed>"; }
+  try {
+    src = zlib.inflateSync(e.zlib).toString("utf8");
+  } catch {
+    src = "<inflate failed>";
+  }
   console.log(`\n===== [${e.index}] ${e.name} (${src.length} chars) =====`);
   console.log(src);
 }

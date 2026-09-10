@@ -32,7 +32,7 @@ grover 分支保留了该实现与测试）。
   `location.reload()` ×3。
 - `bg_script`（12KB nwjc V8 字节码，魔数 03 04 DE C0）：祖先链校验
   （`exec("wmic process where ProcessId=<pid> get ParentProcessId/value" / "get
-  Name=value"`，从自身 pid 向上走）、白名单 GearNT.exe/TOTALCMD/steam.exe/
+Name=value"`，从自身 pid 向上走）、白名单 GearNT.exe/TOTALCMD/steam.exe/
   cmd.exe/explorer.exe、`localStorage.setItem IGameKingR`、文件大小监视
   （bg_script/loading/package.json/www/index.html/www/loading.html/
   www/js/libs/load-resources.js + www 下 .css/.wasm/.data/.html/.json/.node，
@@ -47,7 +47,7 @@ grover 分支保留了该实现与测试）。
   cWindowId 递增到 ~61 后放弃——**放弃后照常前进到 index.html 引导载荷**
   （本机壳自杀路径失效，游戏可玩）。
 - `www/index.html`：内联混淆 loader，XHR 取引擎 js → `evalNWBin(ArrayBuffer)`，
-  先 video-main.js（内嵌 node-watch 库 oneprice.js 的 watcher + 
+  先 video-main.js（内嵌 node-watch 库 oneprice.js 的 watcher +
   `process.report.getReport().sharedObjects` DLL 检测）、oneprice.js，然后
   rpg_* 全家 + ~60 插件 + **Some.js**（35KB，最后一个插件，载荷侧 DRM 伴生：
   decipherData 数据解密、getPassword/passwordIsValid/nodeCrypto/signature/
@@ -105,9 +105,8 @@ grover 分支保留了该实现与测试）。
   `runtime/bridge-state/傲世修仙录完结定制版/{bridge.log,bg-bridge.log,state.json}`；
   shim 调用日志 `%TEMP%\rmch-wmic-shim.log`（仅诊断）。
 - WS 47412，token `runtime/rmch.token`；CLI `node tools/rmch.mjs
-  launch|send <gameKey> <cmd> '<json>'`（gold.add 参数名 amount）。
+launch|send <gameKey> <cmd> '<json>'`（gold.add 参数名 amount）。
 - 壳的 `游戏插件异常.log`（Grover_GameOptimization 加载失败）是 2024 年起的
   良性固定报错，与适配无关。
 - 本机 Clash Verge 常驻连接 192.168.31.88:1949（壳每 15s netstat 查的就是它），
   与查杀无关。
-

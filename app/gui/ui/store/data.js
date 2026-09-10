@@ -10,18 +10,35 @@
   var ITEM_KINDS = store.ITEM_KINDS;
 
   function emptyLocks() {
-    return { item: {}, weapon: {}, armor: {}, switch: {}, variable: {}, gold: null };
+    return {
+      item: {},
+      weapon: {},
+      armor: {},
+      switch: {},
+      variable: {},
+      gold: null
+    };
   }
 
   var data = reactive({
     tab: "item",
     selected: {
-      item: null, weapon: null, armor: null,
-      switch: null, variable: null, actor: null, event: null
+      item: null,
+      weapon: null,
+      armor: null,
+      switch: null,
+      variable: null,
+      actor: null,
+      event: null
     },
     query: {
-      item: "", weapon: "", armor: "",
-      switch: "", variable: "", actor: "", event: ""
+      item: "",
+      weapon: "",
+      armor: "",
+      switch: "",
+      variable: "",
+      actor: "",
+      event: ""
     },
     // Every entry the game defines (from $dataX), with the owned count merged in.
     catalog: { item: [], weapon: [], armor: [] },
@@ -31,16 +48,27 @@
     flags: { switch: [], variable: [] },
     // Self switches are map-scoped, so they live with the map view.
     selfSwitches: { mapId: null, entries: [] },
-    events: [],            // common events
-    mapEvents: [],         // events on the player's current map
+    events: [], // common events
+    mapEvents: [], // events on the player's current map
     scenes: [],
     locks: emptyLocks(),
     lockStats: null,
     lockFileExists: false,
-    tree: { json: null, bytes: 0, error: null, loading: false, applying: false },
+    tree: {
+      json: null,
+      bytes: 0,
+      error: null,
+      loading: false,
+      applying: false
+    },
     loading: {
-      catalog: false, counts: false, flags: false, selfSwitches: false,
-      events: false, mapEvents: false, locks: false
+      catalog: false,
+      counts: false,
+      flags: false,
+      selfSwitches: false,
+      events: false,
+      mapEvents: false,
+      locks: false
     }
   });
 
@@ -50,7 +78,9 @@
       data.owned[kind] = [];
       data.counts[kind] = {};
     });
-    Object.keys(data.selected).forEach(function (key) { data.selected[key] = null; });
+    Object.keys(data.selected).forEach(function (key) {
+      data.selected[key] = null;
+    });
     data.flags.switch = [];
     data.flags.variable = [];
     data.selfSwitches = { mapId: null, entries: [] };
@@ -65,25 +95,56 @@
     data.tree.error = null;
     data.tree.loading = false;
     data.tree.applying = false;
-    Object.keys(data.loading).forEach(function (key) { data.loading[key] = false; });
+    Object.keys(data.loading).forEach(function (key) {
+      data.loading[key] = false;
+    });
   }
 
   // Kicked off by selectGame: the catalogs come from $data* so they resolve as
   // soon as the game's data layer is up, with the same retry treatment.
   function primeData(alive) {
-    store.tracked(data.loading, "catalog", Promise.all(ITEM_KINDS.map(function (kind) {
-      return store.retryLoad(alive,
-        function () { return store.cmd("catalog.query", { kind: kind, limit: 20000 }); },
-        store.noTotal
-      ).then(function (p) { if (p && alive()) data.catalog[kind] = p.entries || []; });
-    })));
+    store.tracked(
+      data.loading,
+      "catalog",
+      Promise.all(
+        ITEM_KINDS.map(function (kind) {
+          return store
+            .retryLoad(
+              alive,
+              function () {
+                return store.cmd("catalog.query", { kind: kind, limit: 20000 });
+              },
+              store.noTotal
+            )
+            .then(function (p) {
+              if (p && alive()) data.catalog[kind] = p.entries || [];
+            });
+        })
+      )
+    );
 
-    store.tracked(data.loading, "flags", Promise.all(["switch", "variable"].map(function (kind) {
-      return store.retryLoad(alive,
-        function () { return store.cmd(kind === "switch" ? "switch.list" : "variable.list", { offset: 1, limit: 20000 }); },
-        store.noEntries
-      ).then(function (p) { if (p && alive()) data.flags[kind] = p.entries || []; });
-    })));
+    store.tracked(
+      data.loading,
+      "flags",
+      Promise.all(
+        ["switch", "variable"].map(function (kind) {
+          return store
+            .retryLoad(
+              alive,
+              function () {
+                return store.cmd(
+                  kind === "switch" ? "switch.list" : "variable.list",
+                  { offset: 1, limit: 20000 }
+                );
+              },
+              store.noEntries
+            )
+            .then(function (p) {
+              if (p && alive()) data.flags[kind] = p.entries || [];
+            });
+        })
+      )
+    );
 
     loadCounts();
     store.loadLocks();
@@ -105,21 +166,29 @@
 
   // Remember the map the player is on, so the self-switch view has a default.
   function noteLiveMap(mapId) {
-    if (mapId != null && data.selfSwitches.mapId == null) data.selfSwitches.mapId = mapId;
+    if (mapId != null && data.selfSwitches.mapId == null)
+      data.selfSwitches.mapId = mapId;
   }
 
   // --- items ------------------------------------------------------------------
 
   function loadCatalog(kind) {
-    return store.tracked(data.loading, "catalog",
-      store.cmd("catalog.query", { kind: kind, limit: 20000 }).then(function (p) {
-        if (p) data.catalog[kind] = p.entries || [];
-        return p;
-      }));
+    return store.tracked(
+      data.loading,
+      "catalog",
+      store
+        .cmd("catalog.query", { kind: kind, limit: 20000 })
+        .then(function (p) {
+          if (p) data.catalog[kind] = p.entries || [];
+          return p;
+        })
+    );
   }
 
   function loadCounts() {
-    return store.tracked(data.loading, "counts",
+    return store.tracked(
+      data.loading,
+      "counts",
       store.cmd("item.list", {}).then(function (p) {
         if (!p) return null;
         var next = { item: {}, weapon: {}, armor: {} };
@@ -131,13 +200,22 @@
           }
         });
         (p.entries || []).forEach(function (entry) {
-          if (next[entry.kind] && entry.baseItemId != null && String(entry.baseItemId) !== String(entry.id)) {
-            next[entry.kind][entry.baseItemId] = (next[entry.kind][entry.baseItemId] || 0) + entry.count;
+          if (
+            next[entry.kind] &&
+            entry.baseItemId != null &&
+            String(entry.baseItemId) !== String(entry.id)
+          ) {
+            next[entry.kind][entry.baseItemId] =
+              (next[entry.kind][entry.baseItemId] || 0) + entry.count;
           }
         });
-        ITEM_KINDS.forEach(function (kind) { data.counts[kind] = next[kind]; data.owned[kind] = owned[kind]; });
+        ITEM_KINDS.forEach(function (kind) {
+          data.counts[kind] = next[kind];
+          data.owned[kind] = owned[kind];
+        });
         return p;
-      }));
+      })
+    );
   }
 
   function countOf(kind, id) {
@@ -146,9 +224,17 @@
   }
 
   function setItemCount(kind, id, count) {
-    return store.cmdWarn("item.set", { kind: kind, id: id, count: Math.max(0, Math.floor(count)) })
+    return store
+      .cmdWarn("item.set", {
+        kind: kind,
+        id: id,
+        count: Math.max(0, Math.floor(count))
+      })
       .then(async function (p) {
-        if (p) { data.counts[p.kind][p.id] = p.count; await loadCounts(); }
+        if (p) {
+          data.counts[p.kind][p.id] = p.count;
+          await loadCounts();
+        }
         return p;
       });
   }
@@ -156,21 +242,35 @@
   // --- switches / variables / self switches ------------------------------------
 
   function loadFlags(kind) {
-    return store.tracked(data.loading, "flags",
-      store.cmd(kind === "switch" ? "switch.list" : "variable.list", { offset: 1, limit: 20000 })
+    return store.tracked(
+      data.loading,
+      "flags",
+      store
+        .cmd(kind === "switch" ? "switch.list" : "variable.list", {
+          offset: 1,
+          limit: 20000
+        })
         .then(function (p) {
           if (p) data.flags[kind] = p.entries || [];
           return p;
-        }));
+        })
+    );
   }
 
   function setFlag(kind, id, value) {
-    return store.cmdWarn(kind === "switch" ? "switch.set" : "variable.set", { id: id, value: value })
+    return store
+      .cmdWarn(kind === "switch" ? "switch.set" : "variable.set", {
+        id: id,
+        value: value
+      })
       .then(function (p) {
         if (!p) return null;
         var list = data.flags[kind];
         for (var i = 0; i < list.length; i += 1) {
-          if (list[i].id === p.id) { list[i].value = p.value; break; }
+          if (list[i].id === p.id) {
+            list[i].value = p.value;
+            break;
+          }
         }
         return p;
       });
@@ -185,38 +285,54 @@
       return Promise.resolve(null);
     }
     data.selfSwitches.mapId = target;
-    return store.tracked(data.loading, "selfSwitches",
+    return store.tracked(
+      data.loading,
+      "selfSwitches",
       store.cmd("selfSwitch.list", { mapId: target }).then(function (p) {
         if (p) data.selfSwitches.entries = p.entries || [];
         return p;
-      }));
+      })
+    );
   }
 
   function setSelfSwitch(row, value) {
-    return store.cmdWarn("selfSwitch.set", {
-      mapId: data.selfSwitches.mapId, eventId: row.eventId, letter: row.letter, value: value
-    }).then(function (p) {
-      if (p) row.value = p.value;
-      return p;
-    });
+    return store
+      .cmdWarn("selfSwitch.set", {
+        mapId: data.selfSwitches.mapId,
+        eventId: row.eventId,
+        letter: row.letter,
+        value: value
+      })
+      .then(function (p) {
+        if (p) row.value = p.value;
+        return p;
+      });
   }
 
   // --- map / common events -----------------------------------------------------
 
   function loadMapEvents() {
-    return store.tracked(data.loading, "mapEvents",
+    return store.tracked(
+      data.loading,
+      "mapEvents",
       store.cmd("map.events.list", {}).then(function (p) {
         if (p) data.mapEvents = p.entries || [];
         return p;
-      }));
+      })
+    );
   }
 
   function loadCommonEvents() {
-    return store.tracked(data.loading, "events",
-      store.cmd("catalog.query", { kind: "commonEvent", limit: 20000 }).then(function (p) {
-        if (p) data.events = p.entries || [];
-        return p;
-      }));
+    return store.tracked(
+      data.loading,
+      "events",
+      store
+        .cmd("catalog.query", { kind: "commonEvent", limit: 20000 })
+        .then(function (p) {
+          if (p) data.events = p.entries || [];
+          return p;
+        })
+    );
   }
 
   function loadScenes() {

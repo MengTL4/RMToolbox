@@ -11,7 +11,7 @@ const entry = parsed.entries.find((en) => en.name === "RMCH_Bridge");
 if (!entry) throw new Error("RMCH_Bridge entry not found");
 
 const probe = [
-  'out = []',
+  "out = []",
   'out << "pwd=" + Dir.pwd',
   'abs = File.join(Dir.pwd, "zz-abs.txt")',
   'begin; File.open(abs, "wb") { |f| f.write("1") }; out << "abs OK"; rescue Exception => ex; out << "abs " + ex.class.to_s + ": " + ex.message.to_s; end',
@@ -22,9 +22,21 @@ const probe = [
   'begin; File.open("zz-report.txt", "wb") { |f| f.write(out.join("\n")) }; rescue Exception; end'
 ].join("\n");
 
-const rep = encodeScriptEntry(entry.id, entry.name, zlib.deflateSync(Buffer.from(probe, "utf8")), {
-  nameIvar: parsed.nameIvar,
-  bodyIvar: parsed.bodyIvar
-});
-writeFileSync(target, Buffer.concat([raw.subarray(0, entry.entryStart), rep, raw.subarray(entry.entryEnd)]));
+const rep = encodeScriptEntry(
+  entry.id,
+  entry.name,
+  zlib.deflateSync(Buffer.from(probe, "utf8")),
+  {
+    nameIvar: parsed.nameIvar,
+    bodyIvar: parsed.bodyIvar
+  }
+);
+writeFileSync(
+  target,
+  Buffer.concat([
+    raw.subarray(0, entry.entryStart),
+    rep,
+    raw.subarray(entry.entryEnd)
+  ])
+);
 console.log("probe installed into", target);

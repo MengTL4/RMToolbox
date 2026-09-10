@@ -9,9 +9,16 @@ import { detectRgss } from "../core/rgss.mjs";
 const gameRoot = process.argv[2];
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const resolved = path.resolve(gameRoot);
-const gameKey = path.basename(resolved).replace(/[^a-z0-9_-]+/gi, "_").slice(0, 60);
+const gameKey = path
+  .basename(resolved)
+  .replace(/[^a-z0-9_-]+/gi, "_")
+  .slice(0, 60);
 
-const handle = await launchRgssGame({ gameRoot: resolved, projectRoot, gameKey });
+const handle = await launchRgssGame({
+  gameRoot: resolved,
+  projectRoot,
+  gameKey
+});
 const { session } = handle;
 console.log(`bridge: connected (${session.hello?.engine || "?"})`);
 
@@ -31,7 +38,10 @@ async function trySend(type, args = {}) {
 await trySend("save.list");
 const list = await trySend("save.list", {});
 if (list && Array.isArray(list.saves) && list.saves.length) {
-  console.log("  saves:", list.saves.map((s) => `${s.id}:${s.name || s.file || "?"}`).join(" | "));
+  console.log(
+    "  saves:",
+    list.saves.map((s) => `${s.id}:${s.name || s.file || "?"}`).join(" | ")
+  );
 }
 // Load slot 1 and re-probe the stateful commands.
 const loaded = await trySend("save.load", { id: 1 });

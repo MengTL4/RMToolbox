@@ -13,7 +13,10 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const projectRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  ".."
+);
 
 function usage(exitCode = 0) {
   const text = [
@@ -62,7 +65,8 @@ async function main() {
 
   switch (command) {
     case "scan": {
-      const { scanGame, findSteamLibraries, scanLibrary } = await import("../core/scanner.mjs");
+      const { scanGame, findSteamLibraries, scanLibrary } =
+        await import("../core/scanner.mjs");
       const { positional, options } = parseArgs(rest);
       const target = positional[0];
       let results = [];
@@ -84,7 +88,10 @@ async function main() {
     case "serve": {
       const { runStandaloneServer } = await import("./serve.mjs");
       const { options } = parseArgs(rest);
-      await runStandaloneServer({ port: Number(options.port) || 47412, projectRoot });
+      await runStandaloneServer({
+        port: Number(options.port) || 47412,
+        projectRoot
+      });
       break;
     }
     case "launch": {
@@ -110,7 +117,9 @@ async function main() {
       console.log(JSON.stringify(printable, null, 2));
       if (tauriSession) {
         tauriSession.close();
-        console.error("[rmch] tauri-cdp sessions live inside the launcher process — use the GUI (or keep this process alive) for trainer commands");
+        console.error(
+          "[rmch] tauri-cdp sessions live inside the launcher process — use the GUI (or keep this process alive) for trainer commands"
+        );
       }
       break;
     }
@@ -189,6 +198,6 @@ function printScan(info) {
 }
 
 main().catch((error) => {
-  console.error(error && error.stack || error);
+  console.error((error && error.stack) || error);
   process.exit(1);
 });

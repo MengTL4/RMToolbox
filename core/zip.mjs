@@ -29,8 +29,14 @@ function crc32(buffer) {
 function dosDateTime(date) {
   const year = Math.max(1980, date.getFullYear());
   return {
-    time: ((date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2)) & 0xffff,
-    date: (((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate()) & 0xffff
+    time:
+      ((date.getHours() << 11) |
+        (date.getMinutes() << 5) |
+        Math.floor(date.getSeconds() / 2)) &
+      0xffff,
+    date:
+      (((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate()) &
+      0xffff
   };
 }
 
@@ -41,7 +47,10 @@ function collectFiles(sourceDir, baseDir = sourceDir, out = []) {
     if (stat.isDirectory()) {
       collectFiles(full, baseDir, out);
     } else if (stat.isFile()) {
-      out.push({ full, rel: path.relative(baseDir, full).split(path.sep).join("/") });
+      out.push({
+        full,
+        rel: path.relative(baseDir, full).split(path.sep).join("/")
+      });
     }
   }
   return out;
@@ -112,7 +121,13 @@ export function zipDirectory(sourceDir, destZip) {
   return new Promise((resolve, reject) => {
     const stream = createWriteStream(destZip);
     stream.on("error", reject);
-    stream.on("finish", () => resolve({ file: destZip, entries: files.length, bytes: offset + centralBuffer.length + eocd.length }));
+    stream.on("finish", () =>
+      resolve({
+        file: destZip,
+        entries: files.length,
+        bytes: offset + centralBuffer.length + eocd.length
+      })
+    );
     for (const part of localParts) stream.write(part);
     stream.write(centralBuffer);
     stream.write(eocd);

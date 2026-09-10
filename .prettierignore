@@ -1,0 +1,42 @@
+# Vendored third-party bundles: not ours to reformat.
+app/gui/vendor/**
+
+# MinHook is a vendored native dependency with its own upstream style.
+runtime/inject/third_party/**
+
+# The bridge parts are function-body FRAGMENTS, not standalone JavaScript:
+# 00-prelude.js opens an IIFE and 90-startup.js closes it, and the middle parts
+# are indented one level because they live inside that closure. Prettier cannot
+# even parse them (`SyntaxError: Unexpected token` at the closing `})();`), and
+# formatting them would strip the indentation the assembled file depends on.
+# core/bridge-bundler.mjs assembles them; leave them alone.
+runtime/bridge/src/parts/**
+
+# Generated artifacts. Tools rebuild these; reformatting them would be
+# overwritten on the next build and they are compared byte-for-byte against
+# their sources by tools/gui-check.mjs.
+runtime/bridge/page-bridge.js
+app/gui/gui-bundle.cjs
+app/gui/ui/modern.js
+
+# Game data and test fixtures that are inputs, not source.
+runtime/bridge/profiles/**
+
+# Local state and build output.
+node_modules/**
+output/**
+.cache/**
+backups/**
+runtime/screenshots/**
+runtime/bridge-state/**
+runtime/locks/**
+runtime/profiles/**
+runtime/shadow-apps/**
+runtime/shadow-profiles/**
+runtime/rgss-shadow/**
+runtime/rgss-attach/**
+runtime/_scratch/**
+
+# Provenance and generated docs.
+package-lock.json
+docs/user/COMMANDS.md

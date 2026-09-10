@@ -9,5 +9,9 @@
     "lib": ["ES2022", "DOM"],
     "skipLibCheck": true
   },
-  "include": ["app/gui/src/**/*.ts", "app/gui/src/**/*.vue", "app/gui/src/**/*.d.ts"]
+  "include": [
+    "app/gui/src/**/*.ts",
+    "app/gui/src/**/*.vue",
+    "app/gui/src/**/*.d.ts"
+  ]
 }

@@ -11,27 +11,43 @@ import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { assembleGuiBundle } from "../core/gui-bundler.mjs";
-import { assembleBridgeBody, BANNER as BRIDGE_BANNER } from "../core/bridge-bundler.mjs";
+import {
+  assembleBridgeBody,
+  BANNER as BRIDGE_BANNER
+} from "../core/bridge-bundler.mjs";
 import { buildFrontend } from "./gui-frontend.mjs";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const projectRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  ".."
+);
 const guiDir = path.join(projectRoot, "app", "gui");
 function sourceFiles(dir) {
-  return readdirSync(dir, {withFileTypes: true}).flatMap(entry => entry.isDirectory()
-    ? sourceFiles(path.join(dir, entry.name)) : /\.(vue|js|ts)$/.test(entry.name) ? [path.join(dir, entry.name)] : []);
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory()
+      ? sourceFiles(path.join(dir, entry.name))
+      : /\.(vue|js|ts)$/.test(entry.name)
+        ? [path.join(dir, entry.name)]
+        : []
+  );
 }
-const frontendSources = [...sourceFiles(path.join(guiDir, 'src')), ...sourceFiles(path.join(guiDir, 'ui/store'))];
+const frontendSources = [
+  ...sourceFiles(path.join(guiDir, "src")),
+  ...sourceFiles(path.join(guiDir, "ui/store"))
+];
 // Build before diagnostic SFC parsing: Vue caches parsed template ASTs, and a
 // development-mode parse would otherwise contaminate the production comparison.
 const expectedFrontend = await buildFrontend(projectRoot, false);
-const {parse: parseSfc} = await import('@vue/compiler-sfc');
+const { parse: parseSfc } = await import("@vue/compiler-sfc");
 
 // Native Node/Chromium compatibility is exercised in test-gui-runtime.mjs
 // against the exact official runtime lock, rather than a historical API ban.
 
 // Load order comes from app/gui/index.html itself, so the two cannot drift.
 const indexHtml = readFileSync(path.join(guiDir, "index.html"), "utf8");
-const PAGE_SCRIPTS = [...indexHtml.matchAll(/<script src="([^"]+)"><\/script>/g)]
+const PAGE_SCRIPTS = [
+  ...indexHtml.matchAll(/<script src="([^"]+)"><\/script>/g)
+]
   .map((match) => match[1])
   .filter((src) => src.startsWith("ui/"));
 const SCRIPTS = PAGE_SCRIPTS.filter((src) => src !== "ui/main.js");
@@ -47,17 +63,21 @@ function fail(message) {
 // Any property access returns a fresh callable stub, so `naive.NButton`,
 // `naive.useDialog()` and `naive.darkTheme` all resolve without naive-ui.
 function deepStub(label) {
-  const target = function () { return deepStub(label + "()"); };
+  const target = function () {
+    return deepStub(label + "()");
+  };
   target.__stub = label;
   return new Proxy(target, {
     get(t, key) {
       if (key === "__stub") return label;
       if (key === Symbol.toPrimitive || key === "toString") return () => label;
-      if (key === "then") return undefined;              // don't look thenable
+      if (key === "then") return undefined; // don't look thenable
       if (!(key in t)) t[key] = deepStub(label + "." + String(key));
       return t[key];
     },
-    apply() { return deepStub(label + "()"); },
+    apply() {
+      return deepStub(label + "()");
+    }
   });
 }
 
@@ -66,28 +86,43 @@ function deepStub(label) {
 // entities (&lt;) and bare ampersands (v-if="a && b"), so the stub element has
 // to actually decode rather than just record.
 const NAMED_ENTITIES = {
-  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " "
 };
 
 function decodeEntities(raw) {
-  return String(raw).replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (match, body) => {
-    if (body[0] === "#") {
-      const code = body[1] === "x" || body[1] === "X"
-        ? parseInt(body.slice(2), 16)
-        : parseInt(body.slice(1), 10);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+  return String(raw).replace(
+    /&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g,
+    (match, body) => {
+      if (body[0] === "#") {
+        const code =
+          body[1] === "x" || body[1] === "X"
+            ? parseInt(body.slice(2), 16)
+            : parseInt(body.slice(1), 10);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+      }
+      const named = NAMED_ENTITIES[body.toLowerCase()];
+      return named === undefined ? match : named;
     }
-    const named = NAMED_ENTITIES[body.toLowerCase()];
-    return named === undefined ? match : named;
-  });
+  );
 }
 
 function decoderElement() {
   let html = "";
   return {
-    set innerHTML(value) { html = String(value); },
-    get innerHTML() { return html; },
-    get textContent() { return decodeEntities(html); },
+    set innerHTML(value) {
+      html = String(value);
+    },
+    get innerHTML() {
+      return html;
+    },
+    get textContent() {
+      return decodeEntities(html);
+    },
     // asAttr path: Vue sets innerHTML to `<div foo="...">` then reads the attr.
     get children() {
       const match = /^<div foo="([\s\S]*)">$/.exec(html);
@@ -97,7 +132,7 @@ function decoderElement() {
     setAttribute() {},
     addEventListener() {},
     appendChild() {},
-    click() {},
+    click() {}
   };
 }
 
@@ -110,14 +145,18 @@ const sandbox = {
   naive: deepStub("naive"),
   JSONEditor: deepStub("JSONEditor"),
   require: (id) => {
-    if (id === "./host.cjs") return new Proxy({}, { get: (_, key) => deepStub('guiServer.' + String(key)) });
+    if (id === "./host.cjs")
+      return new Proxy(
+        {},
+        { get: (_, key) => deepStub("guiServer." + String(key)) }
+      );
     throw new Error("unexpected require(" + id + ") from a page script");
   },
   document: {
     getElementById: () => null,
-    createElement: () => decoderElement(),
+    createElement: () => decoderElement()
   },
-  localStorage: { getItem: () => null, setItem() {} },
+  localStorage: { getItem: () => null, setItem() {} }
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
@@ -135,35 +174,88 @@ function runFile(relativePath) {
 const VENDOR_BUNDLES = [
   "vendor/vue.global.prod.js",
   "vendor/naive-ui.prod.js",
-  "vendor/jsoneditor/jsoneditor.min.js",
+  "vendor/jsoneditor/jsoneditor.min.js"
 ];
 
 for (const bundle of VENDOR_BUNDLES) {
   const source = readFileSync(path.join(guiDir, bundle), "utf8");
-  try { new vm.Script(source, { filename: bundle }); }
-  catch (error) { fail(`${bundle}: ${error.message}`); }
+  try {
+    new vm.Script(source, { filename: bundle });
+  } catch (error) {
+    fail(`${bundle}: ${error.message}`);
+  }
 }
 
 // The page reaches for these on the naive-ui namespace; a version bump that
 // drops one should fail here, not at render time.
 const NAIVE_REQUIRED = [
-  "NConfigProvider", "NGlobalStyle", "NMessageProvider", "NDialogProvider",
-  "NLayout", "NLayoutHeader", "NLayoutSider", "NLayoutContent", "NMenu",
-  "NCard", "NButton", "NButtonGroup", "NTag", "NText", "NInput", "NInputNumber",
-  "NInputGroup", "NSelect", "NSwitch", "NCheckbox", "NRadioGroup", "NRadioButton",
-  "NDataTable", "NDrawer", "NDrawerContent", "NModal", "NPopconfirm",
-  "NDescriptions", "NDescriptionsItem", "NForm", "NFormItem", "NAlert",
-  "NEmpty", "NResult", "NGrid", "NGi", "NEllipsis", "NIconWrapper",
-  "NTooltip", "NSpin", "NLog", "NTabs", "NTabPane", "NDivider",
-  "NScrollbar", "NBreadcrumb", "NBreadcrumbItem", "NDropdown",
-  "darkTheme", "zhCN", "dateZhCN",
-  "useMessage", "useDialog", "install",
+  "NConfigProvider",
+  "NGlobalStyle",
+  "NMessageProvider",
+  "NDialogProvider",
+  "NLayout",
+  "NLayoutHeader",
+  "NLayoutSider",
+  "NLayoutContent",
+  "NMenu",
+  "NCard",
+  "NButton",
+  "NButtonGroup",
+  "NTag",
+  "NText",
+  "NInput",
+  "NInputNumber",
+  "NInputGroup",
+  "NSelect",
+  "NSwitch",
+  "NCheckbox",
+  "NRadioGroup",
+  "NRadioButton",
+  "NDataTable",
+  "NDrawer",
+  "NDrawerContent",
+  "NModal",
+  "NPopconfirm",
+  "NDescriptions",
+  "NDescriptionsItem",
+  "NForm",
+  "NFormItem",
+  "NAlert",
+  "NEmpty",
+  "NResult",
+  "NGrid",
+  "NGi",
+  "NEllipsis",
+  "NIconWrapper",
+  "NTooltip",
+  "NSpin",
+  "NLog",
+  "NTabs",
+  "NTabPane",
+  "NDivider",
+  "NScrollbar",
+  "NBreadcrumb",
+  "NBreadcrumbItem",
+  "NDropdown",
+  "darkTheme",
+  "zhCN",
+  "dateZhCN",
+  "useMessage",
+  "useDialog",
+  "install"
 ];
 
-const naiveSource = readFileSync(path.join(guiDir, "vendor/naive-ui.prod.js"), "utf8");
-const missingExports = NAIVE_REQUIRED.filter((name) => !naiveSource.includes("e." + name + "="));
+const naiveSource = readFileSync(
+  path.join(guiDir, "vendor/naive-ui.prod.js"),
+  "utf8"
+);
+const missingExports = NAIVE_REQUIRED.filter(
+  (name) => !naiveSource.includes("e." + name + "=")
+);
 if (missingExports.length) {
-  fail("vendor/naive-ui.prod.js is missing exports: " + missingExports.join(", "));
+  fail(
+    "vendor/naive-ui.prod.js is missing exports: " + missingExports.join(", ")
+  );
 } else {
   console.log(NAIVE_REQUIRED.length + " required naive-ui exports present");
 }
@@ -178,20 +270,28 @@ const JSONEDITOR_CSS = "vendor/jsoneditor/jsoneditor.min.css";
 
 const jsoneditorSource = readFileSync(path.join(guiDir, JSONEDITOR_JS), "utf8");
 if (!jsoneditorSource.includes(".JSONEditor=")) {
-  fail(JSONEDITOR_JS + " has no UMD global branch (.JSONEditor=) — window.JSONEditor would stay undefined");
+  fail(
+    JSONEDITOR_JS +
+      " has no UMD global branch (.JSONEditor=) — window.JSONEditor would stay undefined"
+  );
 }
 if (!jsoneditorSource.includes("zh-CN")) {
   fail(JSONEDITOR_JS + " has no zh-CN locale — RmJsonEditor.vue asks for it");
 }
 
 const jsoneditorCss = readFileSync(path.join(guiDir, JSONEDITOR_CSS), "utf8");
-const cssAssets = [...jsoneditorCss.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g)]
+const cssAssets = [
+  ...jsoneditorCss.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g)
+]
   .map((match) => match[1])
   .filter((href) => !href.startsWith("data:"));
 const missingAssets = [...new Set(cssAssets)].filter(
-  (href) => !existsSync(path.join(guiDir, "vendor", "jsoneditor", href)));
+  (href) => !existsSync(path.join(guiDir, "vendor", "jsoneditor", href))
+);
 if (missingAssets.length) {
-  fail(JSONEDITOR_CSS + " references missing assets: " + missingAssets.join(", "));
+  fail(
+    JSONEDITOR_CSS + " references missing assets: " + missingAssets.join(", ")
+  );
 } else {
   console.log(new Set(cssAssets).size + " jsoneditor css asset(s) present");
 }
@@ -203,7 +303,10 @@ const jsoneditorTag = indexHtml.indexOf(JSONEDITOR_JS);
 if (jsoneditorTag === -1) {
   fail("index.html does not load " + JSONEDITOR_JS);
 } else if (cjsRestore !== -1 && jsoneditorTag > cjsRestore) {
-  fail(JSONEDITOR_JS + " is loaded after the CJS globals are restored — window.JSONEditor will be undefined");
+  fail(
+    JSONEDITOR_JS +
+      " is loaded after the CJS globals are restored — window.JSONEditor will be undefined"
+  );
 }
 for (const sheet of [JSONEDITOR_CSS, "jsoneditor-theme.css"]) {
   if (!indexHtml.includes(sheet)) fail("index.html does not link " + sheet);
@@ -214,14 +317,27 @@ for (const sheet of [JSONEDITOR_CSS, "jsoneditor-theme.css"]) {
 // `<rm-virtual>…</rm-foo>` compiles fine and then explodes at render time with a
 // slot attached to the wrong component. Count the tags instead.
 const VOID_TAGS = new Set([
-  "area", "base", "br", "col", "embed", "hr", "img", "input",
-  "link", "meta", "param", "source", "track", "wbr",
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr"
 ]);
 
 function tagBalanceErrors(template) {
   const stack = [];
   const problems = [];
-  const tagPattern = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g;
+  const tagPattern =
+    /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g;
   let match;
   while ((match = tagPattern.exec(template)) !== null) {
     const [, closing, name, attrs, selfClosed] = match;
@@ -245,7 +361,9 @@ function tagBalanceErrors(template) {
 
 runFile("vendor/vue.global.prod.js");
 if (!sandbox.Vue || typeof sandbox.Vue.compile !== "function") {
-  fail("vendor/vue.global.prod.js did not expose a compiler-enabled Vue global");
+  fail(
+    "vendor/vue.global.prod.js did not expose a compiler-enabled Vue global"
+  );
   process.exit(1);
 }
 console.log("vue " + sandbox.Vue.version + " loaded (compiler present)");
@@ -256,7 +374,11 @@ for (const script of SCRIPTS) {
   try {
     runFile(script);
   } catch (error) {
-    fail(script + " threw while loading: " + (error && error.stack ? error.stack : error));
+    fail(
+      script +
+        " threw while loading: " +
+        (error && error.stack ? error.stack : error)
+    );
     process.exit(1);
   }
 }
@@ -273,7 +395,7 @@ if (!RMCH) {
 // Views reach the store as `store.something(...)`. Nothing type-checks that, and
 // a rename in ui/store/* only fails when a user clicks the button, so assert
 // every referenced name exists on the assembled store.
-const STORE_ALLOWED_MISSES = new Set(["value"]);   // `store.value` never appears; guard against noise
+const STORE_ALLOWED_MISSES = new Set(["value"]); // `store.value` never appears; guard against noise
 
 const storeObject = RMCH.store;
 if (!storeObject) {
@@ -288,32 +410,42 @@ if (!storeObject) {
     }
   }
   const missing = [...referenced]
-    .filter(([name]) => !STORE_ALLOWED_MISSES.has(name) && !(name in storeObject))
+    .filter(
+      ([name]) => !STORE_ALLOWED_MISSES.has(name) && !(name in storeObject)
+    )
     .map(([name, script]) => `${name} (${script})`);
   if (missing.length) {
-    fail("page scripts reference store members that do not exist:\n  " + missing.join("\n  "));
+    fail(
+      "page scripts reference store members that do not exist:\n  " +
+        missing.join("\n  ")
+    );
   } else {
-    console.log(referenced.size + " distinct store members referenced, all present");
+    console.log(
+      referenced.size + " distinct store members referenced, all present"
+    );
   }
 }
 
 // --- verify source templates and compiled component registration ------------
 
 let templates = 0;
-for (const file of frontendSources.filter(file => file.endsWith('.vue'))) {
-  const {descriptor, errors} = parseSfc(readFileSync(file, 'utf8'), {filename: file});
+for (const file of frontendSources.filter((file) => file.endsWith(".vue"))) {
+  const { descriptor, errors } = parseSfc(readFileSync(file, "utf8"), {
+    filename: file
+  });
   if (descriptor.template) {
     templates++;
     errors.push(...tagBalanceErrors(descriptor.template.content));
   }
-  for (const error of errors) fail(path.relative(guiDir, file) + ': ' + (error.message || error));
+  for (const error of errors)
+    fail(path.relative(guiDir, file) + ": " + (error.message || error));
 }
-
 
 const components = new Map();
 function collect(prefix, bag) {
   for (const [name, component] of Object.entries(bag || {})) {
-    if (component && typeof component === "object") components.set(prefix + name, component);
+    if (component && typeof component === "object")
+      components.set(prefix + name, component);
   }
 }
 collect("views.", RMCH.views);
@@ -325,20 +457,32 @@ let renderOnly = 0;
 
 for (const [name, component] of components) {
   if (typeof component.template !== "string") {
-    if (typeof component.render === "function" || typeof component.setup === "function") renderOnly += 1;
+    if (
+      typeof component.render === "function" ||
+      typeof component.setup === "function"
+    )
+      renderOnly += 1;
     continue;
   }
   const errors = [];
   let result = null;
-  tagBalanceErrors(component.template).forEach((problem) => errors.push("tags: " + problem));
+  tagBalanceErrors(component.template).forEach((problem) =>
+    errors.push("tags: " + problem)
+  );
   try {
     result = sandbox.Vue.compile(component.template, {
       onError: (error) => errors.push(error.message || String(error)),
-      onWarn: (warning) => errors.push("warn: " + (warning.message || String(warning))),
+      onWarn: (warning) =>
+        errors.push("warn: " + (warning.message || String(warning)))
     });
   } catch (error) {
-    errors.push(process.env.RMCH_DEBUG && error && error.stack ? error.stack
-      : (error && error.message ? error.message : String(error)));
+    errors.push(
+      process.env.RMCH_DEBUG && error && error.stack
+        ? error.stack
+        : error && error.message
+          ? error.message
+          : String(error)
+    );
   }
   if (errors.length) {
     fail(name + " template: " + errors.join(" | "));
@@ -351,38 +495,86 @@ for (const [name, component] of components) {
   compiled += 1;
 }
 
-console.log(templates + ' SFC templates checked, ' + renderOnly + ' compiled/render components registered');
-if (compiled) fail('Runtime string templates remain; move them to .vue');
-if (components.size !== frontendSources.filter(file => file.endsWith('.vue')).length) fail('A source component is missing from the integration registry');
+console.log(
+  templates +
+    " SFC templates checked, " +
+    renderOnly +
+    " compiled/render components registered"
+);
+if (compiled) fail("Runtime string templates remain; move them to .vue");
+if (
+  components.size !==
+  frontendSources.filter((file) => file.endsWith(".vue")).length
+)
+  fail("A source component is missing from the integration registry");
 
 // Sanity: the shell's five views must all exist and be components.
-for (const expected of ["Library", "Trainer", "Data", "DataItems", "DataFlags", "DataActors", "DataMap", "DataEvents", "DataTree", "Console", "Saves", "Log"]) {
-  if (!RMCH.views || !RMCH.views[expected]) fail("missing RMCH.views." + expected);
+for (const expected of [
+  "Library",
+  "Trainer",
+  "Data",
+  "DataItems",
+  "DataFlags",
+  "DataActors",
+  "DataMap",
+  "DataEvents",
+  "DataTree",
+  "Console",
+  "Saves",
+  "Log"
+]) {
+  if (!RMCH.views || !RMCH.views[expected])
+    fail("missing RMCH.views." + expected);
 }
 
 // Generated artifacts must match their sources before they can be packaged.
 // The CJS/frontend outputs are ignored by Git; the game bridge is tracked.
 function checkGeneratedFresh(name, file, expected) {
   if (!existsSync(file)) {
-    fail(name + " missing: " + file + " — run node tools/gui-build.mjs and bridge-build");
+    fail(
+      name +
+        " missing: " +
+        file +
+        " — run node tools/gui-build.mjs and bridge-build"
+    );
     return;
   }
   if (readFileSync(file, "utf8") !== expected) {
     if (process.env.RMCH_DEBUG) {
-      const actual = readFileSync(file, 'utf8');
+      const actual = readFileSync(file, "utf8");
       let offset = 0;
-      while (offset < actual.length && actual[offset] === expected[offset]) offset++;
-      console.error(JSON.stringify({name, offset, actual: actual.slice(offset, offset + 240), expected: expected.slice(offset, offset + 240)}));
+      while (offset < actual.length && actual[offset] === expected[offset])
+        offset++;
+      console.error(
+        JSON.stringify({
+          name,
+          offset,
+          actual: actual.slice(offset, offset + 240),
+          expected: expected.slice(offset, offset + 240)
+        })
+      );
     }
-    fail(name + " is stale against its sources — run node tools/gui-build.mjs && node tools/rmch.mjs bridge-build, then commit");
+    fail(
+      name +
+        " is stale against its sources — run node tools/gui-build.mjs && node tools/rmch.mjs bridge-build, then commit"
+    );
   }
 }
-checkGeneratedFresh("gui-bundle.cjs",
-  path.join(guiDir, "gui-bundle.cjs"), assembleGuiBundle(projectRoot));
-checkGeneratedFresh("modern.js", path.join(guiDir, "ui", "modern.js"), expectedFrontend);
-checkGeneratedFresh("page-bridge.js",
+checkGeneratedFresh(
+  "gui-bundle.cjs",
+  path.join(guiDir, "gui-bundle.cjs"),
+  assembleGuiBundle(projectRoot)
+);
+checkGeneratedFresh(
+  "modern.js",
+  path.join(guiDir, "ui", "modern.js"),
+  expectedFrontend
+);
+checkGeneratedFresh(
+  "page-bridge.js",
   path.join(projectRoot, "runtime", "bridge", "page-bridge.js"),
-  BRIDGE_BANNER + assembleBridgeBody(projectRoot));
+  BRIDGE_BANNER + assembleBridgeBody(projectRoot)
+);
 console.log("generated bundles fresh");
 
 if (process.exitCode) {

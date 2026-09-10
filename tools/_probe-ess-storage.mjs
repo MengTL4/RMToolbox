@@ -11,9 +11,16 @@ const gameRoot = process.argv[2];
 const loadSlot = Number(process.argv[3] || 1);
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const resolved = path.resolve(gameRoot);
-const gameKey = path.basename(resolved).replace(/[^a-z0-9_-]+/gi, "_").slice(0, 60);
+const gameKey = path
+  .basename(resolved)
+  .replace(/[^a-z0-9_-]+/gi, "_")
+  .slice(0, 60);
 
-const handle = await launchRgssGame({ gameRoot: resolved, projectRoot, gameKey });
+const handle = await launchRgssGame({
+  gameRoot: resolved,
+  projectRoot,
+  gameKey
+});
 const { session } = handle;
 console.log(`bridge: connected (${session.hello?.engine || "?"})`);
 
@@ -30,10 +37,14 @@ async function check(label, fn) {
   }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const roster = () => session.send("catalog.query", { kind: "actor", limit: 20000 }, 30000);
-const partySize = () => session.send("party.info", {}, 30000).then((p) => p.members.length);
+const roster = () =>
+  session.send("catalog.query", { kind: "actor", limit: 20000 }, 30000);
+const partySize = () =>
+  session.send("party.info", {}, 30000).then((p) => p.members.length);
 
-await check("save.load", async () => JSON.stringify(await session.send("save.load", { id: loadSlot }, 30000)));
+await check("save.load", async () =>
+  JSON.stringify(await session.send("save.load", { id: loadSlot }, 30000))
+);
 await sleep(4000); // let Scene_Map settle
 
 const before = await check("roster lists party + boxes", async () => {
@@ -48,13 +59,17 @@ const boxed0 = (await roster()).entries.filter((e) => e.id >= 1000);
 
 if (boxed0.length) {
   const first = boxed0[0];
-  await check(`boxed entry carries box number (#${first.id} ${first.name})`, async () => {
-    if (!first.box) throw new Error("no box field: " + JSON.stringify(first));
-    return `box=${first.box} note=${first.note}`;
-  });
+  await check(
+    `boxed entry carries box number (#${first.id} ${first.name})`,
+    async () => {
+      if (!first.box) throw new Error("no box field: " + JSON.stringify(first));
+      return `box=${first.box} note=${first.note}`;
+    }
+  );
   await check("actor.info on boxed id", async () => {
     const p = await session.send("actor.info", { id: first.id }, 30000);
-    if (!p.actor || p.actor.id !== first.id) throw new Error(JSON.stringify(p.actor && p.actor.id));
+    if (!p.actor || p.actor.id !== first.id)
+      throw new Error(JSON.stringify(p.actor && p.actor.id));
     return `${p.actor.name} (${p.actor.className}) Lv.${p.actor.level}`;
   });
 }
@@ -68,17 +83,27 @@ if (size0 >= 2) {
     if (n !== size0 - 1) throw new Error(`party ${size0} -> ${n}`);
     return `party ${size0} -> ${n}`;
   });
-  const stored = await check("stored member appears in roster as boxed", async () => {
-    const boxed = (await roster()).entries.filter((e) => e.id >= 1000);
-    const hit = boxed.find((e) => e.name === name2 && !boxed0.some((b) => b.id === e.id));
-    if (!hit) throw new Error("not found: " + JSON.stringify(boxed.map((b) => b.name)));
-    return hit;
-  });
+  const stored = await check(
+    "stored member appears in roster as boxed",
+    async () => {
+      const boxed = (await roster()).entries.filter((e) => e.id >= 1000);
+      const hit = boxed.find(
+        (e) => e.name === name2 && !boxed0.some((b) => b.id === e.id)
+      );
+      if (!hit)
+        throw new Error(
+          "not found: " + JSON.stringify(boxed.map((b) => b.name))
+        );
+      return hit;
+    }
+  );
   if (stored) {
     await check("actor.info on the freshly stored id", async () => {
       const p = await session.send("actor.info", { id: stored.id }, 30000);
       if (!p.actor || p.actor.id !== stored.id || p.actor.name !== name2) {
-        throw new Error(JSON.stringify(p.actor && { id: p.actor.id, name: p.actor.name }));
+        throw new Error(
+          JSON.stringify(p.actor && { id: p.actor.id, name: p.actor.name })
+        );
       }
       return `${p.actor.name} (${p.actor.className}) Lv.${p.actor.level} hp=${p.actor.hp}/${p.actor.mhp}`;
     });
@@ -86,12 +111,14 @@ if (size0 >= 2) {
       const p = await session.send("party.addActor", { id: stored.id }, 30000);
       const n = await partySize();
       if (n !== size0) throw new Error(`party -> ${n}`);
-      if (!p.actor || p.actor.name !== name2) throw new Error("withdrew " + (p.actor && p.actor.name));
+      if (!p.actor || p.actor.name !== name2)
+        throw new Error("withdrew " + (p.actor && p.actor.name));
       return `${p.actor.name} -> party slot ${p.id}`;
     });
     await check("roster back to original shape", async () => {
       const boxed = (await roster()).entries.filter((e) => e.id >= 1000);
-      if (boxed.length !== boxed0.length) throw new Error(`boxed ${boxed0.length} -> ${boxed.length}`);
+      if (boxed.length !== boxed0.length)
+        throw new Error(`boxed ${boxed0.length} -> ${boxed.length}`);
     });
   }
 } else {
@@ -136,33 +163,52 @@ await check("party.addActor on an empty box slot refuses", async () => {
 
 // --- createPokemon (debug-menu code path) --------------------------------------
 const dexEntry = await check("catalog enemy = species dex", async () => {
-  const p = await session.send("catalog.query", { kind: "enemy", limit: 5 }, 30000);
+  const p = await session.send(
+    "catalog.query",
+    { kind: "enemy", limit: 5 },
+    30000
+  );
   if (!p.entries.length) throw new Error("empty dex");
   return p.entries[0];
 });
 if (dexEntry) {
   const sizeNow = await partySize();
   await check(`party.createPokemon ${dexEntry.id} -> party`, async () => {
-    const p = await session.send("party.createPokemon", { species: dexEntry.id, level: 5 }, 30000);
-    if (p.where !== "party" || !p.actor) throw new Error(JSON.stringify({ where: p.where, id: p.id }));
+    const p = await session.send(
+      "party.createPokemon",
+      { species: dexEntry.id, level: 5 },
+      30000
+    );
+    if (p.where !== "party" || !p.actor)
+      throw new Error(JSON.stringify({ where: p.where, id: p.id }));
     const n = await partySize();
     if (n !== sizeNow + 1) throw new Error(`party ${sizeNow} -> ${n}`);
     return `${p.actor.name} Lv.${p.actor.level} slot ${p.id} (party ${sizeNow} -> ${n})`;
   });
   await check("party.createPokemon with full party -> box", async () => {
-    const p = await session.send("party.createPokemon", { species: dexEntry.id, level: 5 }, 30000);
-    if (p.where !== "box" || !(p.id >= 1000)) throw new Error(JSON.stringify({ where: p.where, id: p.id }));
+    const p = await session.send(
+      "party.createPokemon",
+      { species: dexEntry.id, level: 5 },
+      30000
+    );
+    if (p.where !== "box" || !(p.id >= 1000))
+      throw new Error(JSON.stringify({ where: p.where, id: p.id }));
     return `${p.actor.name} -> box slot #${p.id}`;
   });
   await check("created pair visible in roster", async () => {
     const boxed = (await roster()).entries.filter((e) => e.id >= 1000);
-    if (!boxed.some((e) => e.name === dexEntry.name)) throw new Error("not in roster");
+    if (!boxed.some((e) => e.name === dexEntry.name))
+      throw new Error("not in roster");
     return `boxed=${boxed.length}`;
   });
 }
 await check("party.createPokemon bogus species refuses", async () => {
   try {
-    await session.send("party.createPokemon", { species: "NOTAREALMON", level: 5 }, 30000);
+    await session.send(
+      "party.createPokemon",
+      { species: "NOTAREALMON", level: 5 },
+      30000
+    );
     throw new Error("should have raised");
   } catch (error) {
     if (/未知物种/.test(error.message)) return error.message;

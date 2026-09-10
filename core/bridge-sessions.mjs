@@ -17,7 +17,9 @@ export class SessionRegistry extends EventEmitter {
   }
 
   list(kind) {
-    return [...this.entries.get(kind).values()].map(({ session }) => session.describe());
+    return [...this.entries.get(kind).values()].map(({ session }) =>
+      session.describe()
+    );
   }
 
   register(kind, session) {
@@ -31,7 +33,9 @@ export class SessionRegistry extends EventEmitter {
       // the old close event cannot remove the replacement, then release its
       // timers/socket and reject its pending commands.
       previous.unwire();
-      try { previous.session.close?.(); } catch (_) {}
+      try {
+        previous.session.close?.();
+      } catch (_) {}
     }
     const onHello = () => this.emit("changed", gameKey);
     const onState = (state) => this.emit("state", gameKey, state);

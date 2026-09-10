@@ -5,8 +5,8 @@
 // are made through the assembled store object rather than direct references, so
 // load order only has to satisfy "core first" — the rest resolves at call time.
 
-import { getGuiHost } from '../../src/host';
-import { createGameDrafts } from '../../src/state/drafts';
+import { getGuiHost } from "../../src/host";
+import { createGameDrafts } from "../../src/state/drafts";
 
 (function () {
   "use strict";
@@ -32,24 +32,28 @@ import { createGameDrafts } from '../../src/state/drafts';
     ready: false,
     port: null,
     bootError: null,
-    about: null,         // host.cjs describe().about — versions/runtime for About
+    about: null, // host.cjs describe().about — versions/runtime for About
+    update: null, // host.cjs checkForUpdate() result, null until/unless checked
     projectRoot: null,
     games: [],
-    icons: {},           // gameKey -> data URL of the game's own icon (www/icon/icon.png)
-    routePlans: {},      // gameKey -> static launch-route plan from the host
-    routeChoices: {},    // gameKey -> per-session user override (auto/shadow/dll/extension)
+    icons: {}, // gameKey -> data URL of the game's own icon (www/icon/icon.png)
+    routePlans: {}, // gameKey -> static launch-route plan from the host
+    routeChoices: {}, // gameKey -> per-session user override (auto/shadow/dll/extension)
     scanning: false,
     sessions: [],
     pids: {},
-    busy: {},            // gameKey -> "launching" | "stopping"
-    operations: {},      // last visible outcome per game
+    busy: {}, // gameKey -> "launching" | "stopping"
+    operations: {}, // last visible outcome per game
     selectionEpoch: 0,
     log: [],
     logSeq: 0
   });
 
   // Viewport size, so list panes can size themselves without CSS calc guesswork.
-  var viewport = reactive({ width: window.innerWidth, height: window.innerHeight });
+  var viewport = reactive({
+    width: window.innerWidth,
+    height: window.innerHeight
+  });
   window.addEventListener("resize", function () {
     viewport.width = window.innerWidth;
     viewport.height = window.innerHeight;
@@ -60,18 +64,21 @@ import { createGameDrafts } from '../../src/state/drafts';
 
   function log(line) {
     state.log.push(line);
-    if (state.log.length > LOG_CAP) state.log.splice(0, state.log.length - LOG_CAP);
+    if (state.log.length > LOG_CAP)
+      state.log.splice(0, state.log.length - LOG_CAP);
     state.logSeq += 1;
   }
 
   function toast(kind, text) {
     log("[" + kind + "] " + text);
-    if (feedback.message && feedback.message[kind]) feedback.message[kind](text);
+    if (feedback.message && feedback.message[kind])
+      feedback.message[kind](text);
   }
 
   function sessionFor(gameKey) {
     for (var i = 0; i < state.sessions.length; i += 1) {
-      if (state.sessions[i].gameKey === gameKey && state.sessions[i].alive) return state.sessions[i];
+      if (state.sessions[i].gameKey === gameKey && state.sessions[i].alive)
+        return state.sessions[i];
     }
     return null;
   }
@@ -87,15 +94,15 @@ import { createGameDrafts } from '../../src/state/drafts';
     loading: {
       label: "游戏启动中",
       type: "warning",
-      hint: "桥接已连上，游戏引擎还在启动；窗口会先黑屏，请等标题画面出现后再操作。",
+      hint: "桥接已连上，游戏引擎还在启动；窗口会先黑屏，请等标题画面出现后再操作。"
     },
     menu: {
       label: "已连接 · 标题/菜单",
       type: "success",
-      hint: "游戏已经在标题/菜单画面。如果窗口仍是黑的，说明素材还在从磁盘加载（大型 RGSS 游戏首次启动约 1–2 分钟）。",
+      hint: "游戏已经在标题/菜单画面。如果窗口仍是黑的，说明素材还在从磁盘加载（大型 RGSS 游戏首次启动约 1–2 分钟）。"
     },
     inGame: { label: "已连接", type: "success" },
-    connected: { label: "已连接", type: "success" },
+    connected: { label: "已连接", type: "success" }
   };
 
   function sessionPhase(session) {
@@ -117,21 +124,32 @@ import { createGameDrafts } from '../../src/state/drafts';
     return gameKey;
   }
 
-  var useDraft = createGameDrafts(function () { return store.trainer.gameKey; });
+  var useDraft = createGameDrafts(function () {
+    return store.trainer.gameKey;
+  });
   function selectedCommand(type, args, warn) {
     var key = store.trainer && store.trainer.gameKey;
     var epoch = state.selectionEpoch;
     if (!key || !sessionFor(key)) {
-      if (warn) store.warn(key ? "当前游戏已断开，请先重新连接" : "请先选择游戏");
+      if (warn)
+        store.warn(key ? "当前游戏已断开，请先重新连接" : "请先选择游戏");
       return Promise.resolve(null);
     }
-    return store.send(key, type, args).then(function (payload) {
-      return epoch === state.selectionEpoch && key === store.trainer.gameKey && sessionFor(key) ? payload : null;
-    }).catch(function (error) {
-      log("[命令失败] " + key + " " + type + ": " + error.message);
-      if (warn && epoch === state.selectionEpoch) store.warn("操作失败：" + error.message);
-      return null;
-    });
+    return store
+      .send(key, type, args)
+      .then(function (payload) {
+        return epoch === state.selectionEpoch &&
+          key === store.trainer.gameKey &&
+          sessionFor(key)
+          ? payload
+          : null;
+      })
+      .catch(function (error) {
+        log("[命令失败] " + key + " " + type + ": " + error.message);
+        if (warn && epoch === state.selectionEpoch)
+          store.warn("操作失败：" + error.message);
+        return null;
+      });
   }
 
   var store = {
@@ -142,17 +160,26 @@ import { createGameDrafts } from '../../src/state/drafts';
     // Live refreshes supply defaults, never overwrite an edited draft.
     useDraft: useDraft,
     gameDialog: function (dialog) {
-      return { warning: function (options) {
-        var epoch = state.selectionEpoch;
-        var apply = options.onPositiveClick;
-        return dialog.warning(Object.assign({}, options, { onPositiveClick: function () {
-          if (epoch !== state.selectionEpoch || !store.currentConnected.value) {
-            store.warn("当前游戏或连接已变化，请重新发起操作");
-            return;
-          }
-          return apply && apply();
-        } }));
-      } };
+      return {
+        warning: function (options) {
+          var epoch = state.selectionEpoch;
+          var apply = options.onPositiveClick;
+          return dialog.warning(
+            Object.assign({}, options, {
+              onPositiveClick: function () {
+                if (
+                  epoch !== state.selectionEpoch ||
+                  !store.currentConnected.value
+                ) {
+                  store.warn("当前游戏或连接已变化，请重新发起操作");
+                  return;
+                }
+                return apply && apply();
+              }
+            })
+          );
+        }
+      };
     },
 
     ITEM_KINDS: ["item", "weapon", "armor"],
@@ -163,14 +190,24 @@ import { createGameDrafts } from '../../src/state/drafts';
       feedback.dialog = api.dialog || null;
     },
     log: log,
-    ok: function (text) { toast("success", text); },
-    info: function (text) { toast("info", text); },
-    warn: function (text) { toast("warning", text); },
-    fail: function (text) { toast("error", text); },
+    ok: function (text) {
+      toast("success", text);
+    },
+    info: function (text) {
+      toast("info", text);
+    },
+    warn: function (text) {
+      toast("warning", text);
+    },
+    fail: function (text) {
+      toast("error", text);
+    },
 
     // --- helpers -------------------------------------------------------------
     sleep: function (ms) {
-      return new Promise(function (resolve) { setTimeout(resolve, ms); });
+      return new Promise(function (resolve) {
+        setTimeout(resolve, ms);
+      });
     },
     sessionFor: sessionFor,
     sessionPhase: sessionPhase,
@@ -186,7 +223,8 @@ import { createGameDrafts } from '../../src/state/drafts';
     // save-data tree) or needs to distinguish failure from "no game".
     send: function (gameKey, type, args) {
       if (!gameKey) return Promise.reject(new Error("未选择游戏"));
-      if (!sessionFor(gameKey)) return Promise.reject(new Error("游戏已断开，请先重新连接"));
+      if (!sessionFor(gameKey))
+        return Promise.reject(new Error("游戏已断开，请先重新连接"));
       return server.send(gameKey, type, args || {});
     },
 
@@ -207,15 +245,22 @@ import { createGameDrafts } from '../../src/state/drafts';
   };
 
   store.liveGameOptions = computed(function () {
-    return state.sessions.filter(function (s) { return s.alive; }).map(function (s) {
-      return { label: titleFor(s.gameKey) + "（已连接）", value: s.gameKey };
-    });
+    return state.sessions
+      .filter(function (s) {
+        return s.alive;
+      })
+      .map(function (s) {
+        return { label: titleFor(s.gameKey) + "（已连接）", value: s.gameKey };
+      });
   });
-  store.currentConnected = computed(function () { return !!sessionFor(store.trainer && store.trainer.gameKey); });
+  store.currentConnected = computed(function () {
+    return !!sessionFor(store.trainer && store.trainer.gameKey);
+  });
   store.currentGameOptions = computed(function () {
     var options = store.liveGameOptions.value.slice();
     var key = store.trainer && store.trainer.gameKey;
-    if (key && !sessionFor(key)) options.unshift({ label: titleFor(key) + "（已断开）", value: key });
+    if (key && !sessionFor(key))
+      options.unshift({ label: titleFor(key) + "（已断开）", value: key });
     return options;
   });
 

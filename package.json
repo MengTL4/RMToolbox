@@ -4,11 +4,14 @@
   "private": true,
   "type": "module",
   "description": "RM Toolbox (internal codename RMCH): trainer for local single-player RPG Maker MV/MZ (NW.js) and XP/VX/VX Ace (RGSS) games",
+  "license": "SEE LICENSE IN LICENSE",
   "engines": {
     "node": ">=22.12.0"
   },
   "scripts": {
     "build": "node tools/pack-release.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "typecheck": "vue-tsc --noEmit",
     "gui:setup": "node tools/setup-gui.mjs",
     "test:gui-runtime": "node tools/test-gui-runtime.mjs",
@@ -25,11 +28,12 @@
     "test:host-rgss": "node tools/test-host-rgss.cjs",
     "test:inject": "node tools/test-attach.mjs && node tools/test-inject-selftest.mjs",
     "pretest": "npm run gui:build",
-    "test": "npm run typecheck && node tools/test-gui-runtime-setup.mjs && node tools/test-gui-host-boundary.mjs && node tools/test-game-runtime.mjs && node tools/test-launch-plan.mjs && node tools/test-renamed-engine.mjs && node tools/test-frame-pacing.mjs && node tools/test-scene-speed.mjs && node tools/test-native-menu-scenes.mjs && node tools/test-th-actor-parameters.mjs && node tools/test-ft-levels.mjs && node tools/test-mz-forage-saves.mjs && node tools/test-sealed-scene-publication.mjs && node tools/test-th-inventory.mjs && node tools/test-inventory-locks.mjs && node tools/test-nw-attachment.mjs && node tools/test-save-files.mjs && node tools/test-webstorage-saves.mjs && node tools/test-game-icons.mjs && node tools/test-ui-interactions.mjs && node tools/test-jsonl-reader.mjs && node tools/test-bridge-sessions.mjs && node tools/test-ws-server.mjs && node tools/test-bridge-harness.mjs && node tools/test-event-tools.mjs && node tools/test-event-execution.mjs && node tools/test-shadow-launcher.mjs && node tools/test-rgss-marshal.mjs && node tools/test-rgss-archive.mjs && node tools/test-attach.mjs && node tools/test-inject-selftest.mjs && node tools/test-tauri-cdp.mjs && node tools/test-nb-shell.mjs && node tools/test-file-session.mjs && node tools/test-evb-unpack.mjs && node tools/gui-check.mjs",
+    "test": "npm run typecheck && node tools/test-gui-runtime-setup.mjs && node tools/test-gui-host-boundary.mjs && node tools/test-game-runtime.mjs && node tools/test-launch-plan.mjs && node tools/test-renamed-engine.mjs && node tools/test-frame-pacing.mjs && node tools/test-scene-speed.mjs && node tools/test-native-menu-scenes.mjs && node tools/test-th-actor-parameters.mjs && node tools/test-ft-levels.mjs && node tools/test-mz-forage-saves.mjs && node tools/test-sealed-scene-publication.mjs && node tools/test-th-inventory.mjs && node tools/test-inventory-locks.mjs && node tools/test-nw-attachment.mjs && node tools/test-save-files.mjs && node tools/test-webstorage-saves.mjs && node tools/test-game-icons.mjs && node tools/test-ui-interactions.mjs && node tools/test-jsonl-reader.mjs && node tools/test-bridge-sessions.mjs && node tools/test-ws-server.mjs && node tools/test-bridge-harness.mjs && node tools/test-event-tools.mjs && node tools/test-event-execution.mjs && node tools/test-shadow-launcher.mjs && node tools/test-rgss-marshal.mjs && node tools/test-rgss-archive.mjs && node tools/test-attach.mjs && node tools/test-inject-selftest.mjs && node tools/test-tauri-cdp.mjs && node tools/test-nb-shell.mjs && node tools/test-file-session.mjs && node tools/test-evb-unpack.mjs && node tools/commands-doc.mjs --check && node tools/gui-check.mjs",
     "test:rgss": "node tools/test-rgss-marshal.mjs && node tools/test-rgss-archive.mjs"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "6.0.8",
+    "prettier": "3.9.6",
     "typescript": "5.9.3",
     "vite": "8.2.2",
     "vue": "3.5.13",

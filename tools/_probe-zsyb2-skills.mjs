@@ -10,34 +10,52 @@ import { launchNwInjectGame } from "../core/attach.mjs";
 
 const projectRoot = "E:\\project\\RMToolbox";
 const gameRoot = "F:\\SteamLibrary\\steamapps\\common\\再刷一把2：金色传说";
-const stateDir = path.join(projectRoot, "runtime", "bridge-state", "再刷一把2：金色传说");
+const stateDir = path.join(
+  projectRoot,
+  "runtime",
+  "bridge-state",
+  "再刷一把2：金色传说"
+);
 const commandsPath = path.join(stateDir, "commands.jsonl");
 const eventsPath = path.join(stateDir, "events.jsonl");
 const t0 = Date.now();
-const elog = (msg) => console.log(`[+${((Date.now() - t0) / 1000).toFixed(1)}s] ${msg}`);
+const elog = (msg) =>
+  console.log(`[+${((Date.now() - t0) / 1000).toFixed(1)}s] ${msg}`);
 
 for (const f of ["commands.jsonl", "events.jsonl", "state.json"]) {
   rmSync(path.join(stateDir, f), { force: true });
 }
 
 const scan = scanGame(gameRoot);
-elog(`scan: engine=${scan.engine && scan.engine.id} container=${scan.container || "(none)"} key=${scan.gameKey}`);
+elog(
+  `scan: engine=${scan.engine && scan.engine.id} container=${scan.container || "(none)"} key=${scan.gameKey}`
+);
 
 const summary = await launchNwInjectGame({ scan, projectRoot, port: 47413 });
-elog(`launch: strategy=${summary.strategy} pid=${summary.pid} injected=${(summary.injected || []).join("/")}`);
+elog(
+  `launch: strategy=${summary.strategy} pid=${summary.pid} injected=${(summary.injected || []).join("/")}`
+);
 
 let cmdN = 0;
 async function cmd(type, args, timeoutMs = 10000) {
   cmdN += 1;
   const id = `probe${cmdN}`;
   const before = existsSync(eventsPath)
-    ? readFileSync(eventsPath, "utf8").split(/\r?\n/).filter(Boolean).length : 0;
-  writeFileSync(commandsPath, JSON.stringify({ commandId: id, ts: Date.now(), type, args: args || {} }) + "\n", { flag: "a" });
+    ? readFileSync(eventsPath, "utf8").split(/\r?\n/).filter(Boolean).length
+    : 0;
+  writeFileSync(
+    commandsPath,
+    JSON.stringify({ commandId: id, ts: Date.now(), type, args: args || {} }) +
+      "\n",
+    { flag: "a" }
+  );
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 300));
     if (!existsSync(eventsPath)) continue;
-    const lines = readFileSync(eventsPath, "utf8").split(/\r?\n/).filter(Boolean);
+    const lines = readFileSync(eventsPath, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean);
     for (let i = Math.max(before, 0); i < lines.length; i += 1) {
       try {
         const e = JSON.parse(lines[i]);
@@ -64,7 +82,9 @@ if (skill && skill.ok && skill.payload) {
   const last = p.entries[p.entries.length - 1];
   if (last) elog(`last entry: id=${last.id} name=${last.name}`);
   if (p.entries.length < p.total) {
-    elog(`TRUNCATED: ${p.total - p.entries.length} skills missing from the response`);
+    elog(
+      `TRUNCATED: ${p.total - p.entries.length} skills missing from the response`
+    );
   } else {
     elog("FULL: every skill in the table was returned");
   }
@@ -72,6 +92,10 @@ if (skill && skill.ok && skill.payload) {
   elog(`skill catalog query failed: ${JSON.stringify(skill).slice(0, 200)}`);
 }
 
-try { execSync('powershell -NoProfile -Command "Stop-Process -Name Game -Force -ErrorAction SilentlyContinue"'); } catch (_) {}
+try {
+  execSync(
+    'powershell -NoProfile -Command "Stop-Process -Name Game -Force -ErrorAction SilentlyContinue"'
+  );
+} catch (_) {}
 spawn("taskkill", ["/IM", "Game.exe", "/F"], { stdio: "ignore" });
 elog("done (game killed)");

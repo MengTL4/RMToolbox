@@ -1,0 +1,84 @@
+name: verify
+
+# The build is Windows-only (NW.js + native DLL injectors), so the whole matrix
+# is windows-latest. These jobs deliberately stop short of launching a real game:
+# that needs a game install and stays on a developer machine. What runs here is
+# everything that must hold before a release is packed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Ruby is required, not optional: three test files exercise the RGSS
+      # adapters through Ruby fixtures and used to skip silently when it was
+      # missing. Without this step the suite would be green having run none of
+      # that coverage.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+
+      - run: npm ci
+
+      - name: Type check and build the frontend
+        run: npm run gui:build
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Regression suite
+        run: npm test
+
+      - name: Command reference is up to date
+        run: node tools/commands-doc.mjs --check
+
+  # The committed injector binaries are what users actually run, and nothing in
+  # the test suite rebuilds them. Rebuilding from runtime/inject/src in CI is the
+  # cheapest honest check that they match their source.
+  injectors:
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-i686-gcc
+            mingw-w64-ucrt-x86_64-lld
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Rebuild the injectors from source
+        shell: msys2 {0}
+        run: node tools/build-inject.mjs
+
+      - name: Report drift against the committed binaries
+        shell: pwsh
+        run: |
+          $drift = git status --porcelain runtime/inject/bin
+          if ($drift) {
+            Write-Host "::warning::committed injector binaries differ from a fresh build from runtime/inject/src"
+            Write-Host $drift
+          } else {
+            Write-Host "committed injector binaries match a fresh build"
+          }

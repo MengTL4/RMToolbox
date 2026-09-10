@@ -42,7 +42,8 @@ export const MODULES = [
 
 // Matches: import { a, b } from "...";  |  import x from "...";
 //          |  import * as ns from "...";  — clause may span multiple lines.
-const IMPORT_REGEX = /import\s+(?:([A-Za-z_$][\w$]*)|\{([^}]*)\}|(\*\s*as\s+[A-Za-z_$][\w$]*))\s+from\s+["']([^"']+)["']\s*;?/g;
+const IMPORT_REGEX =
+  /import\s+(?:([A-Za-z_$][\w$]*)|\{([^}]*)\}|(\*\s*as\s+[A-Za-z_$][\w$]*))\s+from\s+["']([^"']+)["']\s*;?/g;
 const SIDEEFFECT_IMPORT_REGEX = /^[ \t]*import\s+["']([^"']+)["'];?[ \t]*$/gm;
 
 function resolveSpec(from, importer) {
@@ -51,69 +52,97 @@ function resolveSpec(from, importer) {
 }
 
 function isBuiltin(spec) {
-  return spec.startsWith("node:") || spec === "fs" || spec === "path" || spec === "http" ||
-    spec === "net" || spec === "crypto" || spec === "events" || spec === "url" ||
-    spec === "child_process";
+  return (
+    spec.startsWith("node:") ||
+    spec === "fs" ||
+    spec === "path" ||
+    spec === "http" ||
+    spec === "net" ||
+    spec === "crypto" ||
+    spec === "events" ||
+    spec === "url" ||
+    spec === "child_process"
+  );
 }
 
 function convertModule(source, name) {
   let code = source;
   const exports = [];
 
-  code = code.replace(IMPORT_REGEX, (match, defaultName, namedClause, namespaceClause, spec) => {
-    const load = isBuiltin(spec)
-      ? `require(${JSON.stringify(spec)})`
-      : `require_mod(${JSON.stringify(resolveSpec(spec, name))})`;
-    if (namedClause !== undefined) {
-      const names = namedClause.split(",").map((piece) => piece.trim()).filter(Boolean);
-      return `const { ${names.join(", ")} } = ${load};`;
+  code = code.replace(
+    IMPORT_REGEX,
+    (match, defaultName, namedClause, namespaceClause, spec) => {
+      const load = isBuiltin(spec)
+        ? `require(${JSON.stringify(spec)})`
+        : `require_mod(${JSON.stringify(resolveSpec(spec, name))})`;
+      if (namedClause !== undefined) {
+        const names = namedClause
+          .split(",")
+          .map((piece) => piece.trim())
+          .filter(Boolean);
+        return `const { ${names.join(", ")} } = ${load};`;
+      }
+      if (namespaceClause !== undefined) {
+        const ns = namespaceClause.replace(/\*\s*as\s+/, "").trim();
+        return `const ${ns} = ${load};`;
+      }
+      // Default import of a Node builtin resolves to the whole CJS module.
+      return `const ${defaultName} = ${load};`;
     }
-    if (namespaceClause !== undefined) {
-      const ns = namespaceClause.replace(/\*\s*as\s+/, "").trim();
-      return `const ${ns} = ${load};`;
-    }
-    // Default import of a Node builtin resolves to the whole CJS module.
-    return `const ${defaultName} = ${load};`;
-  });
+  );
 
   code = code.replace(SIDEEFFECT_IMPORT_REGEX, () => "");
 
   if (/export\s+default/.test(code)) {
-    throw new Error(`${name}: export default is not supported by the GUI bundler`);
+    throw new Error(
+      `${name}: export default is not supported by the GUI bundler`
+    );
   }
 
-  code = code.replace(/^export\s+(async\s+)?function\s+([A-Za-z_$][\w$]*)/gm,
+  code = code.replace(
+    /^export\s+(async\s+)?function\s+([A-Za-z_$][\w$]*)/gm,
     (match, asyncKw, fnName) => {
       exports.push(fnName);
       return `${asyncKw || ""}function ${fnName}`;
-    });
-  code = code.replace(/^export\s+class\s+([A-Za-z_$][\w$]*)/gm, (match, className) => {
-    exports.push(className);
-    return `class ${className}`;
-  });
-  code = code.replace(/^export\s+(const|let|var)\s+([A-Za-z_$][\w$]*)/gm,
+    }
+  );
+  code = code.replace(
+    /^export\s+class\s+([A-Za-z_$][\w$]*)/gm,
+    (match, className) => {
+      exports.push(className);
+      return `class ${className}`;
+    }
+  );
+  code = code.replace(
+    /^export\s+(const|let|var)\s+([A-Za-z_$][\w$]*)/gm,
     (match, kw, varName) => {
       exports.push(varName);
       return `${kw} ${varName}`;
-    });
+    }
+  );
   // `export { a, b as c }`. The alias is the name importers use, so keep both
   // sides — exporting `a` under its local name would silently break `import { c }`.
-  code = code.replace(/^[ \t]*export\s*\{([^}]+)\};?[ \t]*$/gm, (match, clause) => {
-    for (const part of clause.split(",")) {
-      const piece = part.trim();
-      if (!piece) continue;
-      const [local, alias] = piece.split(/\s+as\s+/);
-      exports.push({ local: local.trim(), alias: (alias || local).trim() });
+  code = code.replace(
+    /^[ \t]*export\s*\{([^}]+)\};?[ \t]*$/gm,
+    (match, clause) => {
+      for (const part of clause.split(",")) {
+        const piece = part.trim();
+        if (!piece) continue;
+        const [local, alias] = piece.split(/\s+as\s+/);
+        exports.push({ local: local.trim(), alias: (alias || local).trim() });
+      }
+      return "";
     }
-    return "";
-  });
+  );
 
   // Class declarations are in TDZ until evaluated, so assign exports at the
   // end of the factory body rather than using eval at define time.
   const assignLines = exports
-    .map((entry) => (typeof entry === "string"
-      ? `  module_exports.${entry} = ${entry};`
-      : `  module_exports.${entry.alias} = ${entry.local};`))
+    .map((entry) =>
+      typeof entry === "string"
+        ? `  module_exports.${entry} = ${entry};`
+        : `  module_exports.${entry.alias} = ${entry.local};`
+    )
     .join("\n");
   return `${code}\n  const module_exports = {};\n${assignLines}\n  return module_exports;`;
 }
@@ -144,7 +173,7 @@ export function assembleGuiBundle(projectRoot) {
       if (!bundled.has(resolved)) {
         throw new Error(
           `${modulePath} imports "${spec}" but ${resolved} is not in the GUI bundle — ` +
-          "add it to MODULES in core/gui-bundler.mjs"
+            "add it to MODULES in core/gui-bundler.mjs"
         );
       }
     }
@@ -169,7 +198,9 @@ function require_mod(name) {
   for (const modulePath of MODULES) {
     const file = path.join(projectRoot, modulePath);
     const source = readFileSync(file, "utf8");
-    parts.push(`define_mod(${JSON.stringify(modulePath)}, function () {\n${convertModule(source, modulePath)}\n});\n`);
+    parts.push(
+      `define_mod(${JSON.stringify(modulePath)}, function () {\n${convertModule(source, modulePath)}\n});\n`
+    );
   }
 
   parts.push(`
