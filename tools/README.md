@@ -43,21 +43,34 @@
 
 **改了桥接源码或前端后必须重新生成**，否则 `gui-check` 会失败：`node tools/gui-build.mjs && node tools/rmch.mjs bridge-build`。
 
-## 实机探针（历史笔记）
+## 实机探针 `probes/`（历史笔记）
 
-以下脚本是适配具体游戏时写的一次性探针，**需要在你的机器上有一份对应的游戏本体**，很多还带着硬编码的本机路径。它们不是产品的一部分，保留价值在于记录了当时怎么排查的：
+`probes/` 里的 56 个脚本是适配具体游戏时写的一次性探针，**需要在本机有一份对应的游戏本体**，不少还带着硬编码的本机路径。它们不是产品的一部分，保留价值在于记录了当时怎么排查的：
 
 - `_probe-ess-*.mjs` — Pokemon Essentials 命令面/队伍/存储箱/调试菜单
+- `_probe-*.mjs`（RGSS 族）— 从 `process.argv[2]` 拿游戏根目录，用于 RGSS 系列排查
 - `_probe-shadow-cmd.mjs`、`_probe-tauri-cdp.mjs`、`_probe-evb-launch.mjs`、`_probe-gui-actor.mjs`
-- `e2e-*.mjs`、`m2-acceptance.mjs`、`smoke-runtime-readonly.mjs`
-- `debug/` — 一次性调试助手
+- `retest-*.mjs` — 2026-09-08/09 那轮验收的批量驱动脚本
+- `e2e-*.mjs`、`m2-acceptance.mjs`、`smoke-runtime-readonly.mjs` 仍在 `tools/` 顶层（被文档引用较多）
 
-## 尚未整理的
+**`probes/` 里的脚本不要用 Prettier 格式化**（已在 `.prettierignore` 排除），也不要指望它们互相 import——它们是各自独立的实地笔记。
 
-- `_` 前缀脚本共 42 个，其中 11 个被 `docs/` 引用（`DEVELOPMENT.md`、`ACCEPTANCE.md`），**31 个没有任何引用**。
-- `retest-*.mjs` 共 14 个，是 2026-09-08/09 那一轮验收留下的批量驱动脚本，大多已经用完。
+### 危险清单：会写盘/改档的探针
 
-这两批都没有删除：它们之间有相对 import（`../core/...`）和 `import.meta.dirname + ".."` 的仓库根推算，整体搬到 `tools/probes/` 需要改写 39 处以上 import 和 25 处根路径推算，而这些脚本只有对着真实游戏才能验证搬完还能跑。**在没有游戏本体的机器上无法验证的改动，就不要做。** 将来要整理时，请连同 import 一起改，并且至少跑通一个不依赖游戏本体的脚本作为冒烟。
+跑之前先看清楚，这些不是只读的：
+
+| 脚本                                                                                       | 危险动作                                                                                                     |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `_probe-frame.mjs`、`_probe-frame2.mjs`、`_probe-hooks.mjs`、`_probe-paths.mjs`            | **就地改写 `argv[2]` 指向的归档文件**（读入 → 替换脚本条目 → 写回）。传真实游戏的 `Game.rgss3a` 会直接改坏它 |
+| `test-rgss-hooks.mjs`、`test-rgss-contents.mjs`、`test-rgss-saves.mjs`（在 `tools/` 顶层） | 启动真实 RGSS 游戏，**把存档同步回游戏安装目录**；`test-rgss-contents.mjs` 还会删除一个真实存档文件          |
+
+只读的探针（可以放心对着真实游戏跑）：`_probe-icons.mjs`、`_dump-*.mjs`、`_probe-enigma-pe.mjs`。
+
+### 搬迁过（2026-09）
+
+这 56 个脚本从 `tools/` 顶层搬进了 `probes/`，搬迁时同步改了三类路径：`../core/` → `../../core/`、`import.meta.dirname` 的仓库根推算加一级、以及 `retest-*` 之间写死的 `"tools/retest-*.mjs"` 子进程路径。
+
+**`npm test` 会跑 `tools/check-probes.mjs` 守住这件事**：它逐个加载 `probes/` 下每个脚本并断言失败原因不是模块解析错误。判据是刻意的——脚本无参数运行本来就会因为缺文件/缺参数而失败，**只有 `ERR_MODULE_NOT_FOUND` 才算搬迁把 import 弄坏了**。
 
 ## 其他子目录
 
@@ -80,3 +93,10 @@ Remove-Item $target -Recurse -Force
 ```
 
 `nul` 的确切来源没有定论：重定向目标或子进程 stdio 路径被当成相对路径时，就会落到当时的工作目录里。两条实用的结论——**别把这类文件复制进游戏存档备份**（会让之后的恢复一起失败）；**今后写会重定向输出的验收脚本，用 `stdio: "ignore"` 或绝对路径，不要传裸 `nul`**。
+
+## 子目录
+
+- `probes/` — 见上（56 个实机探针与验收驱动）
+- `fixtures/` — 测试夹具（MV 引擎片段、RGSS 的 `.rb` 夹具、GUI host 桩）
+- `lib/` — 测试与工具之间共享的助手（`ruby-fixture.mjs`）
+- `debug/` — 一次性调试助手（`storm-*` / `homecoming-*` 需要先起对应的 `*-session.mjs`）

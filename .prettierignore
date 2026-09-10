@@ -40,3 +40,10 @@ runtime/_scratch/**
 # Provenance and generated docs.
 package-lock.json
 docs/user/COMMANDS.md
+
+# tools/probes/ holds historical field notes: one-off probes and dated retest
+# drivers kept as a record of how each game was diagnosed. They are not products,
+# not maintained, and were deliberately frozen when they were moved here — so
+# reformatting them would bury the original record in whitespace churn for no
+# benefit. The move itself is guarded by tools/check-probes.mjs instead.
+tools/probes/**
