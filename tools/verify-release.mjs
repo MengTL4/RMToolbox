@@ -26,7 +26,12 @@ try {
   $sha=[System.Security.Cryptography.SHA256]::Create()
   try { $actual=([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','').ToLower() }
   finally { $stream.Dispose(); $sha.Dispose() }
-  $expected=(Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLower()
+  # Get-FileHash is a module cmdlet and is missing on some Windows PowerShell
+  # builds (e.g. 5.1.26100); hash the staged file with plain .NET instead.
+  $fileStream=[System.IO.File]::OpenRead($file)
+  $fileSha=[System.Security.Cryptography.SHA256]::Create()
+  try { $expected=([System.BitConverter]::ToString($fileSha.ComputeHash($fileStream))).Replace('-','').ToLower() }
+  finally { $fileStream.Dispose(); $fileSha.Dispose() }
   if($actual -ne $expected) { throw "ZIP content mismatch: $name" }
   $count++
  }
