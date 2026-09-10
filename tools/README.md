@@ -35,6 +35,7 @@
 | `commands-doc.mjs`    | 从桥接源码生成 `docs/user/COMMANDS.md`；`--check` 用于 CI         |
 | `pack-release.mjs`    | 打 Release zip                                                    |
 | `verify-release.mjs`  | 逐条校验 zip 内容与 staging 一致                                  |
+| `check-workflow.mjs`  | 校验 CI workflow 引用的脚本/工具是否还存在（已纳入 `npm test`）   |
 | `setup-gui.mjs`       | 下载并校验 `nw-runtime.lock.json` 指定的 NW.js                    |
 | `build-inject.mjs`    | 用 MinGW 构建 `runtime/inject/`（需要 MSYS2，见 DEVELOPMENT.md）  |
 | `build-wmic-shim.mjs` | 构建 wmic 兼容 shim                                               |
@@ -63,3 +64,19 @@
 - `fixtures/` — 测试夹具（MV 引擎片段、RGSS 的 `.rb` 夹具、GUI host 桩）
 - `lib/` — 测试与工具之间共享的助手（`ruby-fixture.mjs`）
 - `debug/` — 见上
+
+## 清理验收目录时会踩的坑：删不掉的 `nul`
+
+验收脚本运行后，游戏副本目录里会留下**名为 `nul` 的文件**（Windows 保留设备名）。它用常规办法删不掉——`Remove-Item`、`del`，甚至 `rmdir /s /q` 都会失败或留下残留，因为 Win32 把它当空设备解析而不是文件。
+
+已实测可用的清理办法（拿空目录镜像一遍）：
+
+```powershell
+$target = "E:\project\RMToolbox\tmp"
+$empty = Join-Path $env:TEMP "rmch-empty"
+New-Item -ItemType Directory -Force -Path $empty | Out-Null
+robocopy $empty $target /MIR /NFL /NDL /NJH /NJS /NC /NS | Out-Null
+Remove-Item $target -Recurse -Force
+```
+
+`nul` 的确切来源没有定论：重定向目标或子进程 stdio 路径被当成相对路径时，就会落到当时的工作目录里。两条实用的结论——**别把这类文件复制进游戏存档备份**（会让之后的恢复一起失败）；**今后写会重定向输出的验收脚本，用 `stdio: "ignore"` 或绝对路径，不要传裸 `nul`**。

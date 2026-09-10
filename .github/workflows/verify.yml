@@ -25,9 +25,22 @@ jobs:
       # adapters through Ruby fixtures and used to skip silently when it was
       # missing. Without this step the suite would be green having run none of
       # that coverage.
+      #
+      # `-e "exit 0"` mirrors the probe tools/lib/ruby-fixture.mjs uses: a
+      # `ruby` that merely EXISTS is not enough (a shim on PATH would satisfy
+      # `--version`), so assert it actually executes Ruby before the suite
+      # depends on it. This fails here, with a clear cause, instead of surfacing
+      # as a confusing error inside test-event-tools.mjs.
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
+
+      - name: Ruby actually runs
+        shell: pwsh
+        run: |
+          ruby -e "exit 0"
+          if ($LASTEXITCODE -ne 0) { throw "ruby -e 'exit 0' failed; RGSS fixtures cannot run" }
+          ruby --version
 
       - run: npm ci
 
@@ -42,6 +55,12 @@ jobs:
 
       - name: Command reference is up to date
         run: node tools/commands-doc.mjs --check
+
+      # Formatting is a reviewed convention here, so it is enforced rather than
+      # left to taste. runtime/bridge/src/parts/** is excluded via
+      # .prettierignore — those files are IIFE fragments Prettier cannot parse.
+      - name: Formatting
+        run: npm run format:check
 
   # The committed injector binaries are what users actually run, and nothing in
   # the test suite rebuilds them. Rebuilding from runtime/inject/src in CI is the

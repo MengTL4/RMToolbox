@@ -123,7 +123,17 @@ async function boot() {
       if (saved && Array.isArray(saved.manualRoots))
         state.library.manualRoots = saved.manualRoots;
     }
-  } catch (_) {}
+  } catch (error) {
+    // The library file exists but cannot be read or parsed. Staying silent here
+    // looked like "the toolbox forgot all my games" with nothing to act on: the
+    // user cannot tell a corrupt file from a deleted one, and the next save
+    // overwrites the evidence. Say so, and keep the old file for inspection.
+    guiLog("gui library unreadable; starting empty", {
+      path: state.libraryPath,
+      error: String((error && error.message) || error)
+    });
+    state.libraryLoadError = String((error && error.message) || error);
+  }
 
   const token = tokenMod.getToken(state.projectRoot);
   const server = new wsServer.BridgeServer({
