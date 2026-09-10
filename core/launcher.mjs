@@ -40,7 +40,10 @@ import {
 // ever talks to this module.
 export { getRgssSession, listRgssSessions, getTauriSession, listTauriSessions };
 
-function portInUse(port, host = "127.0.0.1") {
+// Exported so tools/send.mjs uses this implementation instead of keeping its own
+// byte-identical copy: a port probe that drifted from the launcher's idea of
+// "in use" would make the CLI talk to the wrong server.
+export function portInUse(port, host = "127.0.0.1") {
   return new Promise((resolve) => {
     const socket = net.connect(port, host);
     const done = (value) => {

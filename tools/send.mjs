@@ -3,7 +3,6 @@
 // command. Fallback: append to the game's commands.jsonl queue (works even
 // when no server is running, because the bridge polls the file too).
 
-import net from "node:net";
 import {
   appendFileSync,
   existsSync,
@@ -15,20 +14,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { scanGame } from "../core/scanner.mjs";
 import { getToken } from "../core/token.mjs";
-import { ensureServer } from "../core/launcher.mjs";
-
-function portInUse(port, host = "127.0.0.1") {
-  return new Promise((resolve) => {
-    const socket = net.connect(port, host);
-    const done = (value) => {
-      socket.destroy();
-      resolve(value);
-    };
-    socket.setTimeout(1200, () => done(false));
-    socket.on("connect", () => done(true));
-    socket.on("error", () => done(false));
-  });
-}
+import { ensureServer, portInUse } from "../core/launcher.mjs";
 
 function sendViaServer({
   port,
