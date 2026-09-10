@@ -6,24 +6,11 @@
 // not start a process.  Keeping the decision pure gives the GUI, CLI and tests
 // the same seam without making the planner know about Windows process APIs.
 //
-// Route identities, Chinese labels and mechanisms come from core/launch-routes.mjs
-// so the planner, the launchers, the log and the GUI all name a route the same
-// way. Only the container-specific *reason* is decided here.
+// Route identities, Chinese labels, user-goal phrases and mechanisms come from
+// core/launch-routes.mjs so the planner, the launchers, the log and the GUI all
+// name a route the same way. Only the container-specific *reason* is decided here.
 
 import { ROUTES, routeLabel, routeMechanism, routeMechanismText, preflightOf } from "./launch-routes.mjs";
-
-export const LAUNCH_ROUTES = Object.freeze({
-  AUTO: "auto",
-  SHADOW: "shadow",
-  EXTENSION: "extension",
-  DLL: "dll"
-});
-
-const REQUEST_ALIASES = Object.freeze({
-  inject: LAUNCH_ROUTES.DLL,
-  native: LAUNCH_ROUTES.DLL,
-  "native-dll": LAUNCH_ROUTES.DLL
-});
 
 export class LaunchPlanError extends Error {
   constructor(plan) {
@@ -33,9 +20,10 @@ export class LaunchPlanError extends Error {
   }
 }
 
+// The request vocabulary is the catalogue's route ids plus "auto" — nothing
+// else. The old aliases (inject/native/native-dll) died with LAUNCH_ROUTES.
 function requestedRoute(value) {
-  const raw = String(value || LAUNCH_ROUTES.AUTO).trim().toLowerCase();
-  return REQUEST_ALIASES[raw] || raw;
+  return String(value || "auto").trim().toLowerCase();
 }
 
 function hasFlag(scan, flag) {
@@ -61,6 +49,7 @@ function candidate(id, reason) {
   return {
     id,
     label: entry.label,
+    userGoal: entry.userGoal || null,
     mechanism: routeMechanism(id),
     mechanismLabel: routeMechanismText(id),
     reason: reason || entry.reason,
@@ -123,7 +112,7 @@ function specialPlan(scan, requested, container, engine) {
       blocked("dll", "该游戏使用专用容器路线，不能套用普通 MV/MZ DLL 路线"),
       blocked("extension", "该游戏使用专用容器路线，不能套用普通扩展启动")
     ],
-    override: requested !== LAUNCH_ROUTES.AUTO
+    override: requested !== "auto"
       ? `请求的 ${requested} 不适用于 ${container || engine}，已使用专用路线 ${special.id}`
       : null
   });
@@ -139,7 +128,7 @@ function specialPlan(scan, requested, container, engine) {
  * candidates before the first attempt, and `fallback` is retried when an attempt
  * fails before the bridge says hello.
  */
-export function planLaunch(scan = {}, { requested = LAUNCH_ROUTES.AUTO, strategy } = {}) {
+export function planLaunch(scan = {}, { requested = "auto", strategy } = {}) {
   const route = requestedRoute(strategy === undefined ? requested : strategy);
   const container = String(scan.container || "");
   const engine = String(scan.engine && scan.engine.id || "");
@@ -203,11 +192,11 @@ export function planLaunch(scan = {}, { requested = LAUNCH_ROUTES.AUTO, strategy
     const preferred = candidates[0] && candidates[0].id || null;
     let selected = preferred;
     let override = null;
-    if (route !== LAUNCH_ROUTES.AUTO) {
+    if (route !== "auto") {
       const requestedCandidate = candidates.find((entry) => entry.id === route);
       if (requestedCandidate) {
         selected = requestedCandidate.id;
-      } else if ((container === "nb-evalnwbin" || container === "enigma-nb" || grover) && route !== LAUNCH_ROUTES.DLL && preferred === "dll") {
+      } else if ((container === "nb-evalnwbin" || container === "enigma-nb" || grover) && route !== "dll" && preferred === "dll") {
         // Preserve the old public behaviour: a generic/extension request on a
         // shell is translated to its only safe route, with the override made
         // visible in the plan instead of being an unexplained dispatch.

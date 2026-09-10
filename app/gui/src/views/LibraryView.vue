@@ -11,27 +11,16 @@ var ref = Vue.ref;
 
 var computed = Vue.computed;
 
-var ROUTE_LABELS = {
-  auto: "自动",
-  shadow: "影子目录",
-  dll: "DLL 注入",
-  extension: "扩展启动",
-  "evb-unpack-rgss-script": "EVB/RGSS 专用",
-  "rgss-script": "RGSS 专用",
-  "tauri-cdp": "Tauri/CDP 专用",
-  "extension-cdp-seed": "封闭 MZ/CDP 专用",
-  "shadow-engine-publish": "合体引擎专用"
-};
-
 // Labels come from the launch-route catalogue (core/launch-routes.mjs) via the
-// plan the host returns; the local map is only a fallback for ids an older host
-// does not describe yet.
+// plan the host returns: the catalogue's userGoal phrase is the display name,
+// with its label and finally the raw id as fallbacks. The GUI keeps no label
+// table of its own.
 function routeLabel(id, plan) {
   var entries = (plan && plan.candidates) || [];
   for (var i = 0; i < entries.length; i += 1) {
-    if (entries[i].id === id && entries[i].label) return entries[i].label;
+    if (entries[i].id === id) return entries[i].userGoal || entries[i].label || id;
   }
-  return ROUTE_LABELS[id] || id || "不可用";
+  return id || "不可用";
 }
 
 function routeHint(id, plan) {
