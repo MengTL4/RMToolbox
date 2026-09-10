@@ -8,6 +8,13 @@
 //
 // Exits non-zero on the first failed check group. Uses RMCH_TEST_SAVE_SLOT
 // (default 3) and removes only the save created by this test.
+//
+// Run this against an isolated copy of a game, not an install you care about.
+//
+// The slot must be free when the test starts. A game that writes its own save
+// during its opening flow will occupy the default slot forever (BLACK SOULS
+// leaves a save in slot 3), so pass RMCH_TEST_SAVE_SLOT=<other> for those
+// rather than deleting a file that may be someone's real save.
 
 import path from "node:path";
 import { existsSync, unlinkSync, rmSync as fsRmSync } from "node:fs";
@@ -336,11 +343,24 @@ try {
 
   // --- Marshal round-trip: applied objects must survive save/load -------------------
   const list0 = await send("save.list");
-  const occupied = list0.entries.some(
+  const occupant = list0.entries.find(
     (e) => Number(SLOT_RE.exec(e.name)?.[1]) === SLOT
   );
-  check(`slot ${SLOT} free`, !occupied, "");
-  if (!occupied) {
+  check(`slot ${SLOT} free`, !occupant, occupant ? occupant.name : "");
+  if (occupant) {
+    // Not clobbering a real save is correct, but say how to get unblocked: a game
+    // that saves during its own opening flow (BLACK SOULS writes slot 3) or an
+    // earlier run that died before cleanup would otherwise fail here forever.
+    console.log(
+      `  slot ${SLOT} already holds ${occupant.name} — refusing to clobber it`
+    );
+    if (list0.dir)
+      console.log(`  occupying file: ${path.join(list0.dir, occupant.name)}`);
+    console.log(
+      "  move that file aside, or re-run with a different slot, e.g.\n" +
+        '    $env:RMCH_TEST_SAVE_SLOT = "5"; node tools/test-rgss-contents.mjs <gameRoot>'
+    );
+  } else {
     await send("gold.set", { value: GOLD });
     const saved = await send("save.save", { id: SLOT });
     check("save.save after apply", saved.saved === true, "");

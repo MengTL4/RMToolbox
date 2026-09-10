@@ -7,8 +7,16 @@
 //   node tools/test-rgss-saves.mjs <gameRoot>
 //
 // Exits non-zero on the first failed check group. Writes one save slot in the
-// REAL game directory (slot 3 by default) and removes it again at the end
-// unless the file already existed before the test.
+// REAL game directory (slot 3 by default, override with RMCH_TEST_SAVE_SLOT) and
+// removes it again at the end unless the file already existed before the test.
+//
+// Run this against an isolated copy of a game, not an install you care about.
+//
+// If it stops with "slot N already has a save", that is the clobber guard, and
+// there are two usual causes: the game writes a save of its own during its
+// opening flow (BLACK SOULS leaves slot 3 occupied every time it starts), or an
+// earlier run died before its cleanup. Either way, pick another slot rather than
+// deleting the file — it may be a real save.
 
 import path from "node:path";
 import { existsSync, unlinkSync, rmSync as fsRmSync } from "node:fs";
@@ -95,8 +103,25 @@ const AC_ON =
 const SLOT_RE = /^save(\d+)\.(rxdata|rvdata|rvdata2)$/i;
 // Essentials auto-multi-save names manual slots 存档N.rxdata.
 const SLOT_RE_ESS = /^存档(\d+)\.rxdata$/;
-const SLOT = 3;
+// Overridable, like test-rgss-contents.mjs. Some games write a save of their own
+// during their opening flow (BLACK SOULS leaves one in slot 3), and with a
+// hardcoded slot there was no way past the clobber guard below.
+const SLOT = Number(process.env.RMCH_TEST_SAVE_SLOT || 3);
+if (!Number.isInteger(SLOT) || SLOT < 1 || SLOT > 90)
+  throw new Error("invalid RMCH_TEST_SAVE_SLOT");
 let createdFile = null; // real-dir save file this test created, removed at the end
+
+// Anything in our slot is treated as pre-existing, so it is never deleted. The
+// test can leave residue behind when a check fails before it saves (the file is
+// only tracked once written), so say so instead of failing anonymously.
+function slotOccupant(list) {
+  const entry = list.entries.find(
+    (e) =>
+      Number((SLOT_RE.exec(e.name) ?? SLOT_RE_ESS.exec(e.name))?.[1]) === SLOT
+  );
+  if (!entry) return null;
+  return { entry, file: list.dir ? path.join(list.dir, entry.name) : null };
+}
 
 try {
   // --- state + list contract, before any new game -----------------------------
@@ -112,13 +137,18 @@ try {
     typeof list0.dir === "string" && Array.isArray(list0.entries),
     list0.dir || ""
   );
-  const occupied = list0.entries.some(
-    (e) =>
-      Number((SLOT_RE.exec(e.name) ?? SLOT_RE_ESS.exec(e.name))?.[1]) === SLOT
-  );
-  if (occupied) {
+  const occupant = slotOccupant(list0);
+  if (occupant) {
+    // Refuse to clobber a real save — but say how to get unblocked, because a
+    // game that saves during its own opening (BLACK SOULS does) or a run that
+    // died before its cleanup will otherwise make this test fail forever.
     console.log(
       `  slot ${SLOT} already has a save in the real directory — refusing to clobber it`
+    );
+    if (occupant.file) console.log(`  occupying file: ${occupant.file}`);
+    console.log(
+      "  move that file aside, or re-run with a different slot, e.g.\n" +
+        '    $env:RMCH_TEST_SAVE_SLOT = "5"; node tools/test-rgss-saves.mjs <gameRoot>'
     );
     throw new Error("slot occupied");
   }

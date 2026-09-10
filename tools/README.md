@@ -25,6 +25,16 @@
 
 `test-ui-browser.mjs` 用无头 Chrome 渲染真实界面（需 `CHROME_PATH`，默认找系统 Chrome），是唯一能验证 Naive UI 升级有没有砸掉界面的测试。
 
+### RGSS 实机验收（`test-rgss-hooks` / `test-rgss-contents` / `test-rgss-saves`）
+
+这三个会**启动真实游戏**，并在**游戏真实目录里写一个存档槽位**，跑完再删掉。
+
+- **用游戏的隔离副本跑，别用你在意的安装目录。**
+- 槽位默认 3，可用 `RMCH_TEST_SAVE_SLOT` 覆盖：
+  `$env:RMCH_TEST_SAVE_SLOT = "5"; node tools/test-rgss-contents.mjs "<gameRoot>"`
+- 槽位**必须空闲**，否则报 `slot N already has a save — refusing to clobber it`。这是**保护你真实存档的护栏，不是缺陷**。两个常见原因：游戏自己开场就写档（**BLACK SOULS 每次启动都会占住槽位 3**），或上一次运行在清理前异常退出。**换槽位，不要删文件**——那可能是真存档。
+- 异常中断会留下存档残留，下次运行就会被护栏挡住。失败后先看一眼游戏目录。
+
 ## 构建与发布
 
 | 文件                  | 用途                                                              |
@@ -71,12 +81,6 @@
 这 56 个脚本从 `tools/` 顶层搬进了 `probes/`，搬迁时同步改了三类路径：`../core/` → `../../core/`、`import.meta.dirname` 的仓库根推算加一级、以及 `retest-*` 之间写死的 `"tools/retest-*.mjs"` 子进程路径。
 
 **`npm test` 会跑 `tools/check-probes.mjs` 守住这件事**：它逐个加载 `probes/` 下每个脚本并断言失败原因不是模块解析错误。判据是刻意的——脚本无参数运行本来就会因为缺文件/缺参数而失败，**只有 `ERR_MODULE_NOT_FOUND` 才算搬迁把 import 弄坏了**。
-
-## 其他子目录
-
-- `fixtures/` — 测试夹具（MV 引擎片段、RGSS 的 `.rb` 夹具、GUI host 桩）
-- `lib/` — 测试与工具之间共享的助手（`ruby-fixture.mjs`）
-- `debug/` — 见上
 
 ## 清理验收目录时会踩的坑：删不掉的 `nul`
 
