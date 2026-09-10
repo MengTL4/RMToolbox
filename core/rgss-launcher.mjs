@@ -11,7 +11,7 @@
 
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { appendFileSync, existsSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { prepareRgssGame, RgssError } from "./rgss.mjs";
 import { rgssContentsCode } from "./rgss-savecode.mjs";
@@ -266,6 +266,20 @@ export async function launchRgssGame({
     }
   });
 
+  // Spawn BEFORE arming the connect timeout, so the timeout handler can report
+  // whether the game process is still alive. That is the fact that separates the
+  // two very different failures behind this one message: the game died on
+  // startup (nothing to wait for), or it is running but never reached the scene
+  // loop that starts the bridge.
+  const child = spawn(prepared.exe, [], {
+    cwd: prepared.shadowRoot,
+    windowsHide: false,
+    stdio: "ignore",
+    detached: false
+  });
+  child.on("error", (error) => session.emit("error", error));
+  if (onLaunch) onLaunch(child, prepared);
+
   const connected = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       session.close();
@@ -275,9 +289,26 @@ export async function launchRgssGame({
       const rtpHint = prepared.detect.rtp.length
         ? `; Game.ini declares RTP "${prepared.detect.rtp.join(", ")}" — if the game is stuck before the title screen, install the RTP first (https://rpgmakerweb.com/run-time-package)`
         : "";
+      // Did the bridge script even run? It creates these on startup, so a
+      // missing file means the script never executed (patch not applied, or the
+      // game died earlier); an untouched file means it started but stopped.
+      const bridgeFiles = [session.cmdPath, session.resPath]
+        .map((file) => {
+          try {
+            return `${path.basename(file)}=${statSync(file).size}B`;
+          } catch {
+            return `${path.basename(file)}=absent`;
+          }
+        })
+        .join(" ");
+      const exit = child.exitCode;
+      const state =
+        exit !== null
+          ? `game process exited with code ${exit}`
+          : "game process is still running";
       reject(
         new RgssLaunchError(
-          `timed out waiting for the injected bridge to start${rtpHint}`
+          `timed out waiting for the injected bridge to start (${state}; ${bridgeFiles})${rtpHint}`
         )
       );
     }, CONNECT_TIMEOUT_MS);
@@ -286,15 +317,6 @@ export async function launchRgssGame({
       resolve(session);
     });
   });
-
-  const child = spawn(prepared.exe, [], {
-    cwd: prepared.shadowRoot,
-    windowsHide: false,
-    stdio: "ignore",
-    detached: false
-  });
-  child.on("error", (error) => session.emit("error", error));
-  if (onLaunch) onLaunch(child, prepared);
 
   try {
     await connected;
