@@ -109,6 +109,10 @@ const GOLD = 654321;
 const NAME_UTF8 = "改名ABC测试";
 const NAME_BYTES = [...Buffer.from(NAME_UTF8, "utf8")];
 let createdFile = null;
+// True once we have confirmed the slot was empty. Anything in it afterwards is
+// this test's, so the finally block may delete it even if we never got as far as
+// recording createdFile.
+let slotFileAbsentBefore = false;
 
 // Collect "@id" nodes so "@ref" placeholders can be resolved back to the
 // shared node (party members and Game_Actors#@data alias the same Game_Actor).
@@ -361,6 +365,8 @@ try {
         '    $env:RMCH_TEST_SAVE_SLOT = "5"; node tools/test-rgss-contents.mjs <gameRoot>'
     );
   } else {
+    // The slot is empty, so from here on anything in it is ours to remove.
+    slotFileAbsentBefore = true;
     await send("gold.set", { value: GOLD });
     const saved = await send("save.save", { id: SLOT });
     check("save.save after apply", saved.saved === true, "");
@@ -395,19 +401,36 @@ try {
   console.error(`  unexpected error: ${error.message}`);
 } finally {
   handle.stop();
+  // Cleanup must not depend on how far the run got. `createdFile` is only set
+  // after the save is written, so an early failure (or a game that claims the
+  // slot first) used to leave the save behind — which then tripped the clobber
+  // guard on every later run. If the slot was empty when we checked, then
+  // anything sitting there now is ours.
+  if (slotFileAbsentBefore) {
+    try {
+      const leftovers = (await send("save.list").catch(() => null)) || null;
+      const entry = leftovers?.entries?.find(
+        (e) => Number(SLOT_RE.exec(e.name)?.[1]) === SLOT
+      );
+      const target =
+        entry && leftovers.dir ? path.join(leftovers.dir, entry.name) : null;
+      if (target && existsSync(target)) unlinkSync(target);
+    } catch (_) {}
+  }
   if (createdFile) {
     try {
       unlinkSync(createdFile);
     } catch (_) {}
-    // Same residue rule as the saves test: the shadow copy would otherwise be
-    // rescued back into the real directory by the next launch.
-    try {
-      fsRmSync(path.join(projectRoot, "runtime", "rgss-shadow", gameKey), {
-        recursive: true,
-        force: true
-      });
-    } catch (_) {}
   }
+  // Always drop the shadow: it is rebuilt from scratch on every launch, and
+  // leaving it lets the next launch rescue its saves back into the real
+  // directory.
+  try {
+    fsRmSync(path.join(projectRoot, "runtime", "rgss-shadow", gameKey), {
+      recursive: true,
+      force: true
+    });
+  } catch (_) {}
 }
 
 console.log(
