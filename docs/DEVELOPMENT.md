@@ -133,7 +133,7 @@ pacman -S mingw-w64-i686-gcc mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-lld
 
 ## GUI 技术栈（Vue 3 + Naive UI，渐进引入 TypeScript / Vite）
 
-界面保留 **Vue 3.5.13 + Naive UI 2.35.0**，运行时 bundle 位于 `app/gui/vendor/`。
+界面保留 **Vue 3.5.13 + Naive UI 2.45.3**，运行时 bundle 位于 `app/gui/vendor/`。
 **全部 28 个应用组件已迁入 `app/gui/src/` 的 `.vue` 文件**：24 个模板在构建期编译，
 另 4 个保留渲染函数。页面之间直接 `import` 组件，已移除旧的字符串模板和 22 个注册脚本。
 `main.ts` 统一引入状态切片和组件，Vite 输出 `ui/modern.js`；HTML 只负责 vendor、启动保护、
@@ -141,6 +141,21 @@ pacman -S mingw-w64-i686-gcc mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-lld
 `RMCH.parts/views` 保留为挂载与回归测试的集成入口，组件不再依赖这个注册表寻找其他组件。
 宿主接口和按游戏隔离的草稿状态已使用 TypeScript；其余业务切片和多数 SFC 的脚本仍使用
 JavaScript，保持 `allowJs` 互操作，后续按业务逐个补全类型。这里不代表整个项目已全量类型化。
+
+**具体到什么程度，别误读 `npm run typecheck` 通过的意义**（实测，2026-09）：
+
+- `tsconfig.json` 的 `include` 只收 `app/gui/src/**/*.ts | *.vue | *.d.ts`，且 `checkJs` 未开。
+- 31 个 SFC 里 **30 个用普通 `<script>`**（只有 `Delta.vue` 是 `lang="ts"`）。没有 `checkJs` 时
+  它们**不被类型检查**，但 `vue-tsc` 仍会编译模板——所以"类型检查通过"实际只覆盖
+  `main.ts`、`host.ts`、`drafts.ts` 这几个文件。
+- 真正的状态逻辑 `app/gui/ui/store/**`（约 1,420 行）**完全在 include 之外**。
+
+要让 `checkJs` 生效需要多少工作，已经量过：只把 store 与 `ui/*.js` 纳入，报错 **211** 个；
+再加一层环境声明（`window.RMCH` / `Vue` / `naive`）反而涨到 **361** 个。原因是结构性的——
+store 由 5 个 IIFE 通过 `Object.assign` 往同一个全局对象挂成员拼装，跨切片调用走组装后的对象，
+`catch (error)` 又全是 `unknown`。**所以这不是补配置能解决的，而要把 store 改成真正的 ES 模块
+并给出明确接口**；在那之前，请把 `npm run typecheck` 当成"宿主与草稿层类型正常"的信号，
+而不是"前端没有类型错误"的保证。
 `npm run gui:build` 同时构建核心 CJS 与前端。`npm test` 的 `pretest` 自动刷新前端构建。
 主题 token 在 `ui/theme.js`，布局样式在 `styles.css`，保留深浅主题。
 
@@ -193,6 +208,11 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
 - 拼接后整体解析 → 报错行号映射回所属 part（能抓到「两个 part 各声明一次同名 const」）
 - `@rmch-iife-open` / `@rmch-iife-close` 标记必须只在首尾各一处
 
+**这些 part 不要用 Prettier 格式化**：它们是函数体片段而非独立 JS，Prettier 解析 `90-startup.js`
+时会直接报 `SyntaxError: Unexpected token`（卡在收尾的 `})();`），而且中间分片缩进了一层
+（它们活在那个闭包里），格式化会把缩进抹掉、破坏拼接结果。`.prettierignore` 已排除
+`runtime/bridge/src/parts/**`，这是有意的，不要"顺手清理"。
+
 分片一览（每个文件顶部注释写了它为什么存在）：
 
 ```
@@ -201,7 +221,7 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
 10-engine    TK.$ 别名解析、$game*/$data*      50-value-locks    数据锁定：逐帧回写
 20-values    强转/守卫/抑制作用域/统计         55-transport      WS 客户端 + JSONL 兜底 + CDP outbox
 25-battlers  battler/队伍/敌群、actorInfo      58-state          state.json 快照
-30-catalogs  目录缓存、背包槽位、地图          60..68-commands-* 命令，按领域分片
+30-catalogs  目录缓存、背包槽位、地图          60..68-commands-* → 命令，按领域分片
                                               69-router         冻结命令表 + execute()
                                               70-profiles       per-game profile 加载器
                                               90-startup        定时器 + IIFE 闭合
