@@ -1,11 +1,15 @@
 # RM 工具箱（RM Toolbox）
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: source-available (MIT + Commons Clause)](https://img.shields.io/badge/License-source--available-orange.svg)](LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/MengTL4/RMToolbox)](https://github.com/MengTL4/RMToolbox/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows-blue)]()
+[![Platform](https://img.shields.io/badge/platform-Windows-blue)](<>)
 
-免费开源的 RPG Maker 单机游戏修改器，Windows 平台，自带图形界面。
+免费、源码公开的 RPG Maker 单机游戏修改器，Windows 平台，自带图形界面。
 不碰游戏目录里的任何文件：启动游戏时把修改功能一起带进去，关掉游戏就没了。
+
+> 许可证提示：本项目采用 **MIT + Commons Clause**——可以自由使用、修改、再分发，
+> 但**不允许售卖**。因此它属于「源码公开」（source-available），而不是 OSI 定义的开源。
+> 详见 [LICENSE](LICENSE)。
 
 ## 支持哪些游戏
 
@@ -24,8 +28,9 @@
   与原生一致。
 - **nwjc 字节码 + Grover 验证壳的游戏**（《傲世修仙录》定制版家族）——壳用
   已从 Windows 11 移除的 wmic 做祖先链校验，原生双击也会被杀。工具箱经
-  裸启动 + DLL 注入绕开自杀路径后走标准桥接（该家族适配仍在进行中，
-  详见 [docs/GROVER-FINDINGS.md](docs/GROVER-FINDINGS.md)）。
+  裸启动 + DLL 注入绕开自杀路径后走标准桥接，**实测链路已通过**（详见
+  [docs/GROVER-FINDINGS.md](docs/GROVER-FINDINGS.md)）；该家族的逐游戏适配
+  仍在补充中。
 
 注意：Tauri 壳与 sealed 启动器这两类不支持「附加到运行中」，只能从工具箱启动。
 
@@ -82,16 +87,16 @@
 《重装归途》与《末日风暴》的完整验收和限制见
 [适配记录](docs/NEW-GAMES-ADAPTATION.md)。
 
-![游戏库](docs/screenshots/library.png?v=3)
-![修改器](docs/screenshots/trainer.png?v=3)
-![数据页](docs/screenshots/data-items.png?v=3)
-
 ## 下载
 
 到 [Releases](https://github.com/MengTL4/RMToolbox/releases) 下载最新的
 `RMToolbox-vX.Y.Z-win-x64.zip`，解压后双击文件夹里的 `RMToolbox.cmd` 就能用
 （也可以进 `app/gui` 目录双击 `RMToolbox.exe`）。
 不需要安装 Node.js 或任何运行环境。
+
+![游戏库](docs/screenshots/library.png?v=3)
+![修改器](docs/screenshots/trainer.png?v=3)
+![数据页](docs/screenshots/data-items.png?v=3)
 
 ## 怎么用
 
@@ -148,8 +153,10 @@
 - 启动 GUI：`powershell -NoProfile -ExecutionPolicy Bypass -File tools\launch-gui.ps1`
   （自动下载并校验 `nw-runtime.lock.json` 指定的官方 NW.js，再构建和开窗）。
 - 测试：`npm test`（自动构建前端并运行类型检查和回归）。
-  地图/事件协议包含 MV/MZ 和三代 RGSS 夹具；后者需要本机 Ruby。另用
-  `npm run test:ui-browser` 检查浏览器交互，`npm run test:gui-runtime` 检查实际 NW.js 桌面运行。
+  地图/事件协议包含 MV/MZ 夹具；另有 RGSS（XP/VX/VX Ace）夹具需要本机
+  **Ruby**——没装 Ruby 时这几项会**直接报错**而不是静默跳过，这样才能保证
+  「测试通过」等于真的跑过。只想要一次不完整的本地跑测时，加 `--allow-skip`。
+  另用 `npm run test:ui-browser` 检查浏览器交互，`npm run test:gui-runtime` 检查实际 NW.js 桌面运行。
 - 本地 Release 打包：`npm run build`，生成 `output/RMToolbox-v<版本>-win-x64.zip`
   和 `.zip.sha256` 校验文件。解压后双击根目录 `RMToolbox.cmd`，程序在 `app/gui/RMToolbox.exe`。
 
@@ -162,8 +169,15 @@
 node tools/rmch.mjs scan                 # 扫描 Steam 库，识别引擎
 node tools/rmch.mjs launch <gameRoot>    # 注入并启动游戏
 node tools/rmch.mjs attach <gameRoot>    # 附加到已在运行的游戏（DLL 注入）
+node tools/rmch.mjs plan <gameRoot>      # 说明这条游戏会选哪条启动路线、备选是什么
+node tools/rmch.mjs serve                # 只起桥接服务器，不开 GUI
+node tools/rmch.mjs bridge-build         # 从 src 分片重建 runtime/bridge/page-bridge.js
+node tools/rmch.mjs token                # 打印本地 WS 鉴权 token（排查连接用）
 node tools/rmch.mjs send <gameKey> gold.set '{"value":10000}'
 ```
+
+不带参数运行 `node tools/rmch.mjs` 会打印全部子命令。`send` 的可用命令名
+见 [桥接命令参考](docs/user/COMMANDS.md)。
 
 ## 参与开发
 
@@ -173,4 +187,6 @@ node tools/rmch.mjs send <gameKey> gold.set '{"value":10000}'
 
 ## 许可证
 
-[MIT](LICENSE)
+[MIT + Commons Clause](LICENSE)：可自由使用、修改、再分发，**不可售卖**。
+因此本项目是**源码公开**（source-available），不是 OSI 定义的开源项目。
+发行包里打包的 NW.js 运行时与 MinHook 适用各自的许可证，见 [LICENSE](LICENSE) 末尾。

@@ -32,7 +32,6 @@ v0.7.6 的 shadow+shim 方案之后用户实测反馈：**「先开游戏再附�
   日志改写 %TEMP%（去掉硬编码绝对路径，安装版可用）。
 - 测试：npm test 全绿（gui-check 确认生成物同步）。
 
-
 ## v0.7.6：Grover 壳家族识别（grover-boot）+ wmic shim 接力——傲世修仙录完结定制版实测（适配进行中）（2026-09-06）
 
 《傲世修仙录完结定制版》（MV 1.6.1，NW.js Chromium 91）全 www/js 载荷是
@@ -89,7 +88,6 @@ decipherData 解密，依赖壳验证产物）。壳的祖先链校验 `exec("wm
 存活但黑屏的进程，属预期。下一步候选见 GROVER-FINDINGS.md（真 wmic 输出
 比对 / nwjc 深挖 / Win10 环境验证）。attach 对本家族预期不可用
 （Some.js 的 process.report sharedObjects / WinMM 注入检测）。
-
 
 ## v0.7.5：技能/开关目录 2000 条截断修复——再刷一把2：金色传说实测（2026-09-06）
 
@@ -241,7 +239,6 @@ runtime/_scratch/_watch-game.ps1）+ CIM 取证定位：
 - 不要给游戏 exe 勾「以管理员身份运行」；若游戏已在提权状态运行，工具箱
   杀不掉它，需手动关闭后重试。
 
-
 ## v0.7.1：拉起链路加固——cmd start 主用 + 杀软拦截实证（2026-09-06）
 
 v0.7.0 的延迟附加在本机命令行验证通过后，用户 GUI 侧仍报「60s 无进程」。
@@ -264,7 +261,6 @@ v0.7.0 的延迟附加在本机命令行验证通过后，用户 GUI 侧仍报�
 - 真机实测（用户处置火绒后）：cmd start 拉起 1.4s 出现进程、2.6s renderer、
   30s 沉淀、注入一次命中、hello 同秒到达，全程 34.6s。
 - 版本 0.7.1，npm test 全绿，zip 重打。
-
 
 ## v0.7.0：启动并注入改延迟附加——一次就成（2026-09-06）
 
@@ -357,7 +353,7 @@ catalog（物品/装备/武器/角色/地图/公共事件目录与开关/变量�
   活优先、bootTap 暂存堆回放（独立 sandbox）。test-attach 加 bootTap/舞变体
   断言。版本 0.6.9，gui-bundle 重建，npm test 全绿（harness 36 组，
   test-attach 22 项）。
-- **真机 E2E（tools/_e2e-wzcy.mjs）全 PASS**：启动并注入 21s 返回，缓存 11 类
+- **真机 E2E（tools/\_e2e-wzcy.mjs）全 PASS**：启动并注入 21s 返回，缓存 11 类
   （物品 901/武器 501/护甲 501/角色 20/敌人 301/队伍 301/状态 751/技能/公共事件
   301/地图信息 192/系统），catalog.query 各 tab 全有真名（物品示例：手机按键、
   装备熔炼炉、s级奖励令牌），switch.list 恢复 $dataSystem（本游戏 System.json
@@ -1050,27 +1046,27 @@ bridge 连上、23 hooks、MV 1.6.1 识别正常。
 
 排序前缀保留（它就是 concat 顺序），但每个文件现在只干一件事：
 
-| 新文件 | 内容 | 来自 |
-|---|---|---|
-| `00-prelude.js` | IIFE 开头 + `bridge` 状态对象 | 00-bootstrap |
-| `05-node-io.js` | require/fs/path、路径、log/event 写入 | 00-bootstrap |
-| `10-engine.js` | `TK.$` 别名解析、`$game*`/`$data*`、钩子目标 | 00-bootstrap |
-| `20-values.js` | 数值强转、参数守卫、抑制作用域、统计 | 10-runtime-data |
-| `25-battlers.js` | battler/队伍/敌群访问、`actorInfo` | 10-runtime-data |
-| `30-catalogs.js` | 目录缓存、背包槽位、地图数据 | 10-runtime-data |
-| `40-hooks.js` | `patchMethod` + 倍率/遇敌/移速/技能消耗 | 30-hooks |
-| `45-vitals-locks.js` | 上帝模式：HP/MP/TP 锁 | 30-hooks |
-| `50-value-locks.js` | 数据锁定：逐帧回写 | 30-hooks |
-| `55-transport.js` | WS 客户端 + JSONL 兜底队列 | 40-transport |
-| `58-state.js` | state.json 快照 | 50-state |
-| `60-commands-core.js` | ping / runtime.info / 修改器选项 / console | 60-command-router |
-| `62-commands-party.js` | 金钱、背包、队伍、角色 | 同上 |
-| `64-commands-world.js` | 开关、变量、地图、事件、战斗 | 同上 |
-| `66-commands-saves.js` | 存档槽、存档树、数据锁定 | 同上 |
-| `68-commands-system.js` | 场景 push/pop、修复错误、新游戏 | 同上 |
-| `69-router.js` | 冻结命令表 + `execute()` | 同上 |
-| `70-profiles.js` | per-game profile 加载器（未动，只补注释） | — |
-| `90-startup.js` | 定时器、启动、IIFE 闭合 | — |
+| 新文件                  | 内容                                         | 来自              |
+| ----------------------- | -------------------------------------------- | ----------------- |
+| `00-prelude.js`         | IIFE 开头 + `bridge` 状态对象                | 00-bootstrap      |
+| `05-node-io.js`         | require/fs/path、路径、log/event 写入        | 00-bootstrap      |
+| `10-engine.js`          | `TK.$` 别名解析、`$game*`/`$data*`、钩子目标 | 00-bootstrap      |
+| `20-values.js`          | 数值强转、参数守卫、抑制作用域、统计         | 10-runtime-data   |
+| `25-battlers.js`        | battler/队伍/敌群访问、`actorInfo`           | 10-runtime-data   |
+| `30-catalogs.js`        | 目录缓存、背包槽位、地图数据                 | 10-runtime-data   |
+| `40-hooks.js`           | `patchMethod` + 倍率/遇敌/移速/技能消耗      | 30-hooks          |
+| `45-vitals-locks.js`    | 上帝模式：HP/MP/TP 锁                        | 30-hooks          |
+| `50-value-locks.js`     | 数据锁定：逐帧回写                           | 30-hooks          |
+| `55-transport.js`       | WS 客户端 + JSONL 兜底队列                   | 40-transport      |
+| `58-state.js`           | state.json 快照                              | 50-state          |
+| `60-commands-core.js`   | ping / runtime.info / 修改器选项 / console   | 60-command-router |
+| `62-commands-party.js`  | 金钱、背包、队伍、角色                       | 同上              |
+| `64-commands-world.js`  | 开关、变量、地图、事件、战斗                 | 同上              |
+| `66-commands-saves.js`  | 存档槽、存档树、数据锁定                     | 同上              |
+| `68-commands-system.js` | 场景 push/pop、修复错误、新游戏              | 同上              |
+| `69-router.js`          | 冻结命令表 + `execute()`                     | 同上              |
+| `70-profiles.js`        | per-game profile 加载器（未动，只补注释）    | —                 |
+| `90-startup.js`         | 定时器、启动、IIFE 闭合                      | —                 |
 
 命令表改成和 GUI 的 store 一样的切片模式：`00-prelude.js` 建 `commandHandlers`，
 每个 `6x-commands-*.js` 用 `Object.assign` 挂自己的领域，`69-router.js` 冻结它。
@@ -1122,19 +1118,19 @@ CLI 子命令 `bridge-build` 不变）。
 
 ### 去重
 
-| 重复 | 处理 |
-|---|---|
-| 5 个 `withXxxSuppressed` 逐字相同（只差计数器名） | `suppressionScope(counter)` 工厂 |
-| `applyLockHp/Mp/Tp` 三份同形逻辑 | `enforceVital(...)` 一份 |
-| `preserveLocksTick` 里 MP/TP 两段复制粘贴 | `GUARDED_VITALS` 表驱动 |
-| `_items`/`_weapons`/`_armors` 映射 3 处硬编码 | `INVENTORY_SLOTS` + `inventorySlot()` |
-| `resolveData` 两张平行的 kind→名字表（会漂移） | 单张 `DATA_TABLES` |
-| 玩家原型目标列表 2 处 | `playerPrototypeTargets()` |
-| WS 与 JSONL 各一份 promise 结算逻辑 | `settleResult(type, args, reply)` |
-| `lock.set` / `lock.replace` 两套锁值强转（且不一致） | `coerceLockValue(kind, value)` |
-| 20+ 处 `const p = resolveParty(); if (!p) throw ...` | `requireParty/Player/Map/...` 守卫族 |
-| `patchTrainerHooks` 166 行巨型函数 | 拆成 8 个具名安装器，主函数只剩清单 |
-| `game.repair` 的 switch | `REPAIR_ACTIONS` 表；错误信息现在会列出支持的动作 |
+| 重复                                                 | 处理                                              |
+| ---------------------------------------------------- | ------------------------------------------------- |
+| 5 个 `withXxxSuppressed` 逐字相同（只差计数器名）    | `suppressionScope(counter)` 工厂                  |
+| `applyLockHp/Mp/Tp` 三份同形逻辑                     | `enforceVital(...)` 一份                          |
+| `preserveLocksTick` 里 MP/TP 两段复制粘贴            | `GUARDED_VITALS` 表驱动                           |
+| `_items`/`_weapons`/`_armors` 映射 3 处硬编码        | `INVENTORY_SLOTS` + `inventorySlot()`             |
+| `resolveData` 两张平行的 kind→名字表（会漂移）       | 单张 `DATA_TABLES`                                |
+| 玩家原型目标列表 2 处                                | `playerPrototypeTargets()`                        |
+| WS 与 JSONL 各一份 promise 结算逻辑                  | `settleResult(type, args, reply)`                 |
+| `lock.set` / `lock.replace` 两套锁值强转（且不一致） | `coerceLockValue(kind, value)`                    |
+| 20+ 处 `const p = resolveParty(); if (!p) throw ...` | `requireParty/Player/Map/...` 守卫族              |
+| `patchTrainerHooks` 166 行巨型函数                   | 拆成 8 个具名安装器，主函数只剩清单               |
+| `game.repair` 的 switch                              | `REPAIR_ACTIONS` 表；错误信息现在会列出支持的动作 |
 
 一处行为修正：`actor.vitals.set` 原来把 `hp: null` 当「有值」，`Number(null)` = 0 →
 **把 HP 设成 0**。现在 `null` 和 `""` 一样视为未提供。
@@ -1156,23 +1152,23 @@ GUI 预检（32 脚本 / 67 store 成员 / 23 模板）。
 - 第 30 组 `battle.info` + 非空敌群（mock 现在有两个敌人，第二个不实现 `name()`，走
   `$dataEnemies` 回退）。移除 `enemyNameOf` → `AssertionError: battle.info must not throw`。
 - 第 31 组 `suppressNoCost`。把守卫改成恒真 → `AssertionError: suppressNoCost must restore
-  the real cost, 0 !== 5`。
+the real cost, 0 !== 5`。
 
 ### 实机验证（刷啊刷，L1，extension 策略）
 
 `bridge injected` → `hook install finished {"patched":true,"count":23,"retries":1}`。
 
-| 命令 | 结果 |
-|---|---|
-| `ping` / `runtime.info` | MV 1.6.1，hooks patched，profile 无 |
-| `game.newGame` → `map.info` | 进图 mapId 20 (17×13)，位置 8,12 |
-| `gold.set 12345` → `item.set item#1=77` → `item.list` | 12345 / 77（名字「妖族血脉升级丹」） |
-| 锁金钱 999 + 锁 item#1 = 5，再用命令强改成 50000 / 500 | 2 秒后读回 **999 / 5** —— 逐帧回写赢了 |
-| 锁 switch#1=true + variable#1=4242，再强改成 false / 0 | 读回 **true / 4242** |
-| `save.contents.get` | 2,697,752 字节，15+ 顶层键（含插件键 `phwarehouse`） |
-| `game.repair {"action":"nope"}` | 报错并列出 6 个支持的动作 |
-| `game.repair fadeIn` | done |
-| `lock.list` | 线上协议形状未变（`bridge.locks` → `bridge.valueLocks` 只是内部改名）；`lockStats.applied: 3100, errors: 0` |
+| 命令                                                   | 结果                                                                                                        |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `ping` / `runtime.info`                                | MV 1.6.1，hooks patched，profile 无                                                                         |
+| `game.newGame` → `map.info`                            | 进图 mapId 20 (17×13)，位置 8,12                                                                            |
+| `gold.set 12345` → `item.set item#1=77` → `item.list`  | 12345 / 77（名字「妖族血脉升级丹」）                                                                        |
+| 锁金钱 999 + 锁 item#1 = 5，再用命令强改成 50000 / 500 | 2 秒后读回 **999 / 5** —— 逐帧回写赢了                                                                      |
+| 锁 switch#1=true + variable#1=4242，再强改成 false / 0 | 读回 **true / 4242**                                                                                        |
+| `save.contents.get`                                    | 2,697,752 字节，15+ 顶层键（含插件键 `phwarehouse`）                                                        |
+| `game.repair {"action":"nope"}`                        | 报错并列出 6 个支持的动作                                                                                   |
+| `game.repair fadeIn`                                   | done                                                                                                        |
+| `lock.list`                                            | 线上协议形状未变（`bridge.locks` → `bridge.valueLocks` 只是内部改名）；`lockStats.applied: 3100, errors: 0` |
 
 收尾：`lock.clear`、只杀测试游戏进程（按 ExecutablePath 区分，GUI 未动）、
 `runtime/locks/` 无残留文件。
@@ -1202,14 +1198,14 @@ GUI 预检（32 脚本 / 67 store 成员 / 23 模板）。
 
 ### 文件命名与目录
 
-| 原 | 现 | 原因 |
-|---|---|---|
-| `app/gui/gui-server.cjs` | `app/gui/host.cjs` | 它不是服务器，是页面的 Node 上下文宿主；在 `app/gui/` 下再叫 `gui-` 也冗余 |
-| `core/gui-bundle.mjs` | `core/gui-bundler.mjs` | 和生成物 `app/gui/gui-bundle.cjs` 同名，一直分不清哪个是构建器 |
-| `ui/store.js`（750 行） | `ui/store/{core,trainer,data,locks,library,saves}.js` | 一个文件同时管 库/会话/修改器/数据页/锁/存档，典型 god module |
-| `ui/parts/master-detail.js` | `ui/parts/{virtual-list,entry-list,picker,delta}.js` | 名字只覆盖其中两个组件；拆开后 `virtual-list` 必须在 `picker` 之前加载的依赖也显式了 |
-| `ui/views/trainer-cheats.js` 等 | `ui/panels/trainer-*.js` | 它们注册的是 `RMCH.parts.*`（修改器卡片）而非 `RMCH.views.*`，放 `views/` 名不副实 |
-| `ui/views/trainer-actors.js` | `ui/panels/trainer-gold.js` | 角色部分搬走后只剩金钱面板，旧名字在骗人 |
+| 原                              | 现                                                    | 原因                                                                                 |
+| ------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `app/gui/gui-server.cjs`        | `app/gui/host.cjs`                                    | 它不是服务器，是页面的 Node 上下文宿主；在 `app/gui/` 下再叫 `gui-` 也冗余           |
+| `core/gui-bundle.mjs`           | `core/gui-bundler.mjs`                                | 和生成物 `app/gui/gui-bundle.cjs` 同名，一直分不清哪个是构建器                       |
+| `ui/store.js`（750 行）         | `ui/store/{core,trainer,data,locks,library,saves}.js` | 一个文件同时管 库/会话/修改器/数据页/锁/存档，典型 god module                        |
+| `ui/parts/master-detail.js`     | `ui/parts/{virtual-list,entry-list,picker,delta}.js`  | 名字只覆盖其中两个组件；拆开后 `virtual-list` 必须在 `picker` 之前加载的依赖也显式了 |
+| `ui/views/trainer-cheats.js` 等 | `ui/panels/trainer-*.js`                              | 它们注册的是 `RMCH.parts.*`（修改器卡片）而非 `RMCH.views.*`，放 `views/` 名不副实   |
+| `ui/views/trainer-actors.js`    | `ui/panels/trainer-gold.js`                           | 角色部分搬走后只剩金钱面板，旧名字在骗人                                             |
 
 store 切片的约定：`core.js` 建出 `RMCH.store`，其余切片 `Object.assign` 挂自己那部分，跨切片
 调用一律走 `store.x()`（运行时解析），所以加载顺序只需保证 core 在最前。
@@ -1238,12 +1234,12 @@ store 切片的约定：`core.js` 建出 `RMCH.store`，其余切片 `Object.ass
 开关列表、地图列表、存档列表、eval、进入游戏（新游戏/读档）、队伍、金钱、物品、
 角色 vitals、开关写入、实时状态反映、停止后会话关闭。
 
-| 游戏 | 引擎 | 保护 | 注入策略 | profile | 结果 |
-|---|---|---|---|---|---|
-| 刷啊刷 | MV 1.6.1 | L1 数据加密 | extension | — | **18/18** |
-| 大千世界2 Demo | MV 1.6.1 | L3 启动保护 | extension | — | **18/18** |
-| 再刷一把2：金色传说 | MV/MZ | L2 字节码 | extension | zs2 ✅ | **18/18** |
-| Nightmare without return（梦魇：无归） | MV 1.6.1 | L3 启动保护 | **shadow (B)** | nwr ✅ | **18/18** |
+| 游戏                                   | 引擎     | 保护        | 注入策略       | profile | 结果      |
+| -------------------------------------- | -------- | ----------- | -------------- | ------- | --------- |
+| 刷啊刷                                 | MV 1.6.1 | L1 数据加密 | extension      | —       | **18/18** |
+| 大千世界2 Demo                         | MV 1.6.1 | L3 启动保护 | extension      | —       | **18/18** |
+| 再刷一把2：金色传说                    | MV/MZ    | L2 字节码   | extension      | zs2 ✅  | **18/18** |
+| Nightmare without return（梦魇：无归） | MV 1.6.1 | L3 启动保护 | **shadow (B)** | nwr ✅  | **18/18** |
 
 GUI 本体验收：NW 0.54 窗口启动、内嵌 WS 服务器监听 47412、库扫描 6 游戏、
 外部 /client 客户端协议冒烟（welcome/list）通过。
@@ -1280,6 +1276,7 @@ GUI 本体验收：NW 0.54 窗口启动、内嵌 WS 服务器监听 47412、库�
 恢复→0，正常）。
 
 **GUI MTool 化**：
+
 - 开关/变量列表**行内编辑**：开关行内 ON/OFF 切换、变量行内改值点设定
 - 新增**独立开关**模式（selfSwitch.list/set，按地图列出已设置的事件开关，行内切换；
   地图 ID 自动带入当前地图）
@@ -1433,10 +1430,11 @@ GUI 本体验收：NW 0.54 窗口启动、内嵌 WS 服务器监听 47412、库�
 对标 MTool 修改器风格的全套深色主题（styles.css 重写）：深色底（#16171b/#1f2127/#262932 三层）、
 蓝色强调色、iOS 风格滑动开关（作弊选项 12 项）、圆角卡片、悬停高亮列表行、样式化滚动条、
 分区标题带强调条、运行中游戏卡片绿色描边、顶栏 pill 标签页。验证方式：NW `--remote-debugging-port`
-+ CDP —— 样式探针确认主题应用、五面板零溢出、trainer 三列 371px 布局、开关 32×18 渲染正确；
-实机联动验证（用户运行中的大千世界2）：选游戏后队伍/金钱/状态/目录（20行分页 1400 项）/地图
-（395 张）全部自动加载。截图存档：runtime/screenshots/library.png（游戏库）、
-runtime/screenshots/trainer.png（修改器）。
+
+- CDP —— 样式探针确认主题应用、五面板零溢出、trainer 三列 371px 布局、开关 32×18 渲染正确；
+  实机联动验证（用户运行中的大千世界2）：选游戏后队伍/金钱/状态/目录（20行分页 1400 项）/地图
+  （395 张）全部自动加载。截图存档：runtime/screenshots/library.png（游戏库）、
+  runtime/screenshots/trainer.png（修改器）。
 
 ### 已知限制（不阻塞 M2）
 

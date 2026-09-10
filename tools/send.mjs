@@ -4,7 +4,13 @@
 // when no server is running, because the bridge polls the file too).
 
 import net from "node:net";
-import { appendFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync
+} from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { scanGame } from "../core/scanner.mjs";
@@ -24,21 +30,34 @@ function portInUse(port, host = "127.0.0.1") {
   });
 }
 
-function sendViaServer({ port, token, gameKey, type, args, timeoutMs = 15000 }) {
+function sendViaServer({
+  port,
+  token,
+  gameKey,
+  type,
+  args,
+  timeoutMs = 15000
+}) {
   return new Promise((resolve, reject) => {
     let socket;
     try {
-      socket = new WebSocket(`ws://127.0.0.1:${port}/client?token=${encodeURIComponent(token)}`);
+      socket = new WebSocket(
+        `ws://127.0.0.1:${port}/client?token=${encodeURIComponent(token)}`
+      );
     } catch (error) {
       reject(error);
       return;
     }
     const timer = setTimeout(() => {
-      try { socket.close(); } catch (_) {}
+      try {
+        socket.close();
+      } catch (_) {}
       reject(new Error(`command timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     socket.onopen = () => {
-      socket.send(JSON.stringify({ t: "send", id: randomUUID(), gameKey, type, args }));
+      socket.send(
+        JSON.stringify({ t: "send", id: randomUUID(), gameKey, type, args })
+      );
     };
     socket.onmessage = (event) => {
       let message = null;
@@ -49,7 +68,9 @@ function sendViaServer({ port, token, gameKey, type, args, timeoutMs = 15000 }) 
       }
       if (!message || message.t !== "result") return;
       clearTimeout(timer);
-      try { socket.close(); } catch (_) {}
+      try {
+        socket.close();
+      } catch (_) {}
       if (message.ok) resolve({ channel: "ws", payload: message.payload });
       else reject(new Error(message.error || "command failed"));
     };
@@ -69,20 +90,37 @@ function sendViaFile({ projectRoot, gameKey, type, args }) {
     type,
     args
   };
-  appendFileSync(path.join(bridgeDir, "commands.jsonl"), JSON.stringify(command) + "\n", "utf8");
+  appendFileSync(
+    path.join(bridgeDir, "commands.jsonl"),
+    JSON.stringify(command) + "\n",
+    "utf8"
+  );
   return { channel: "file", queued: command };
 }
 
-export async function sendCommand({ projectRoot, target, type, args, port = 47412, timeoutMs = 15000 }) {
+export async function sendCommand({
+  projectRoot,
+  target,
+  type,
+  args,
+  port = 47412,
+  timeoutMs = 15000
+}) {
   let gameKey = null;
   let gameRoot = null;
   // A game root isn't always "has Game.exe": non-standard exes (三国修仙传
   // V1.91.exe, sealed launchers named after the manifest, …) are just as
   // valid. Treat any directory holding a non-junk exe as a root to scan.
   if (existsSync(target) && statSync(target).isDirectory()) {
-    const hasExe = existsSync(path.join(target, "Game.exe")) ||
-      readdirSync(target).some((name) =>
-        /\.exe$/i.test(name) && !/unins|setup|install|crash|redist|vc_redist|dxsetup|dotnet|launch|update|patch/i.test(name));
+    const hasExe =
+      existsSync(path.join(target, "Game.exe")) ||
+      readdirSync(target).some(
+        (name) =>
+          /\.exe$/i.test(name) &&
+          !/unins|setup|install|crash|redist|vc_redist|dxsetup|dotnet|launch|update|patch/i.test(
+            name
+          )
+      );
     if (hasExe) {
       const scan = scanGame(target);
       gameKey = scan.gameKey;
@@ -96,18 +134,33 @@ export async function sendCommand({ projectRoot, target, type, args, port = 4741
   const token = getToken(projectRoot);
   if (await portInUse(port)) {
     try {
-      return await sendViaServer({ port, token, gameKey, type, args, timeoutMs });
+      return await sendViaServer({
+        port,
+        token,
+        gameKey,
+        type,
+        args,
+        timeoutMs
+      });
     } catch (error) {
       // Only fall back to the file queue when the server itself is unreachable;
       // a command failure (bridge rejected it) must propagate to the caller.
-      if (!/cannot connect to the RMCH server/.test(String(error.message))) throw error;
+      if (!/cannot connect to the RMCH server/.test(String(error.message)))
+        throw error;
     }
   } else if (gameRoot) {
     // No server running: the launcher normally starts one; if the game was
     // started manually, still try to boot it so the WS path works.
     await ensureServer({ projectRoot, port, token });
     try {
-      return await sendViaServer({ port, token, gameKey, type, args, timeoutMs });
+      return await sendViaServer({
+        port,
+        token,
+        gameKey,
+        type,
+        args,
+        timeoutMs
+      });
     } catch (error) {
       // fall through to the file queue
     }

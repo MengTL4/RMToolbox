@@ -22,25 +22,46 @@ async function main() {
 
   const sessions = host.listSessions();
   const mine = sessions.find((s) => s.gameKey === summary.gameKey);
-  console.log("listSessions:", mine ? `found (alive=${mine.alive}, engine=${mine.engine})` : "MISSING");
+  console.log(
+    "listSessions:",
+    mine ? `found (alive=${mine.alive}, engine=${mine.engine})` : "MISSING"
+  );
 
-  const catalog = await host.send(summary.gameKey, "catalog.query", { kind: "item" });
+  const catalog = await host.send(summary.gameKey, "catalog.query", {
+    kind: "item"
+  });
   console.log("catalog.query:", catalog.total, "items");
 
   try {
     const party = await host.send(summary.gameKey, "party.info", {});
-    console.log("party.info:", (party.members || []).length, "members, gold", party.gold);
+    console.log(
+      "party.info:",
+      (party.members || []).length,
+      "members, gold",
+      party.gold
+    );
   } catch (error) {
-    console.log("party.info:", /no save loaded/.test(error.message) ? "n/a (title screen)" : `FAIL ${error.message}`);
+    console.log(
+      "party.info:",
+      /no save loaded/.test(error.message)
+        ? "n/a (title screen)"
+        : `FAIL ${error.message}`
+    );
   }
 
   // The state push should flow through host's onState handler.
   let pushed = null;
-  host.setHandlers({ onState: (gameKey, state) => { if (gameKey === summary.gameKey) pushed = state; } });
+  host.setHandlers({
+    onState: (gameKey, state) => {
+      if (gameKey === summary.gameKey) pushed = state;
+    }
+  });
   await new Promise((resolve) => setTimeout(resolve, 2500));
   console.log("state push:", pushed ? `ok (gold=${pushed.gold})` : "MISSING");
 
-  const unsupported = await host.send(summary.gameKey, "battle.info", {}).catch((e) => e.message);
+  const unsupported = await host
+    .send(summary.gameKey, "battle.info", {})
+    .catch((e) => e.message);
   console.log("battle.info error:", unsupported);
 
   await host.stop(summary.pid);

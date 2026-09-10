@@ -58,12 +58,22 @@ export class JsonlReader {
         this.identity = identity;
       }
       const lines = [];
-      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(0, size - this.offset)));
+      const chunk = Buffer.allocUnsafe(
+        Math.min(64 * 1024, Math.max(0, size - this.offset))
+      );
       while (this.offset < size) {
-        const got = readSync(fd, chunk, 0, Math.min(chunk.length, size - this.offset), this.offset);
+        const got = readSync(
+          fd,
+          chunk,
+          0,
+          Math.min(chunk.length, size - this.offset),
+          this.offset
+        );
         if (!got) break;
         this.offset += got;
-        const parts = (this.remainder + this.decoder.write(chunk.subarray(0, got))).split(/\r?\n/);
+        const parts = (
+          this.remainder + this.decoder.write(chunk.subarray(0, got))
+        ).split(/\r?\n/);
         this.remainder = parts.pop();
         for (const line of parts) lines.push(line);
       }

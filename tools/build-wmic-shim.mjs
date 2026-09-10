@@ -12,7 +12,9 @@ import path from "node:path";
 import os from "node:os";
 import process from "node:process";
 
-const root = path.resolve(new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+const root = path.resolve(
+  new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")
+);
 const src = path.join(root, "runtime", "src", "wmic-shim.c");
 const outDir = path.join(root, "runtime", "bin");
 const out = path.join(outDir, "wmic.exe");
@@ -37,11 +39,15 @@ function findGcc() {
 
 const gcc = findGcc();
 mkdirSync(outDir, { recursive: true });
-const res = spawnSync(gcc, ["-O2", "-static", "-o", out, src], { stdio: "inherit" });
+const res = spawnSync(gcc, ["-O2", "-static", "-o", out, src], {
+  stdio: "inherit"
+});
 if (res.status !== 0) {
   console.error(`build failed (${gcc})`);
   process.exit(1);
 }
 // Keep a copy next to the injector artifacts for archiving.
-try { copyFileSync(out, path.join(outDir, "wmic-x64.exe")); } catch (_) {}
+try {
+  copyFileSync(out, path.join(outDir, "wmic-x64.exe"));
+} catch (_) {}
 console.log(`wmic shim built: ${out}`);

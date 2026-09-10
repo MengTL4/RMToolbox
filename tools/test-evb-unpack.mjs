@@ -4,10 +4,24 @@
 // parseEvbTree / extractEvb / ensureEvbUnpacked against it. No real packed
 // game needed. See core/evb-unpack.mjs for the format walk this mirrors.
 
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  mkdirSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { detectEvb, parseEvbTree, extractEvb, extractEvbAsync, ensureEvbUnpacked, ensureEvbUnpackedAsync, EvbError } from "../core/evb-unpack.mjs";
+import {
+  detectEvb,
+  parseEvbTree,
+  extractEvb,
+  extractEvbAsync,
+  ensureEvbUnpacked,
+  ensureEvbUnpackedAsync,
+  EvbError
+} from "../core/evb-unpack.mjs";
 
 let failures = 0;
 function check(label, ok, detail = "") {
@@ -29,7 +43,12 @@ const nodeHeader = (objectsCount, size = 0) => {
 };
 
 const folderNode = (name, objectsCount) =>
-  Buffer.concat([nodeHeader(objectsCount), utf16z(name), Buffer.from([3]), Buffer.alloc(25)]);
+  Buffer.concat([
+    nodeHeader(objectsCount),
+    utf16z(name),
+    Buffer.from([3]),
+    Buffer.alloc(25)
+  ]);
 
 const fileNode = (name, originalSize, storedSize) => {
   const opt = Buffer.alloc(53);
@@ -93,7 +112,11 @@ try {
   writeFileSync(exe, buildEvbImage());
 
   const det = detectEvb(exe);
-  check("detectEvb hits .enigma sections", !!det && det.arch === "x64", JSON.stringify(det));
+  check(
+    "detectEvb hits .enigma sections",
+    !!det && det.arch === "x64",
+    JSON.stringify(det)
+  );
 
   const plain = path.join(tmp, "plain.exe");
   writeFileSync(plain, buildEvbImage({ enigma: false }));
@@ -101,21 +124,48 @@ try {
 
   const tree = parseEvbTree(exe);
   const paths = tree.files.map((f) => f.path);
-  check("tree paths (%DEFAULT FOLDER% → root)", paths.join(",") === "Game.exe,readme.txt", paths.join(","));
-  check("tree sizes", tree.files[0]?.storedSize === GAME_EXE.length && tree.files[1]?.storedSize === README.length,
-    JSON.stringify(tree.files));
-  check("tree flags uncompressed", tree.files.every((f) => !f.compressed), "");
+  check(
+    "tree paths (%DEFAULT FOLDER% → root)",
+    paths.join(",") === "Game.exe,readme.txt",
+    paths.join(",")
+  );
+  check(
+    "tree sizes",
+    tree.files[0]?.storedSize === GAME_EXE.length &&
+      tree.files[1]?.storedSize === README.length,
+    JSON.stringify(tree.files)
+  );
+  check(
+    "tree flags uncompressed",
+    tree.files.every((f) => !f.compressed),
+    ""
+  );
 
   const outDir = path.join(tmp, "out");
   const result = extractEvb(exe, outDir);
-  check("extractEvb counts", result.files === 2 && result.bytes === GAME_EXE.length + README.length, JSON.stringify(result));
-  check("extracted Game.exe bytes", readFileSync(path.join(outDir, "Game.exe")).equals(GAME_EXE), "");
-  check("extracted readme.txt bytes", readFileSync(path.join(outDir, "readme.txt")).equals(README), "");
+  check(
+    "extractEvb counts",
+    result.files === 2 && result.bytes === GAME_EXE.length + README.length,
+    JSON.stringify(result)
+  );
+  check(
+    "extracted Game.exe bytes",
+    readFileSync(path.join(outDir, "Game.exe")).equals(GAME_EXE),
+    ""
+  );
+  check(
+    "extracted readme.txt bytes",
+    readFileSync(path.join(outDir, "readme.txt")).equals(README),
+    ""
+  );
 
   const compressedExe = path.join(tmp, "compressed.exe");
   writeFileSync(compressedExe, buildEvbImage({ compress: true }));
   const refused = await Promise.resolve()
-    .then(() => { extractEvb(compressedExe, path.join(tmp, "out2")); return ""; })
+    .then(() => {
+      extractEvb(compressedExe, path.join(tmp, "out2"));
+      return "";
+    })
     .catch((e) => (e instanceof EvbError ? e.message : `wrong error: ${e}`));
   check("compressed image refused loudly", /aPLib/.test(refused), refused);
 
@@ -123,11 +173,22 @@ try {
   const packed = path.join(tmp, "My Game.exe");
   writeFileSync(packed, buildEvbImage());
   const first = ensureEvbUnpacked(packed);
-  check("ensureEvbUnpacked extracts", first.extracted === true && first.files === 2, JSON.stringify(first));
-  check("ensureEvbUnpacked lands Game.exe",
-    readFileSync(path.join(first.dir, "Game.exe")).equals(GAME_EXE), first.dir);
+  check(
+    "ensureEvbUnpacked extracts",
+    first.extracted === true && first.files === 2,
+    JSON.stringify(first)
+  );
+  check(
+    "ensureEvbUnpacked lands Game.exe",
+    readFileSync(path.join(first.dir, "Game.exe")).equals(GAME_EXE),
+    first.dir
+  );
   const second = ensureEvbUnpacked(packed);
-  check("ensureEvbUnpacked reuses", second.extracted === false && second.dir === first.dir, JSON.stringify(second));
+  check(
+    "ensureEvbUnpacked reuses",
+    second.extracted === false && second.dir === first.dir,
+    JSON.stringify(second)
+  );
 
   // A stale Game.exe is not enough to prove completion: simulate an interrupted
   // extraction that wrote only the first table entry, then require the next
@@ -135,13 +196,27 @@ try {
   const partialPacked = path.join(tmp, "Partial Game.exe");
   writeFileSync(partialPacked, buildEvbImage());
   const partialDir = partialPacked.replace(/\.exe$/i, "") + "_unpacked";
-  writeFileSync(path.join(tmp, "partial-marker.txt"), "keep the fixture root writable");
+  writeFileSync(
+    path.join(tmp, "partial-marker.txt"),
+    "keep the fixture root writable"
+  );
   mkdirSync(partialDir, { recursive: true });
   writeFileSync(path.join(partialDir, "Game.exe"), Buffer.from("partial"));
   const repaired = ensureEvbUnpacked(partialPacked);
-  check("partial extraction is repaired", repaired.extracted === true &&
-    readFileSync(path.join(partialDir, "readme.txt")).equals(README), JSON.stringify(repaired));
-  check("completion marker is written", readFileSync(path.join(partialDir, ".rmch-evb-complete.json"), "utf8").includes('"files":2'), "");
+  check(
+    "partial extraction is repaired",
+    repaired.extracted === true &&
+      readFileSync(path.join(partialDir, "readme.txt")).equals(README),
+    JSON.stringify(repaired)
+  );
+  check(
+    "completion marker is written",
+    readFileSync(
+      path.join(partialDir, ".rmch-evb-complete.json"),
+      "utf8"
+    ).includes('"files":2'),
+    ""
+  );
 
   // The GUI path must yield while copying a packed image, even when the image
   // contains only small files. This keeps NW responsive during real 40k-file
@@ -149,15 +224,33 @@ try {
   const asyncPacked = path.join(tmp, "Async Game.exe");
   writeFileSync(asyncPacked, buildEvbImage());
   let yielded = false;
-  setImmediate(() => { yielded = true; });
+  setImmediate(() => {
+    yielded = true;
+  });
   let progress = 0;
-  const asyncFirst = await ensureEvbUnpackedAsync(asyncPacked, { onProgress: () => { progress += 1; } });
-  check("async extraction yields to event loop", yielded && asyncFirst.extracted === true && progress === 2, JSON.stringify({ yielded, progress, asyncFirst }));
+  const asyncFirst = await ensureEvbUnpackedAsync(asyncPacked, {
+    onProgress: () => {
+      progress += 1;
+    }
+  });
+  check(
+    "async extraction yields to event loop",
+    yielded && asyncFirst.extracted === true && progress === 2,
+    JSON.stringify({ yielded, progress, asyncFirst })
+  );
   const asyncSecond = await ensureEvbUnpackedAsync(asyncPacked);
-  check("async ensure reuses", asyncSecond.extracted === false && asyncSecond.dir === asyncFirst.dir, JSON.stringify(asyncSecond));
+  check(
+    "async ensure reuses",
+    asyncSecond.extracted === false && asyncSecond.dir === asyncFirst.dir,
+    JSON.stringify(asyncSecond)
+  );
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
 
-console.log(failures ? `test-evb-unpack: FAIL (${failures} checks)` : "test-evb-unpack: PASS");
+console.log(
+  failures
+    ? `test-evb-unpack: FAIL (${failures} checks)`
+    : "test-evb-unpack: PASS"
+);
 process.exit(failures ? 1 : 0);

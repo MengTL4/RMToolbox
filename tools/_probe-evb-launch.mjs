@@ -8,7 +8,11 @@ const result = await launchGame({ gameRoot, projectRoot, build: false });
 console.log("strategy:", result.strategy);
 console.log("game:", result.game);
 console.log("reason:", result.strategyReason);
-const p = await result.rgssSession.send("debug.eval", { code: '["scene="+$scene.class.to_s, "title-ok"].inspect' }, 20000);
+const p = await result.rgssSession.send(
+  "debug.eval",
+  { code: '["scene="+$scene.class.to_s, "title-ok"].inspect' },
+  20000
+);
 console.log("eval:", p.result);
 result.rgssSession.close();
 process.exit(0);

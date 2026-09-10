@@ -9,22 +9,30 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const projectRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  ".."
+);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Hard watchdog: any hung CDP eval must not park the probe forever.
-setTimeout(() => { console.log("WATCHDOG: 150s exceeded, bailing"); process.exit(2); }, 150000).unref();
+setTimeout(() => {
+  console.log("WATCHDOG: 150s exceeded, bailing");
+  process.exit(2);
+}, 150000).unref();
 
 // --- tiny CDP client over the GUI's debug endpoint ---------------------------
 // Port 9333: adb.exe holds a zombie forward on 9222 on this machine.
 const CDP_PORT = 9333;
 async function cdpList() {
-  const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`,
-    { signal: AbortSignal.timeout(3000) });
+  const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`, {
+    signal: AbortSignal.timeout(3000)
+  });
   return res.json();
 }
-let ws, msgId = 0;
+let ws,
+  msgId = 0;
 const pending = new Map();
 async function cdpConnect() {
   const pages = await cdpList();
@@ -54,17 +62,33 @@ function evaluate(expression, awaitPromise = false) {
       clearTimeout(timer);
       if (msg.error) reject(new Error(msg.error.message));
       else if (msg.result && msg.result.exceptionDetails) {
-        reject(new Error(msg.result.exceptionDetails.exception?.description || "eval exception"));
-      } else resolve(msg.result && msg.result.result ? msg.result.result.value : undefined);
+        reject(
+          new Error(
+            msg.result.exceptionDetails.exception?.description ||
+              "eval exception"
+          )
+        );
+      } else
+        resolve(
+          msg.result && msg.result.result ? msg.result.result.value : undefined
+        );
     });
-    ws.send(JSON.stringify({ id, method: "Runtime.evaluate",
-      params: { expression, awaitPromise, returnByValue: true } }));
+    ws.send(
+      JSON.stringify({
+        id,
+        method: "Runtime.evaluate",
+        params: { expression, awaitPromise, returnByValue: true }
+      })
+    );
   });
 }
 
 // --- boot the GUI ------------------------------------------------------------
-const gui = spawn(path.join(projectRoot, "app", "gui", "RMToolbox.exe"),
-  [`--remote-debugging-port=${CDP_PORT}`], { detached: true, stdio: "ignore" });
+const gui = spawn(
+  path.join(projectRoot, "app", "gui", "RMToolbox.exe"),
+  [`--remote-debugging-port=${CDP_PORT}`],
+  { detached: true, stdio: "ignore" }
+);
 gui.unref();
 
 let failures = 0;
@@ -77,22 +101,32 @@ try {
   let up = false;
   for (let i = 0; i < 60 && !up; i += 1) {
     await sleep(1000);
-    up = await cdpList().then(() => true, () => false);
+    up = await cdpList().then(
+      () => true,
+      () => false
+    );
   }
   if (!up) throw new Error("GUI CDP never came up");
   await cdpConnect();
   console.log("gui     : connected");
-  console.log("games   :", await evaluate(`(RMCH.store.state.games || []).length`));
+  console.log(
+    "games   :",
+    await evaluate(`(RMCH.store.state.games || []).length`)
+  );
 
-  await evaluate(`(async () => {
+  await evaluate(
+    `(async () => {
     const g = RMCH.store.state.games.find((x) => x.root && x.root.indexOf("赤途") >= 0);
     if (!g) throw new Error("赤途 not in library");
     await RMCH.store.launch(g);
     return g.gameKey;
-  })()`, true);
+  })()`,
+    true
+  );
 
   // Wait for the bridge session + pick it in the trainer, then load slot 1.
-  const gameKey = await evaluate(`(async () => {
+  const gameKey = await evaluate(
+    `(async () => {
     const deadline = Date.now() + 30000;
     for (;;) {
       const live = (RMCH.store.state.sessions || []).find((x) => x.alive && x.gameKey.indexOf("赤途") >= 0);
@@ -100,20 +134,33 @@ try {
       if (Date.now() > deadline) throw new Error("session never went live");
       await new Promise((r) => setTimeout(r, 500));
     }
-  })()`, true);
+  })()`,
+    true
+  );
   console.log("game    :", gameKey);
 
-  console.log("load    :", await evaluate(`RMCH.store.send(${JSON.stringify(gameKey)}, "save.load", { id: 1 })`, true)
-    .then((r) => JSON.stringify(r), (e) => "ERR " + e.message));
+  console.log(
+    "load    :",
+    await evaluate(
+      `RMCH.store.send(${JSON.stringify(gameKey)}, "save.load", { id: 1 })`,
+      true
+    ).then(
+      (r) => JSON.stringify(r),
+      (e) => "ERR " + e.message
+    )
+  );
   await sleep(5000); // Scene_Map + announcement settle
 
   // Open 数据 › 角色 and click the first roster entry (a Pokemon).
   await evaluate(`RMCH.store.data.tab = "actor"`);
-  await evaluate(`(async () => {
+  await evaluate(
+    `(async () => {
     await RMCH.store.loadRoster();
     await RMCH.store.refreshParty();
     return RMCH.store.trainer.roster.length;
-  })()`, true).then((n) => check("roster = party", n > 0, `roster=${n}`));
+  })()`,
+    true
+  ).then((n) => check("roster = party", n > 0, `roster=${n}`));
 
   // Drive the app shell to the data tab (tab is a local ref — go via the menu DOM).
   await evaluate(`(() => {
@@ -123,7 +170,9 @@ try {
     return !!el;
   })()`).then((ok) => check("nav to 数据", !!ok));
   await sleep(800);
-  console.log("nav state:", await evaluate(`(() => {
+  console.log(
+    "nav state:",
+    await evaluate(`(() => {
     const sel = document.querySelector(".n-menu-item--selected, .n-menu-item-content--selected");
     return JSON.stringify({
       selected: sel && sel.textContent.trim(),
@@ -131,7 +180,8 @@ try {
       gameKey: RMCH.store.trainer.gameKey,
       tabs: document.querySelectorAll(".n-tabs").length
     });
-  })()`));
+  })()`)
+  );
 
   await evaluate(`(() => {
     const rows = [...document.querySelectorAll(".rm-entry-list .n-list-item, .rm-entry")];
@@ -150,7 +200,9 @@ try {
   await evaluate(`RMCH.store.data.selected.actor = 1; RMCH.store.openActor(1)`);
   await sleep(1500);
 
-  const actor = await evaluate(`(RMCH.store.trainer.actor && RMCH.store.trainer.actor.name) || null`);
+  const actor = await evaluate(
+    `(RMCH.store.trainer.actor && RMCH.store.trainer.actor.name) || null`
+  );
   check("actor detail loaded", !!actor, "trainer.actor empty");
   console.log("actor   :", actor || "?");
 
@@ -158,10 +210,18 @@ try {
     const t = document.body.innerText;
     return { skills: /技能 \\d/.test(t), params: /属性加值/.test(t), name: t.includes(${JSON.stringify("妙澪儿")}) };
   })()`);
-  check("detail panel rendered", !!(rendered && rendered.skills && rendered.params), JSON.stringify(rendered));
+  check(
+    "detail panel rendered",
+    !!(rendered && rendered.skills && rendered.params),
+    JSON.stringify(rendered)
+  );
   if (!(rendered && rendered.skills && rendered.params)) {
-    console.log("body text:", await evaluate(
-      `document.body.innerText.replace(/\\s+/g, " ").slice(0, 500)`));
+    console.log(
+      "body text:",
+      await evaluate(
+        `document.body.innerText.replace(/\\s+/g, " ").slice(0, 500)`
+      )
+    );
   }
 
   // The ResizeObserver notice must be filtered: simulate it, expect no overlay.
@@ -186,7 +246,9 @@ try {
 }
 
 console.log(failures ? `gui-actor: FAIL (${failures})` : "gui-actor: PASS");
-try { process.kill(-gui.pid); } catch (_) {}
+try {
+  process.kill(-gui.pid);
+} catch (_) {}
 spawn("taskkill", ["/IM", "RMToolbox.exe", "/F"], { stdio: "ignore" });
 spawn("taskkill", ["/IM", "Game.exe", "/F"], { stdio: "ignore" });
 process.exit(failures ? 1 : 0);

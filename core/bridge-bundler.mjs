@@ -23,33 +23,33 @@ import vm from "node:vm";
 // router). The numeric prefixes exist so this list reads the same as the
 // directory; assertPartsMatchDirectory keeps them from drifting.
 const PARTS = [
-  "00-prelude.js",          // IIFE open + bridge state object
-  "05-node-io.js",          // require/fs/path, paths, log + event writers
-  "07-renamed-engine.js",   // live aliases for the TH-renamed MV family
-  "08-capture.js",          // JSON save/load tap → live refs for closure-sealed shells
-  "10-engine.js",           // TK.$ alias resolution, $game*/$data*, hook targets
-  "20-values.js",           // coercion, arg guards, suppression scopes, stats
-  "25-battlers.js",         // battler/party/troop access, actorInfo
-  "30-catalogs.js",         // item/skill/map catalogs, inventory slots
-  "31-th-inventory.js",     // TH per-actor bags / warehouse / unique equipment
-  "40-hooks.js",            // patchMethod + rate/encounter/speed/cost hooks
-  "44-frame-pacing.js",     // FT/TDDP native frame-time compatibility
-  "45-vitals-locks.js",     // 上帝模式: HP/MP/TP locking
-  "50-value-locks.js",      // 数据锁定: per-frame value writeback
-  "55-transport.js",        // WebSocket client + JSONL fallback queue
-  "58-state.js",            // state.json snapshot
-  "60-commands-core.js",    // ping, runtime.info, trainer options, console
-  "62-commands-party.js",   // gold, inventory, party, actors
-  "64-commands-world.js",   // switches, variables, maps, events, battle
-  "65-event-tools.js",      // map snapshots, guarded movement, read-only event inspection
-  "65b-event-execution.js",  // complete steps and owned native interpreter execution
-  "66-commands-saves.js",   // save slots, save-data tree, value locks
-  "66b-mz-forage.js",       // native MZ browser storage and local slot recovery
-  "67-commands-assets.js",  // decoded game assets (IconSet sheet for the GUI)
-  "68-commands-system.js",  // scene push/pop, repair, new game
-  "69-router.js",           // freeze table + execute()
-  "70-profiles.js",         // per-game profile loader
-  "90-startup.js"           // timers, transport start, IIFE close
+  "00-prelude.js", // IIFE open + bridge state object
+  "05-node-io.js", // require/fs/path, paths, log + event writers
+  "07-renamed-engine.js", // live aliases for the TH-renamed MV family
+  "08-capture.js", // JSON save/load tap → live refs for closure-sealed shells
+  "10-engine.js", // TK.$ alias resolution, $game*/$data*, hook targets
+  "20-values.js", // coercion, arg guards, suppression scopes, stats
+  "25-battlers.js", // battler/party/troop access, actorInfo
+  "30-catalogs.js", // item/skill/map catalogs, inventory slots
+  "31-th-inventory.js", // TH per-actor bags / warehouse / unique equipment
+  "40-hooks.js", // patchMethod + rate/encounter/speed/cost hooks
+  "44-frame-pacing.js", // FT/TDDP native frame-time compatibility
+  "45-vitals-locks.js", // 上帝模式: HP/MP/TP locking
+  "50-value-locks.js", // 数据锁定: per-frame value writeback
+  "55-transport.js", // WebSocket client + JSONL fallback queue
+  "58-state.js", // state.json snapshot
+  "60-commands-core.js", // ping, runtime.info, trainer options, console
+  "62-commands-party.js", // gold, inventory, party, actors
+  "64-commands-world.js", // switches, variables, maps, events, battle
+  "65-event-tools.js", // map snapshots, guarded movement, read-only event inspection
+  "65b-event-execution.js", // complete steps and owned native interpreter execution
+  "66-commands-saves.js", // save slots, save-data tree, value locks
+  "66b-mz-forage.js", // native MZ browser storage and local slot recovery
+  "67-commands-assets.js", // decoded game assets (IconSet sheet for the GUI)
+  "68-commands-system.js", // scene push/pop, repair, new game
+  "69-router.js", // freeze table + execute()
+  "70-profiles.js", // per-game profile loader
+  "90-startup.js" // timers, transport start, IIFE close
 ];
 
 const OPEN_MARKER = "@rmch-iife-open";
@@ -70,7 +70,9 @@ function partsDir(projectRoot) {
 // exists, the tests pass (because nothing references it yet), and the feature is
 // absent at runtime.
 function assertPartsMatchDirectory(dir) {
-  const onDisk = readdirSync(dir).filter((name) => name.endsWith(".js")).sort();
+  const onDisk = readdirSync(dir)
+    .filter((name) => name.endsWith(".js"))
+    .sort();
   const listed = PARTS.slice().sort();
   const missing = onDisk.filter((name) => !listed.includes(name));
   const stale = listed.filter((name) => !onDisk.includes(name));
@@ -78,22 +80,34 @@ function assertPartsMatchDirectory(dir) {
     const details = [
       missing.length ? `on disk but not in PARTS: ${missing.join(", ")}` : null,
       stale.length ? `in PARTS but not on disk: ${stale.join(", ")}` : null
-    ].filter(Boolean).join("; ");
-    throw new Error(`bridge parts list is out of sync with ${dir} — ${details}`);
+    ]
+      .filter(Boolean)
+      .join("; ");
+    throw new Error(
+      `bridge parts list is out of sync with ${dir} — ${details}`
+    );
   }
 }
 
 function assertIifeMarkers(sources) {
-  const opens = PARTS.filter((name, index) => sources[index].includes(OPEN_MARKER));
-  const closes = PARTS.filter((name, index) => sources[index].includes(CLOSE_MARKER));
+  const opens = PARTS.filter((name, index) =>
+    sources[index].includes(OPEN_MARKER)
+  );
+  const closes = PARTS.filter((name, index) =>
+    sources[index].includes(CLOSE_MARKER)
+  );
   if (opens.length !== 1 || opens[0] !== PARTS[0]) {
-    throw new Error(`exactly one part must carry ${OPEN_MARKER} and it must be ${PARTS[0]} ` +
-      `(found: ${opens.join(", ") || "none"})`);
+    throw new Error(
+      `exactly one part must carry ${OPEN_MARKER} and it must be ${PARTS[0]} ` +
+        `(found: ${opens.join(", ") || "none"})`
+    );
   }
   const last = PARTS[PARTS.length - 1];
   if (closes.length !== 1 || closes[0] !== last) {
-    throw new Error(`exactly one part must carry ${CLOSE_MARKER} and it must be ${last} ` +
-      `(found: ${closes.join(", ") || "none"})`);
+    throw new Error(
+      `exactly one part must carry ${CLOSE_MARKER} and it must be ${last} ` +
+        `(found: ${closes.join(", ") || "none"})`
+    );
   }
 }
 
@@ -115,7 +129,9 @@ function assertEachPartParses(sources) {
     try {
       new vm.Script(partCheckSource(sources[index], index), { filename: name });
     } catch (error) {
-      throw new Error(`bridge part ${name} has a syntax error: ${error.message}`);
+      throw new Error(
+        `bridge part ${name} has a syntax error: ${error.message}`
+      );
     }
   });
 }
@@ -140,15 +156,22 @@ function assertAssembledParses(output, sources) {
         cursor += lineCount;
       }
     }
-    throw new Error(`assembled page-bridge.js does not parse${where}: ${error.message}`);
+    throw new Error(
+      `assembled page-bridge.js does not parse${where}: ${error.message}`
+    );
   }
 }
 
-export function buildBridge(projectRoot) {
+// `outputPath` exists so tests can assemble the real sources without rewriting
+// the committed runtime/bridge/page-bridge.js. That file IS tracked on purpose —
+// tools/gui-check.mjs compares it against the parts to catch a stale bridge — so
+// a test that overwrote it used to dirty the working tree on every run.
+export function buildBridge(projectRoot, outputPath) {
   const body = assembleBridgeBody(projectRoot);
-  const outputPath = path.join(projectRoot, "runtime", "bridge", "page-bridge.js");
-  writeFileSync(outputPath, BANNER + body, "utf8");
-  return outputPath;
+  const target =
+    outputPath || path.join(projectRoot, "runtime", "bridge", "page-bridge.js");
+  writeFileSync(target, BANNER + body, "utf8");
+  return target;
 }
 
 // Assemble without writing — tools/gui-check.mjs compares this (with the
@@ -158,7 +181,9 @@ export function assembleBridgeBody(projectRoot) {
   const dir = partsDir(projectRoot);
   assertPartsMatchDirectory(dir);
 
-  const sources = PARTS.map((name) => readFileSync(path.join(dir, name), "utf8").trimEnd());
+  const sources = PARTS.map((name) =>
+    readFileSync(path.join(dir, name), "utf8").trimEnd()
+  );
   assertIifeMarkers(sources);
   assertEachPartParses(sources);
 

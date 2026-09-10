@@ -1,0 +1,43 @@
+# Attribute policy.
+#
+# Line endings: `* text=auto eol=lf` below makes the repository canonical form LF
+# regardless of a contributor's core.autocrlf. That matters more here than in a
+# typical project: tools/gui-check.mjs compares generated artifacts BYTE-FOR-BYTE
+# against a fresh assembly of their sources, so committed bytes must not depend
+# on local git configuration.
+#
+# The 136-CRLF / 78-LF split this repository used to have was normalised to LF in
+# the same commit that added this file. `runtime/bridge/src/parts/**` are
+# function-body fragments that Prettier cannot parse and are excluded from
+# formatting, but their line endings are normalised like everything else — the
+# bundler joins them with "\n" and gui-check compares the result, so LF-only is
+# the state that keeps both sides identical.
+#
+# Windows launchers keep CRLF: cmd.exe and some PowerShell hosts are unhappy with
+# LF-only script files.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binaries: never attempt a text diff or an EOL conversion.
+*.exe binary
+*.dll binary
+*.pak binary
+*.bin binary
+*.dat binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.wav binary
+*.ogg binary
+*.mp3 binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+
+# Vendored native dependency: real source, but not ours to reformat.
+runtime/inject/third_party/** -diff

@@ -37,7 +37,9 @@
   }
 
   window.addEventListener("error", function (event) {
-    var message = String((event.error && event.error.message) || event.message || "");
+    var message = String(
+      (event.error && event.error.message) || event.message || ""
+    );
     // Chromium's self-healing ResizeObserver notice ("loop limit exceeded" /
     // "loop completed with undelivered notifications"): Naive UI tables and
     // scrollbars trip it during normal layout, the layout settles on the next
@@ -46,7 +48,10 @@
       mirror("[page] ResizeObserver notice ignored: " + message);
       return;
     }
-    report("页面脚本错误 · " + (event.filename || "?") + ":" + (event.lineno || 0), event.error || event.message);
+    report(
+      "页面脚本错误 · " + (event.filename || "?") + ":" + (event.lineno || 0),
+      event.error || event.message
+    );
   });
 
   window.addEventListener("unhandledrejection", function (event) {

@@ -16,7 +16,9 @@ export class CdpError extends Error {}
 export function httpGet(port, pathname, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     const socket = net.connect(port, "127.0.0.1", () => {
-      socket.write(`GET ${pathname} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`);
+      socket.write(
+        `GET ${pathname} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`
+      );
     });
     let raw = "";
     const timer = setTimeout(() => {
@@ -92,7 +94,9 @@ class WsClient {
         if (end === -1) return;
         const head = this.buffer.slice(0, end).toString("latin1");
         if (!/^HTTP\/1\.1 101/.test(head)) {
-          reject(new CdpError("websocket upgrade refused: " + head.split("\r\n")[0]));
+          reject(
+            new CdpError("websocket upgrade refused: " + head.split("\r\n")[0])
+          );
           return;
         }
         this.buffer = this.buffer.slice(end + 4);
@@ -132,7 +136,8 @@ class WsClient {
 
       const payload = Buffer.concat(this.fragments);
       this.fragments = [];
-      if (this.fragmentOpcode === 0x1 && this.onMessage) this.onMessage(payload.toString("utf8"));
+      if (this.fragmentOpcode === 0x1 && this.onMessage)
+        this.onMessage(payload.toString("utf8"));
     }
   }
 
@@ -153,7 +158,8 @@ class WsClient {
     } else if (length === 127) {
       if (this.buffer.length < offset + 8) return null;
       const big = this.buffer.readBigUInt64BE(offset);
-      if (big > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("frame too large");
+      if (big > BigInt(Number.MAX_SAFE_INTEGER))
+        throw new Error("frame too large");
       length = Number(big);
       offset += 8;
     }
@@ -172,7 +178,9 @@ class WsClient {
 
   // Client frames must be masked (RFC6455 §5.3).
   send(data, opcode = 0x1) {
-    const payload = Buffer.isBuffer(data) ? data : Buffer.from(String(data), "utf8");
+    const payload = Buffer.isBuffer(data)
+      ? data
+      : Buffer.from(String(data), "utf8");
     const mask = crypto.randomBytes(4);
     const header = [];
     header.push(0x80 | opcode);
@@ -181,9 +189,17 @@ class WsClient {
     } else if (payload.length < 0x10000) {
       header.push(0x80 | 126, payload.length >> 8, payload.length & 0xff);
     } else {
-      header.push(0x80 | 127, 0, 0, 0, 0,
-        (payload.length >>> 24) & 0xff, (payload.length >>> 16) & 0xff,
-        (payload.length >>> 8) & 0xff, payload.length & 0xff);
+      header.push(
+        0x80 | 127,
+        0,
+        0,
+        0,
+        0,
+        (payload.length >>> 24) & 0xff,
+        (payload.length >>> 16) & 0xff,
+        (payload.length >>> 8) & 0xff,
+        payload.length & 0xff
+      );
     }
     const masked = Buffer.from(payload);
     for (let i = 0; i < masked.length; i += 1) masked[i] ^= mask[i % 4];
@@ -208,12 +224,22 @@ class WsClient {
 // wins. `onEvent(method, params)` receives unsolicited CDP events —
 // diagnostics only: the Tauri transport avoids enabling any domain because
 // Runtime.enable is a watchdog kill trigger (see core/tauri-cdp.mjs).
-export async function openCdpSession({ port, matchUrl = null, timeoutMs = 30000, onEvent = null }) {
+export async function openCdpSession({
+  port,
+  matchUrl = null,
+  timeoutMs = 30000,
+  onEvent = null
+}) {
   const targets = await listTargets(port);
-  const pages = targets.filter((t) => t.type === "page" && t.webSocketDebuggerUrl);
-  const prefixes = matchUrl == null ? [] : (Array.isArray(matchUrl) ? matchUrl : [matchUrl]);
+  const pages = targets.filter(
+    (t) => t.type === "page" && t.webSocketDebuggerUrl
+  );
+  const prefixes =
+    matchUrl == null ? [] : Array.isArray(matchUrl) ? matchUrl : [matchUrl];
   const page = prefixes.length
-    ? pages.find((t) => prefixes.some((prefix) => String(t.url || "").startsWith(prefix)))
+    ? pages.find((t) =>
+        prefixes.some((prefix) => String(t.url || "").startsWith(prefix))
+      )
     : pages[0];
   if (!page) {
     throw new CdpError(
@@ -236,7 +262,10 @@ export async function openCdpSession({ port, matchUrl = null, timeoutMs = 30000,
     if (message.id && pending.has(message.id)) {
       const entry = pending.get(message.id);
       pending.delete(message.id);
-      if (message.error) entry.reject(new CdpError(message.error.message || JSON.stringify(message.error)));
+      if (message.error)
+        entry.reject(
+          new CdpError(message.error.message || JSON.stringify(message.error))
+        );
       else entry.resolve(message.result);
     } else if (message.method && onEvent) {
       try {
@@ -271,12 +300,20 @@ export async function openCdpSession({ port, matchUrl = null, timeoutMs = 30000,
   async function evaluate(expression, evalTimeoutMs) {
     const result = await call(
       "Runtime.evaluate",
-      { expression, returnByValue: true, awaitPromise: true, userGesture: true },
+      {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+        userGesture: true
+      },
       evalTimeoutMs
     );
     if (result.exceptionDetails) {
       const detail = result.exceptionDetails;
-      throw new CdpError("page threw: " + ((detail.exception && detail.exception.description) || detail.text));
+      throw new CdpError(
+        "page threw: " +
+          ((detail.exception && detail.exception.description) || detail.text)
+      );
     }
     return result.result ? result.result.value : undefined;
   }

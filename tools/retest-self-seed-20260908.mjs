@@ -1,6 +1,8 @@
-import { SEALED_SEED_FN } from '../core/sealed-seed.mjs';
-import { spawnSync } from 'node:child_process';
-const publisher=process.argv.includes('--scenes') ? `function(){return this.filter(x=>typeof x==='function'&&/^Scene_/.test(x.name)).map(x=>x.name)}` : SEALED_SEED_FN;
+import { SEALED_SEED_FN } from "../core/sealed-seed.mjs";
+import { spawnSync } from "node:child_process";
+const publisher = process.argv.includes("--scenes")
+  ? `function(){return this.filter(x=>typeof x==='function'&&/^Scene_/.test(x.name)).map(x=>x.name)}`
+  : SEALED_SEED_FN;
 const code = `(function(){
  let target;
  const post=(method,params)=>new Promise((resolve,reject)=>chrome.debugger.sendCommand(target,method,params,result=>{
@@ -21,5 +23,16 @@ const code = `(function(){
    finally {await post('Runtime.releaseObjectGroup',{objectGroup:'rmch-probe'});chrome.debugger.detach(target,function(){});}
  })();return 'seed pending';
 })()`;
-const r=spawnSync(process.execPath,['tools/retest-command-20260908.mjs',process.argv[2],'console.eval',JSON.stringify({code})],{encoding:'utf8'});
-process.stdout.write(r.stdout||'');process.stderr.write(r.stderr||'');process.exitCode=r.status||0;
+const r = spawnSync(
+  process.execPath,
+  [
+    "tools/retest-command-20260908.mjs",
+    process.argv[2],
+    "console.eval",
+    JSON.stringify({ code })
+  ],
+  { encoding: "utf8" }
+);
+process.stdout.write(r.stdout || "");
+process.stderr.write(r.stderr || "");
+process.exitCode = r.status || 0;

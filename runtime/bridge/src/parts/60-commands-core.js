@@ -9,6 +9,7 @@
   Object.assign(commandHandlers, {
     "ping": () => collectState(),
 
+    // 桥接自检：版本、识别到的引擎、游戏标识、已加载的游戏配置与打上的钩子。
     "runtime.info": () => ({
       bridgeVersion: bridge.version,
       engine: engineInfo(),
@@ -19,6 +20,7 @@
       location: String(window.location && window.location.href || "")
     }),
 
+    // 读取当前修改器开关（无敌、倍率、穿墙等）。
     "trainer.options.get": () => ({ options: { ...bridge.options }, hooks: patchTrainerHooks() }),
 
     // Accepts either {options:{...}} or the option map directly, because the CLI

@@ -13,7 +13,8 @@ import { getToken } from "../core/token.mjs";
 export async function runStandaloneServer({ port = 47412, projectRoot } = {}) {
   const token = getToken(projectRoot);
   const server = new BridgeServer({
-    port, token,
+    port,
+    token,
     stateDir: path.join(projectRoot, "runtime", "bridge-state")
   });
   server.on("session-open", (gameKey) => {
@@ -23,11 +24,15 @@ export async function runStandaloneServer({ port = 47412, projectRoot } = {}) {
     console.log(`[rmch] bridge disconnected: ${gameKey}`);
   });
   await server.start();
-  console.log(`[rmch] bridge server listening on ws://127.0.0.1:${port} (token auth)`);
+  console.log(
+    `[rmch] bridge server listening on ws://127.0.0.1:${port} (token auth)`
+  );
   return server;
 }
 
-const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isDirectRun =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isDirectRun) {
   const args = process.argv.slice(2);
   const readOption = (name, fallback) => {
@@ -35,7 +40,12 @@ if (isDirectRun) {
     return index !== -1 && args[index + 1] ? args[index + 1] : fallback;
   };
   const port = Number(readOption("port", 47412)) || 47412;
-  const projectRoot = path.resolve(readOption("project-root", path.dirname(path.dirname(fileURLToPath(import.meta.url)))));
+  const projectRoot = path.resolve(
+    readOption(
+      "project-root",
+      path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+    )
+  );
   await runStandaloneServer({ port, projectRoot });
   process.on("SIGINT", () => process.exit(0));
 }

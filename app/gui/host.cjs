@@ -25,8 +25,15 @@ const state = {
 function guiLog(message, extra) {
   const line = `[${new Date().toISOString()}] ${message}${extra ? " " + JSON.stringify(extra) : ""}`;
   state.logLines.push(line);
-  if (state.logLines.length > 500) state.logLines.splice(0, state.logLines.length - 500);
-  try { fs.appendFileSync(path.join(state.projectRoot, "runtime", "gui.log"), line + "\n", "utf8"); } catch (_) {}
+  if (state.logLines.length > 500)
+    state.logLines.splice(0, state.logLines.length - 500);
+  try {
+    fs.appendFileSync(
+      path.join(state.projectRoot, "runtime", "gui.log"),
+      line + "\n",
+      "utf8"
+    );
+  } catch (_) {}
   if (state.onLog) state.onLog(line);
 }
 
@@ -39,7 +46,10 @@ function pageLog(message) {
 
 function resolveProjectRoot(explicit) {
   if (explicit && fs.existsSync(explicit)) return path.resolve(explicit);
-  if (process.env.RMCH_PROJECT_ROOT && fs.existsSync(process.env.RMCH_PROJECT_ROOT)) {
+  if (
+    process.env.RMCH_PROJECT_ROOT &&
+    fs.existsSync(process.env.RMCH_PROJECT_ROOT)
+  ) {
     return path.resolve(process.env.RMCH_PROJECT_ROOT);
   }
   // app/gui -> project root
@@ -62,13 +72,19 @@ async function loadModule(relativePath) {
 async function init(explicitRoot) {
   if (state.server) return describe();
   state.projectRoot = resolveProjectRoot(explicitRoot);
-  guiLog("gui boot", { projectRoot: state.projectRoot, node: process.version, nw: process.versions.nw || null });
+  guiLog("gui boot", {
+    projectRoot: state.projectRoot,
+    node: process.version,
+    nw: process.versions.nw || null
+  });
   try {
     await boot();
   } catch (error) {
     // Boot errors are otherwise only visible in the page; mirror them into
     // runtime/gui.log so failures can be diagnosed after the fact.
-    guiLog("gui boot FAILED", { error: String((error && error.stack) || error) });
+    guiLog("gui boot FAILED", {
+      error: String((error && error.stack) || error)
+    });
     throw error;
   }
   return describe();
@@ -81,23 +97,38 @@ async function boot() {
   const { GameRuntime } = await loadModule("core/game-runtime.mjs");
   // Route attempts (including a fallback after a failed one) belong in the
   // shared GUI log — they are the first thing asked for when a launch fails.
-  const gameRuntime = new GameRuntime({ log: (message, extra) => guiLog(message, extra) });
+  const gameRuntime = new GameRuntime({
+    log: (message, extra) => guiLog(message, extra)
+  });
   const tokenMod = await loadModule("core/token.mjs");
   const rgssArchive = await loadModule("core/rgss-archive.mjs");
   const saveFiles = await loadModule("core/save-files.mjs");
-  state.modules = { scanner, wsServer, gameRuntime, tokenMod, rgssArchive, saveFiles };
+  state.modules = {
+    scanner,
+    wsServer,
+    gameRuntime,
+    tokenMod,
+    rgssArchive,
+    saveFiles
+  };
 
-  state.libraryPath = path.join(state.projectRoot, "runtime", "gui-library.json");
+  state.libraryPath = path.join(
+    state.projectRoot,
+    "runtime",
+    "gui-library.json"
+  );
   try {
     if (fs.existsSync(state.libraryPath)) {
       const saved = JSON.parse(fs.readFileSync(state.libraryPath, "utf8"));
-      if (saved && Array.isArray(saved.manualRoots)) state.library.manualRoots = saved.manualRoots;
+      if (saved && Array.isArray(saved.manualRoots))
+        state.library.manualRoots = saved.manualRoots;
     }
   } catch (_) {}
 
   const token = tokenMod.getToken(state.projectRoot);
   const server = new wsServer.BridgeServer({
-    port: 47412, token,
+    port: 47412,
+    token,
     stateDir: path.join(state.projectRoot, "runtime", "bridge-state")
   });
   const sessions = new BridgeSessions({ server });
@@ -133,7 +164,9 @@ function aboutInfo() {
   if (cachedAbout) return cachedAbout;
   let appVersion = null;
   try {
-    appVersion = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8")).version || null;
+    appVersion =
+      JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"))
+        .version || null;
   } catch (_) {}
   cachedAbout = {
     appVersion,
@@ -148,6 +181,94 @@ function describe() {
   return { projectRoot: state.projectRoot, port: 47412, about: aboutInfo() };
 }
 
+// "A newer release exists" — deliberately read-only.
+//
+// This only asks the GitHub Releases API what the latest tag is; it never
+// downloads or replaces anything. A 200 MB self-update would have to swap the
+// running NW.js app out from under itself, and the toolbox already refuses to
+// touch files it does not have to (see the 不碰游戏目录 rule). Telling the user
+// where to get the new ZIP is the whole feature.
+//
+// Every failure path returns { ok: false } instead of throwing: this runs at
+// startup, and being offline, rate-limited or behind a proxy must never look
+// like a toolbox error. The result is cached for a day so a restart loop does
+// not hammer the API.
+const UPDATE_REPO = "MengTL4/RMToolbox";
+const UPDATE_TTL_MS = 24 * 60 * 60 * 1000;
+let updateCache = null;
+
+function versionParts(value) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(value || ""));
+  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+}
+
+function isNewer(candidate, current) {
+  const a = versionParts(candidate),
+    b = versionParts(current);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i] !== b[i]) return a[i] > b[i];
+  }
+  return false;
+}
+
+async function checkForUpdate() {
+  if (updateCache && Date.now() - updateCache.at < UPDATE_TTL_MS)
+    return updateCache.value;
+  const current = aboutInfo().appVersion;
+  const base = {
+    current,
+    latest: null,
+    url: `https://github.com/${UPDATE_REPO}/releases`,
+    checkedAt: Date.now()
+  };
+  const record = (value) => {
+    updateCache = { at: Date.now(), value };
+    return value;
+  };
+  if (!current)
+    return record({ ...base, ok: false, reason: "unknown-version" });
+  if (typeof fetch !== "function")
+    return record({ ...base, ok: false, reason: "no-fetch" });
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`,
+      {
+        headers: {
+          accept: "application/vnd.github+json",
+          "user-agent": "RMToolbox/" + current
+        },
+        signal: AbortSignal.timeout(8000)
+      }
+    );
+    if (!response.ok)
+      return record({ ...base, ok: false, reason: `HTTP ${response.status}` });
+    const release = await response.json();
+    if (release && release.draft)
+      return record({ ...base, ok: true, updateAvailable: false });
+    const latest = String((release && release.tag_name) || "").replace(
+      /^v/,
+      ""
+    );
+    if (!latest) return record({ ...base, ok: false, reason: "no-tag" });
+    return record({
+      ...base,
+      ok: true,
+      latest,
+      url: (release && release.html_url) || base.url,
+      notes: (release && release.name) || null,
+      updateAvailable: isNewer(latest, current)
+    });
+  } catch (error) {
+    // Offline, DNS failure, timeout, proxy interception — all normal.
+    return record({
+      ...base,
+      ok: false,
+      reason: String((error && error.message) || error)
+    });
+  }
+}
+
 function notifySessions() {
   if (state.onSessions) state.onSessions(listSessions());
 }
@@ -159,7 +280,11 @@ function listSessions() {
 function saveLibrary() {
   try {
     fs.mkdirSync(path.dirname(state.libraryPath), { recursive: true });
-    fs.writeFileSync(state.libraryPath, JSON.stringify(state.library, null, 2), "utf8");
+    fs.writeFileSync(
+      state.libraryPath,
+      JSON.stringify(state.library, null, 2),
+      "utf8"
+    );
   } catch (_) {}
 }
 
@@ -173,7 +298,10 @@ function listLibrary() {
     try {
       games.push(scanGame(root));
     } catch (error) {
-      guiLog("manual library entry failed to scan", { root, error: String(error.message || error) });
+      guiLog("manual library entry failed to scan", {
+        root,
+        error: String(error.message || error)
+      });
     }
   }
   return games;
@@ -191,14 +319,19 @@ function addManualRoot(root) {
 
 function removeManualRoot(root) {
   const resolved = path.resolve(root);
-  state.library.manualRoots = state.library.manualRoots.filter((entry) => entry !== resolved);
+  state.library.manualRoots = state.library.manualRoots.filter(
+    (entry) => entry !== resolved
+  );
   saveLibrary();
 }
 
 async function launch(gameRoot, strategy = "auto") {
   let planned = null;
   try {
-    if (state.modules.gameRuntime && typeof state.modules.gameRuntime.plan === "function") {
+    if (
+      state.modules.gameRuntime &&
+      typeof state.modules.gameRuntime.plan === "function"
+    ) {
       planned = state.modules.gameRuntime.plan({ gameRoot, strategy });
       guiLog("game launch plan", {
         gameRoot,
@@ -212,7 +345,10 @@ async function launch(gameRoot, strategy = "auto") {
       });
     }
   } catch (error) {
-    guiLog("game launch plan FAILED", { gameRoot, error: String(error && error.stack || error) });
+    guiLog("game launch plan FAILED", {
+      gameRoot,
+      error: String((error && error.stack) || error)
+    });
   }
   const summary = await state.modules.gameRuntime.launch({
     gameRoot,
@@ -234,25 +370,33 @@ async function launch(gameRoot, strategy = "auto") {
     gameKey: summary.gameKey,
     strategy: summary.strategy,
     pid: summary.pid,
-    route: summary.launchPlan ? {
-      family: summary.launchPlan.family,
-      preferred: summary.launchPlan.preferred,
-      selected: summary.launchPlan.selected,
-      fallback: summary.launchPlan.fallback,
-      override: summary.launchPlan.override || null
-    } : planned ? {
-      family: planned.family,
-      preferred: planned.preferred,
-      selected: planned.selected,
-      fallback: planned.fallback,
-      override: planned.override || null
-    } : null
+    route: summary.launchPlan
+      ? {
+          family: summary.launchPlan.family,
+          preferred: summary.launchPlan.preferred,
+          selected: summary.launchPlan.selected,
+          fallback: summary.launchPlan.fallback,
+          override: summary.launchPlan.override || null
+        }
+      : planned
+        ? {
+            family: planned.family,
+            preferred: planned.preferred,
+            selected: planned.selected,
+            fallback: planned.fallback,
+            override: planned.override || null
+          }
+        : null
   });
   return summary;
 }
 
 function plan(gameRoot, strategy = "auto") {
-  if (!state.modules || !state.modules.gameRuntime || typeof state.modules.gameRuntime.plan !== "function") {
+  if (
+    !state.modules ||
+    !state.modules.gameRuntime ||
+    typeof state.modules.gameRuntime.plan !== "function"
+  ) {
     throw new Error("工具箱启动路线规划器尚未就绪");
   }
   return state.modules.gameRuntime.plan({ gameRoot, strategy });
@@ -281,7 +425,11 @@ function stop(pid) {
     const { execFile } = require("child_process");
     execFile("taskkill", ["/PID", String(pid), "/F", "/T"], (error) => {
       const ok = !error;
-      guiLog("game stopped", { pid, ok, error: error && error.message || null });
+      guiLog("game stopped", {
+        pid,
+        ok,
+        error: (error && error.message) || null
+      });
       resolve({ ok, pid });
     });
   });
@@ -304,12 +452,20 @@ function saveLocationOf(gameKey) {
   // fall back to the scanner's save dir guess.
   let live = null;
   for (const session of listSessions()) {
-    if (session.gameKey === gameKey && session.state && session.state.saveStorage === "webstorage") {
+    if (
+      session.gameKey === gameKey &&
+      session.state &&
+      session.state.saveStorage === "webstorage"
+    ) {
       return { saveDir: null, saveStorage: "webstorage" };
     }
     if (session.gameKey === gameKey && session.state && session.state.saveDir) {
-      live = { saveDir: session.state.saveDir, saveLocation: session.state.saveLocation };
-      if (live.saveLocation && live.saveLocation.gameRoot) return { ...live, gameRoot: live.saveLocation.gameRoot };
+      live = {
+        saveDir: session.state.saveDir,
+        saveLocation: session.state.saveLocation
+      };
+      if (live.saveLocation && live.saveLocation.gameRoot)
+        return { ...live, gameRoot: live.saveLocation.gameRoot };
       break;
     }
   }
@@ -317,14 +473,18 @@ function saveLocationOf(gameKey) {
   try {
     for (const library of findSteamLibraries()) {
       for (const info of scanLibrary(library)) {
-        if (info.gameKey === gameKey && (live || info.paths.saveDir)) return { saveDir: info.paths.saveDir, ...live, gameRoot: info.root };
+        if (info.gameKey === gameKey && (live || info.paths.saveDir))
+          return { saveDir: info.paths.saveDir, ...live, gameRoot: info.root };
       }
     }
-  } catch (error) { if (!live) throw error; }
+  } catch (error) {
+    if (!live) throw error;
+  }
   for (const root of state.library.manualRoots) {
     try {
       const info = scanGame(root);
-      if (info.gameKey === gameKey && (live || info.paths.saveDir)) return { saveDir: info.paths.saveDir, ...live, gameRoot: info.root };
+      if (info.gameKey === gameKey && (live || info.paths.saveDir))
+        return { saveDir: info.paths.saveDir, ...live, gameRoot: info.root };
     } catch (_) {}
   }
   return live;
@@ -339,18 +499,32 @@ function saveFiles() {
 
 function webStorageBackupFile(gameKey, name) {
   for (const value of [gameKey, name]) {
-    if (!value || value === "." || value.includes("..") || /[\\/:\x00-\x1f]/.test(value)) throw new Error("invalid backup name");
+    if (
+      !value ||
+      value === "." ||
+      value.includes("..") ||
+      /[\\/:\x00-\x1f]/.test(value)
+    )
+      throw new Error("invalid backup name");
   }
   const dir = path.join(state.projectRoot, "backups", gameKey, name);
   const file = path.join(dir, "webstorage.json");
-  for (const target of [path.join(state.projectRoot, "backups"), path.dirname(dir), dir, file]) {
-    if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) throw new Error("invalid backup link");
+  for (const target of [
+    path.join(state.projectRoot, "backups"),
+    path.dirname(dir),
+    dir,
+    file
+  ]) {
+    if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink())
+      throw new Error("invalid backup link");
   }
   return file;
 }
 
 async function runtimeSaveStorage(gameKey) {
-  const live = listSessions().find(session => session.gameKey === gameKey && session.alive);
+  const live = listSessions().find(
+    (session) => session.gameKey === gameKey && session.alive
+  );
   if (!live) return false;
   const storage = (await send(gameKey, "save.list", {})).storage;
   return ["webstorage", "native"].includes(storage) ? storage : null;
@@ -358,7 +532,8 @@ async function runtimeSaveStorage(gameKey) {
 
 function runtimeBackupStorage(format) {
   if (format === "rmch-mv-native-v1") return "native";
-  if (["rmch-mv-webstorage-v1", "rmch-mz-forage-v1"].includes(format)) return "webstorage";
+  if (["rmch-mv-webstorage-v1", "rmch-mz-forage-v1"].includes(format))
+    return "webstorage";
   return null;
 }
 
@@ -367,27 +542,46 @@ async function backupSaves(gameKey) {
   const storage = await runtimeSaveStorage(gameKey);
   if (storage) {
     const snapshot = await send(gameKey, `save.${storage}.export`, {});
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
-    let name = stamp, suffix = 1;
-    while (fs.existsSync(path.dirname(webStorageBackupFile(gameKey, name)))) name = `${stamp}-${suffix++}`;
+    const stamp = new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-")
+      .replace("T", "_")
+      .slice(0, 19);
+    let name = stamp,
+      suffix = 1;
+    while (fs.existsSync(path.dirname(webStorageBackupFile(gameKey, name))))
+      name = `${stamp}-${suffix++}`;
     const target = webStorageBackupFile(gameKey, name);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, JSON.stringify(snapshot), { flag: "wx" });
-    result = { gameKey, destDir: path.dirname(target), files: snapshot.entries.length, storage };
+    result = {
+      gameKey,
+      destDir: path.dirname(target),
+      files: snapshot.entries.length,
+      storage
+    };
   } else result = saveFiles().backup(gameKey);
   guiLog("save backup created", result);
   return result;
 }
 
 function listBackups(gameKey) {
-  return saveFiles().listBackups(gameKey).map(entry => {
-    const file = webStorageBackupFile(gameKey, entry.name);
-    if (!fs.existsSync(file)) return entry;
-    const snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
-    const storage = runtimeBackupStorage(snapshot.format);
-    if (!storage || !Array.isArray(snapshot.entries)) throw new Error("invalid runtime save backup");
-    return { ...entry, storage, files: snapshot.entries.length, bytes: fs.statSync(file).size };
-  });
+  return saveFiles()
+    .listBackups(gameKey)
+    .map((entry) => {
+      const file = webStorageBackupFile(gameKey, entry.name);
+      if (!fs.existsSync(file)) return entry;
+      const snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
+      const storage = runtimeBackupStorage(snapshot.format);
+      if (!storage || !Array.isArray(snapshot.entries))
+        throw new Error("invalid runtime save backup");
+      return {
+        ...entry,
+        storage,
+        files: snapshot.entries.length,
+        bytes: fs.statSync(file).size
+      };
+    });
 }
 
 // Only ever called with a name listBackups produced, but re-validate anyway —
@@ -404,15 +598,26 @@ async function restoreBackup(gameKey, name) {
   if (fs.existsSync(file)) {
     const snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
     const storage = await runtimeSaveStorage(gameKey);
-    if (!storage || runtimeBackupStorage(snapshot.format) !== storage) throw new Error("请先连接使用对应存档方式的游戏，再恢复这份备份");
-    result = { gameKey, name, ...await send(gameKey, `save.${storage}.import`, { snapshot }) };
+    if (!storage || runtimeBackupStorage(snapshot.format) !== storage)
+      throw new Error("请先连接使用对应存档方式的游戏，再恢复这份备份");
+    result = {
+      gameKey,
+      name,
+      ...(await send(gameKey, `save.${storage}.import`, { snapshot }))
+    };
   } else result = saveFiles().restore(gameKey, name);
   guiLog("save backup restored", { gameKey, name, files: result.restored });
   return result;
 }
 
 function readBridgeLog(gameKey) {
-  const file = path.join(state.projectRoot, "runtime", "bridge-state", gameKey, "bridge.log");
+  const file = path.join(
+    state.projectRoot,
+    "runtime",
+    "bridge-state",
+    gameKey,
+    "bridge.log"
+  );
   try {
     return fs.readFileSync(file, "utf8").split(/\r?\n/).slice(-200).join("\n");
   } catch (_) {
@@ -425,9 +630,42 @@ function readBridgeLog(gameKey) {
 // Reveal a directory in the OS file manager. nw.Shell is the right tool under
 // NW; the explorer fallback keeps plain-Node dev runs working (explorer.exe
 // returns a bogus nonzero exit code even on success, so its error is ignored).
+// Open an http(s) URL in the user's browser. Separate from openPath on purpose:
+// openPath stats the target and hands it to nw.Shell.openPath, which is wrong
+// for a URL twice over (no file to stat, and a path opener will not route http).
+//
+// The URL is passed through the environment rather than interpolated into the
+// command string, so a URL containing & or ^ cannot be read as shell syntax.
+function openExternal(url) {
+  const target = String(url || "");
+  if (!/^https?:\/\//i.test(target))
+    throw new Error(`refusing to open non-http URL: ${target}`);
+  if (
+    typeof nw !== "undefined" &&
+    nw.Shell &&
+    typeof nw.Shell.openExternal === "function"
+  ) {
+    nw.Shell.openExternal(target);
+  } else {
+    require("child_process").execFile(
+      "cmd.exe",
+      ["/c", "start", '""', '"%RMCH_OPEN_URL%"'],
+      { env: { ...process.env, RMCH_OPEN_URL: target } },
+      () => {}
+    );
+  }
+  guiLog("external url opened", { url: target });
+  return { opened: target };
+}
+
 function openPath(target) {
-  if (!target || !fs.existsSync(target)) throw new Error(`path not found: ${target}`);
-  if (typeof nw !== "undefined" && nw.Shell && typeof nw.Shell.openPath === "function") {
+  if (!target || !fs.existsSync(target))
+    throw new Error(`path not found: ${target}`);
+  if (
+    typeof nw !== "undefined" &&
+    nw.Shell &&
+    typeof nw.Shell.openPath === "function"
+  ) {
     nw.Shell.openPath(target);
   } else {
     require("child_process").execFile("explorer.exe", [target], () => {});
@@ -456,11 +694,16 @@ function readImageDataUrl(file, capBytes) {
   const size = fs.statSync(file).size;
   if (size > limit) return null;
   const ext = path.extname(file).toLowerCase();
-  const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg"
-    : ext === ".webp" ? "image/webp"
-    : ext === ".gif" ? "image/gif"
-    : ext === ".bmp" ? "image/bmp"
-    : "image/png";
+  const mime =
+    ext === ".jpg" || ext === ".jpeg"
+      ? "image/jpeg"
+      : ext === ".webp"
+        ? "image/webp"
+        : ext === ".gif"
+          ? "image/gif"
+          : ext === ".bmp"
+            ? "image/bmp"
+            : "image/png";
   return `data:${mime};base64,` + fs.readFileSync(file).toString("base64");
 }
 
@@ -498,8 +741,13 @@ function iconFileImage(root, name) {
       if (!fs.existsSync(archive)) continue;
       for (const ext of [".png", ".PNG"]) {
         try {
-          const bytes = rgssArchive.extractEntry(archive, `Graphics\\Icons\\${safe}${ext}`);
-          return "data:image/png;base64," + Buffer.from(bytes).toString("base64");
+          const bytes = rgssArchive.extractEntry(
+            archive,
+            `Graphics\\Icons\\${safe}${ext}`
+          );
+          return (
+            "data:image/png;base64," + Buffer.from(bytes).toString("base64")
+          );
         } catch (_) {}
       }
     }
@@ -531,7 +779,10 @@ function iconSetImage(root) {
       const archive = path.join(root, rel);
       if (!fs.existsSync(archive)) continue;
       try {
-        const bytes = rgssArchive.extractEntry(archive, "Graphics\\System\\IconSet.png");
+        const bytes = rgssArchive.extractEntry(
+          archive,
+          "Graphics\\System\\IconSet.png"
+        );
         return "data:image/png;base64," + Buffer.from(bytes).toString("base64");
       } catch (_) {}
     }
@@ -546,7 +797,12 @@ function iconSetImage(root) {
 // ids, which are game-specific, never leak across titles.
 
 function lockPath(gameKey) {
-  return path.join(state.projectRoot, "runtime", "locks", `${sanitizeKey(gameKey)}.json`);
+  return path.join(
+    state.projectRoot,
+    "runtime",
+    "locks",
+    `${sanitizeKey(gameKey)}.json`
+  );
 }
 
 function sanitizeKey(gameKey) {
@@ -556,7 +812,15 @@ function sanitizeKey(gameKey) {
 function saveLocks(gameKey, locks) {
   const file = lockPath(gameKey);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ gameKey, savedAt: new Date().toISOString(), locks }, null, 2), "utf8");
+  fs.writeFileSync(
+    file,
+    JSON.stringify(
+      { gameKey, savedAt: new Date().toISOString(), locks },
+      null,
+      2
+    ),
+    "utf8"
+  );
   guiLog("locks saved", { gameKey, file });
   return { file };
 }
@@ -575,6 +839,7 @@ function hasLocks(gameKey) {
 module.exports = {
   init,
   describe,
+  checkForUpdate,
   log: pageLog,
   listLibrary,
   addManualRoot,
@@ -592,6 +857,7 @@ module.exports = {
   saveDirOf,
   readBridgeLog,
   openPath,
+  openExternal,
   deleteSaveFile,
   gameIcon,
   iconSetImage,

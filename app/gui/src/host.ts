@@ -22,9 +22,28 @@ export interface HostHandlers {
   onState?: (gameKey: string, state: Record<string, unknown>) => void;
 }
 
+export interface UpdateInfo {
+  /** false for every failure path: offline, timeout, rate limit, no tag. */
+  ok: boolean;
+  current: string | null;
+  latest?: string | null;
+  url: string;
+  notes?: string | null;
+  /** only meaningful when ok is true. */
+  updateAvailable?: boolean;
+  /** short machine-readable cause when ok is false. */
+  reason?: string;
+  checkedAt: number;
+}
+
 export interface GuiHost {
   init(projectRoot?: string): Promise<unknown>;
-  describe(): { projectRoot?: string | null; port: number; about: Record<string, unknown> };
+  describe(): {
+    projectRoot?: string | null;
+    port: number;
+    about: Record<string, unknown>;
+  };
+  checkForUpdate(): Promise<UpdateInfo>;
   setHandlers(handlers: HostHandlers): void;
   getLog(): string;
   log(message: string): void;
@@ -33,17 +52,28 @@ export interface GuiHost {
   addManualRoot(root: string): unknown;
   removeManualRoot(root: string): unknown;
   plan(root: string, strategy?: string): { [field: string]: unknown };
-  launch(root: string, strategy?: string): Promise<{ gameKey: string; pid?: number; [field: string]: unknown }>;
-  attach(root: string): Promise<{ gameKey: string; pid?: number; [field: string]: unknown }>;
+  launch(
+    root: string,
+    strategy?: string
+  ): Promise<{ gameKey: string; pid?: number; [field: string]: unknown }>;
+  attach(
+    root: string
+  ): Promise<{ gameKey: string; pid?: number; [field: string]: unknown }>;
   stop(pid: number): unknown;
   // Game-engine commands are deliberately dynamic; callers must interpret the
   // returned payload for the selected command rather than assume one shape.
-  send(gameKey: string, type: string, args: Record<string, unknown>): Promise<unknown>;
+  send(
+    gameKey: string,
+    type: string,
+    args: Record<string, unknown>
+  ): Promise<unknown>;
   gameIcon(root: string): string | null;
   iconSetImage(root: string): string | null;
   iconFileImage(root: string, name: string): string | null;
   readBridgeLog(gameKey: string): string;
   openPath(target: string): unknown;
+  /** Opens an http(s) URL in the user's browser; rejects any other scheme. */
+  openExternal(url: string): unknown;
   saveDirOf(gameKey: string): string | null;
   backupSaves(gameKey: string): Promise<unknown>;
   listBackups(gameKey: string): unknown[];
@@ -56,14 +86,33 @@ export interface GuiHost {
 }
 
 export type HostLoader = (id: string) => unknown;
-declare global { interface Window { require?: HostLoader } }
+declare global {
+  interface Window {
+    require?: HostLoader;
+  }
+}
 
-export function getGuiHost(loader: HostLoader | undefined = window.require): GuiHost {
-  if (typeof loader !== 'function') throw new Error('原生宿主不可用，请通过 RMToolbox.exe 启动工具箱');
-  const candidate = loader('./host.cjs');
-  if (!candidate || typeof candidate !== 'object') throw new Error('工具箱宿主未正确加载');
-  for (const method of ['init', 'describe', 'setHandlers', 'listLibrary', 'listSessions', 'send', 'plan', 'launch', 'attach']) {
-    if (typeof Reflect.get(candidate, method) !== 'function') throw new Error('工具箱宿主缺少接口：' + method);
+export function getGuiHost(
+  loader: HostLoader | undefined = window.require
+): GuiHost {
+  if (typeof loader !== "function")
+    throw new Error("原生宿主不可用，请通过 RMToolbox.exe 启动工具箱");
+  const candidate = loader("./host.cjs");
+  if (!candidate || typeof candidate !== "object")
+    throw new Error("工具箱宿主未正确加载");
+  for (const method of [
+    "init",
+    "describe",
+    "setHandlers",
+    "listLibrary",
+    "listSessions",
+    "send",
+    "plan",
+    "launch",
+    "attach"
+  ]) {
+    if (typeof Reflect.get(candidate, method) !== "function")
+      throw new Error("工具箱宿主缺少接口：" + method);
   }
   return candidate as GuiHost;
 }

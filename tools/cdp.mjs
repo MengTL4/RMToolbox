@@ -28,7 +28,9 @@ const PORT = Number(process.env.RMCH_CDP_PORT || 9222);
 function httpGet(pathname) {
   return new Promise((resolve, reject) => {
     const socket = net.connect(PORT, "127.0.0.1", () => {
-      socket.write(`GET ${pathname} HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nConnection: close\r\n\r\n`);
+      socket.write(
+        `GET ${pathname} HTTP/1.1\r\nHost: 127.0.0.1:${PORT}\r\nConnection: close\r\n\r\n`
+      );
     });
     let raw = "";
     let settled = false;
@@ -41,7 +43,10 @@ function httpGet(pathname) {
       else resolve(value);
     };
     const timer = setTimeout(() => {
-      finish(null, new Error(`timed out reading ${pathname} from 127.0.0.1:${PORT}`));
+      finish(
+        null,
+        new Error(`timed out reading ${pathname} from 127.0.0.1:${PORT}`)
+      );
     }, 8000);
 
     socket.setEncoding("utf8");
@@ -52,7 +57,8 @@ function httpGet(pathname) {
       const head = raw.slice(0, split);
       const body = raw.slice(split + 4);
       const match = /content-length:\s*(\d+)/i.exec(head);
-      if (match && Buffer.byteLength(body, "utf8") >= Number(match[1])) finish(body);
+      if (match && Buffer.byteLength(body, "utf8") >= Number(match[1]))
+        finish(body);
     });
     socket.on("end", () => {
       const split = raw.indexOf("\r\n\r\n");
@@ -83,9 +89,9 @@ class WsClient {
       this.socket = net.connect(this.port, this.host, () => {
         this.socket.write(
           `GET ${this.path} HTTP/1.1\r\n` +
-          `Host: ${this.host}:${this.port}\r\n` +
-          "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
-          `Sec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+            `Host: ${this.host}:${this.port}\r\n` +
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+            `Sec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`
         );
       });
       this.socket.on("error", reject);
@@ -96,7 +102,9 @@ class WsClient {
         if (end === -1) return;
         const head = this.buffer.slice(0, end).toString("latin1");
         if (!/^HTTP\/1\.1 101/.test(head)) {
-          reject(new Error("websocket upgrade refused: " + head.split("\r\n")[0]));
+          reject(
+            new Error("websocket upgrade refused: " + head.split("\r\n")[0])
+          );
           return;
         }
         this.buffer = this.buffer.slice(end + 4);
@@ -116,8 +124,14 @@ class WsClient {
     for (;;) {
       const frame = this.readFrame();
       if (!frame) return;
-      if (frame.opcode === 0x8) { this.socket.end(); return; }
-      if (frame.opcode === 0x9) { this.send(frame.payload, 0xa); continue; }
+      if (frame.opcode === 0x8) {
+        this.socket.end();
+        return;
+      }
+      if (frame.opcode === 0x9) {
+        this.send(frame.payload, 0xa);
+        continue;
+      }
       if (frame.opcode === 0xa) continue;
 
       if (frame.opcode === 0x0) {
@@ -130,7 +144,8 @@ class WsClient {
 
       const payload = Buffer.concat(this.fragments);
       this.fragments = [];
-      if (this.fragmentOpcode === 0x1 && this.onMessage) this.onMessage(payload.toString("utf8"));
+      if (this.fragmentOpcode === 0x1 && this.onMessage)
+        this.onMessage(payload.toString("utf8"));
     }
   }
 
@@ -151,7 +166,8 @@ class WsClient {
     } else if (length === 127) {
       if (this.buffer.length < offset + 8) return null;
       const big = this.buffer.readBigUInt64BE(offset);
-      if (big > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("frame too large");
+      if (big > BigInt(Number.MAX_SAFE_INTEGER))
+        throw new Error("frame too large");
       length = Number(big);
       offset += 8;
     }
@@ -170,7 +186,9 @@ class WsClient {
 
   // Client frames must be masked (RFC6455 §5.3).
   send(data, opcode = 0x1) {
-    const payload = Buffer.isBuffer(data) ? data : Buffer.from(String(data), "utf8");
+    const payload = Buffer.isBuffer(data)
+      ? data
+      : Buffer.from(String(data), "utf8");
     const mask = crypto.randomBytes(4);
     const header = [];
     header.push(0x80 | opcode);
@@ -179,9 +197,17 @@ class WsClient {
     } else if (payload.length < 0x10000) {
       header.push(0x80 | 126, payload.length >> 8, payload.length & 0xff);
     } else {
-      header.push(0x80 | 127, 0, 0, 0, 0,
-        (payload.length >>> 24) & 0xff, (payload.length >>> 16) & 0xff,
-        (payload.length >>> 8) & 0xff, payload.length & 0xff);
+      header.push(
+        0x80 | 127,
+        0,
+        0,
+        0,
+        0,
+        (payload.length >>> 24) & 0xff,
+        (payload.length >>> 16) & 0xff,
+        (payload.length >>> 8) & 0xff,
+        payload.length & 0xff
+      );
     }
     const masked = Buffer.from(payload);
     for (let i = 0; i < masked.length; i += 1) masked[i] ^= mask[i % 4];
@@ -189,8 +215,12 @@ class WsClient {
   }
 
   close() {
-    try { this.send(Buffer.alloc(0), 0x8); } catch (_) {}
-    try { this.socket.end(); } catch (_) {}
+    try {
+      this.send(Buffer.alloc(0), 0x8);
+    } catch (_) {}
+    try {
+      this.socket.end();
+    } catch (_) {}
   }
 }
 
@@ -202,7 +232,9 @@ async function openSession() {
   try {
     targets = JSON.parse(listing);
   } catch (_) {
-    throw new Error(`no CDP endpoint on 127.0.0.1:${PORT} — launch with --remote-debugging-port=${PORT}`);
+    throw new Error(
+      `no CDP endpoint on 127.0.0.1:${PORT} — launch with --remote-debugging-port=${PORT}`
+    );
   }
   const page = targets.find((t) => t.type === "page" && t.webSocketDebuggerUrl);
   if (!page) throw new Error("no debuggable page target found");
@@ -213,11 +245,18 @@ async function openSession() {
 
   ws.onMessage = (text) => {
     let message;
-    try { message = JSON.parse(text); } catch (_) { return; }
+    try {
+      message = JSON.parse(text);
+    } catch (_) {
+      return;
+    }
     if (message.id && pending.has(message.id)) {
       const { resolve, reject } = pending.get(message.id);
       pending.delete(message.id);
-      if (message.error) reject(new Error(message.error.message || JSON.stringify(message.error)));
+      if (message.error)
+        reject(
+          new Error(message.error.message || JSON.stringify(message.error))
+        );
       else resolve(message.result);
     }
   };
@@ -233,8 +272,14 @@ async function openSession() {
         reject(new Error(method + " timed out"));
       }, timeoutMs || 30000);
       pending.set(id, {
-        resolve: (value) => { clearTimeout(timer); resolve(value); },
-        reject: (error) => { clearTimeout(timer); reject(error); },
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        }
       });
       ws.send(JSON.stringify({ id, method, params: params || {} }));
     });
@@ -248,11 +293,13 @@ async function evaluate(session, expression) {
     expression,
     returnByValue: true,
     awaitPromise: true,
-    userGesture: true,
+    userGesture: true
   });
   if (result.exceptionDetails) {
     const detail = result.exceptionDetails;
-    throw new Error("page threw: " + (detail.exception?.description || detail.text));
+    throw new Error(
+      "page threw: " + (detail.exception?.description || detail.text)
+    );
   }
   return result.result.value;
 }
@@ -261,7 +308,9 @@ async function evaluate(session, expression) {
 // so UI verification needs trusted input. Resolve a selector to its centre and
 // dispatch real mouse events there.
 async function clickSelector(session, selector, button) {
-  const box = await evaluate(session, `
+  const box = await evaluate(
+    session,
+    `
     (function () {
       var el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return null;
@@ -269,7 +318,8 @@ async function clickSelector(session, selector, button) {
       if (!r.width || !r.height) return null;
       return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
     })()
-  `);
+  `
+  );
   if (!box) throw new Error(`selector matched nothing visible: ${selector}`);
   await dispatchClick(session, box.x, box.y, button);
   return box;
@@ -277,10 +327,27 @@ async function clickSelector(session, selector, button) {
 
 async function dispatchClick(session, x, y, button) {
   const which = button || "left";
-  const common = { x, y, button: which, clickCount: 1, buttons: which === "right" ? 2 : 1 };
-  await session.call("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, buttons: 0 });
-  await session.call("Input.dispatchMouseEvent", { ...common, type: "mousePressed" });
-  await session.call("Input.dispatchMouseEvent", { ...common, type: "mouseReleased" });
+  const common = {
+    x,
+    y,
+    button: which,
+    clickCount: 1,
+    buttons: which === "right" ? 2 : 1
+  };
+  await session.call("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x,
+    y,
+    buttons: 0
+  });
+  await session.call("Input.dispatchMouseEvent", {
+    ...common,
+    type: "mousePressed"
+  });
+  await session.call("Input.dispatchMouseEvent", {
+    ...common,
+    type: "mouseReleased"
+  });
 }
 
 // Named keys beyond the printable set, with the codes ace/jsoneditor expect.
@@ -298,16 +365,28 @@ const NAMED_KEYS = {
   arrowup: { key: "ArrowUp", code: "ArrowUp", vk: 38 },
   arrowdown: { key: "ArrowDown", code: "ArrowDown", vk: 40 },
   arrowleft: { key: "ArrowLeft", code: "ArrowLeft", vk: 37 },
-  arrowright: { key: "ArrowRight", code: "ArrowRight", vk: 39 },
+  arrowright: { key: "ArrowRight", code: "ArrowRight", vk: 39 }
 };
 
 async function dispatchCombo(session, combo) {
-  const parts = combo.split("+").map((s) => s.trim()).filter(Boolean);
+  const parts = combo
+    .split("+")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const keyName = parts.pop();
-  const MODIFIERS = { ctrl: 2, control: 2, alt: 1, shift: 8, meta: 4, cmd: 4, win: 4 };
+  const MODIFIERS = {
+    ctrl: 2,
+    control: 2,
+    alt: 1,
+    shift: 8,
+    meta: 4,
+    cmd: 4,
+    win: 4
+  };
   let modifiers = 0;
   for (const part of parts) {
-    if (!(part in MODIFIERS)) throw new Error(`unknown modifier "${part}" in "${combo}"`);
+    if (!(part in MODIFIERS))
+      throw new Error(`unknown modifier "${part}" in "${combo}"`);
     modifiers |= MODIFIERS[part];
   }
 
@@ -317,16 +396,24 @@ async function dispatchCombo(session, combo) {
     const vk = keyName.toUpperCase().charCodeAt(0);
     def = {
       key: keyName,
-      code: /^[a-z]$/.test(keyName) ? "Key" + keyName.toUpperCase()
-        : (/^[0-9]$/.test(keyName) ? "Digit" + keyName : undefined),
+      code: /^[a-z]$/.test(keyName)
+        ? "Key" + keyName.toUpperCase()
+        : /^[0-9]$/.test(keyName)
+          ? "Digit" + keyName
+          : undefined,
       windowsVirtualKeyCode: vk,
       nativeVirtualKeyCode: vk,
       // With ctrl/alt/meta held the keystroke is a command, not text input.
-      text: modifiers & ~8 ? undefined : keyName,
+      text: modifiers & ~8 ? undefined : keyName
     };
   } else if (fn) {
     const vk = 111 + Number(fn[1]);
-    def = { key: keyName.toUpperCase(), code: keyName.toUpperCase(), windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk };
+    def = {
+      key: keyName.toUpperCase(),
+      code: keyName.toUpperCase(),
+      windowsVirtualKeyCode: vk,
+      nativeVirtualKeyCode: vk
+    };
   } else if (keyName in NAMED_KEYS) {
     const named = NAMED_KEYS[keyName];
     def = {
@@ -334,14 +421,22 @@ async function dispatchCombo(session, combo) {
       code: named.code,
       windowsVirtualKeyCode: named.vk,
       nativeVirtualKeyCode: named.vk,
-      text: modifiers ? undefined : named.text,
+      text: modifiers ? undefined : named.text
     };
   } else {
     throw new Error(`unknown key "${keyName}"`);
   }
 
-  await session.call("Input.dispatchKeyEvent", { type: "keyDown", modifiers, ...def });
-  await session.call("Input.dispatchKeyEvent", { type: "keyUp", modifiers, ...def });
+  await session.call("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    modifiers,
+    ...def
+  });
+  await session.call("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    modifiers,
+    ...def
+  });
 }
 
 // --- CLI ---------------------------------------------------------------------
@@ -359,13 +454,20 @@ try {
   session = await openSession();
 
   if (command === "eval" || command === "eval-file") {
-    const expression = command === "eval" ? args.join(" ") : readFileSync(args[0], "utf8");
+    const expression =
+      command === "eval" ? args.join(" ") : readFileSync(args[0], "utf8");
     const value = await evaluate(session, expression);
-    console.log(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+    console.log(
+      typeof value === "string" ? value : JSON.stringify(value, null, 2)
+    );
   } else if (command === "click" || command === "rclick") {
     const selector = args.join(" ");
     if (!selector) throw new Error("click needs a CSS selector");
-    const box = await clickSelector(session, selector, command === "rclick" ? "right" : "left");
+    const box = await clickSelector(
+      session,
+      selector,
+      command === "rclick" ? "right" : "left"
+    );
     console.log(`clicked ${selector} at ${box.x},${box.y}`);
   } else if (command === "type") {
     // jsoneditor edits values in contenteditable divs, and setting textContent
@@ -395,9 +497,16 @@ try {
       // Not fatal: a headless, detached or unraisable target has nothing to raise.
     }
     if (width && height) {
-      await session.call("Emulation.setDeviceMetricsOverride", {
-        width, height, deviceScaleFactor: 1, mobile: false,
-      }, 8000);
+      await session.call(
+        "Emulation.setDeviceMetricsOverride",
+        {
+          width,
+          height,
+          deviceScaleFactor: 1,
+          mobile: false
+        },
+        8000
+      );
     }
     // One more frame after focus/resize so the capture sees the settled layout.
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -406,20 +515,33 @@ try {
     // not need the compositor (it also cannot see GPU layers — fine for DOM UI).
     let shot;
     try {
-      shot = await session.call("Page.captureScreenshot",
-        { format: "png", captureBeyondViewport: false }, 12000);
+      shot = await session.call(
+        "Page.captureScreenshot",
+        { format: "png", captureBeyondViewport: false },
+        12000
+      );
     } catch (error) {
-      console.error("cdp: surface capture failed (" + error.message + "), retrying fromSurface:false");
-      shot = await session.call("Page.captureScreenshot",
-        { format: "png", captureBeyondViewport: false, fromSurface: false }, 20000);
+      console.error(
+        "cdp: surface capture failed (" +
+          error.message +
+          "), retrying fromSurface:false"
+      );
+      shot = await session.call(
+        "Page.captureScreenshot",
+        { format: "png", captureBeyondViewport: false, fromSurface: false },
+        20000
+      );
     }
     mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
     writeFileSync(file, Buffer.from(shot.data, "base64"));
-    if (width && height) await session.call("Emulation.clearDeviceMetricsOverride", {}, 8000);
+    if (width && height)
+      await session.call("Emulation.clearDeviceMetricsOverride", {}, 8000);
     console.log(`wrote ${file}`);
   } else {
-    console.error("usage: cdp.mjs <targets | eval <expr> | eval-file <path> | " +
-      "click <selector> | rclick <selector> | type <text> | key <combo> | shot [file] [w] [h]>");
+    console.error(
+      "usage: cdp.mjs <targets | eval <expr> | eval-file <path> | " +
+        "click <selector> | rclick <selector> | type <text> | key <combo> | shot [file] [w] [h]>"
+    );
     process.exitCode = 2;
   }
 } catch (error) {
@@ -429,6 +551,8 @@ try {
   // Without this the error paths kept a live websocket handle and hung the
   // process long after its exit code was set.
   if (session) {
-    try { session.close(); } catch (_) {}
+    try {
+      session.close();
+    } catch (_) {}
   }
 }

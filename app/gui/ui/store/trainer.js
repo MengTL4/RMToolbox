@@ -10,7 +10,7 @@
   var trainer = reactive({
     gameKey: null,
     options: {},
-    live: null,          // last bridge state push: { engine, inBattle, map, gold }
+    live: null, // last bridge state push: { engine, inBattle, map, gold }
     gold: null,
     party: [],
     roster: [],
@@ -32,11 +32,20 @@
   var battles = new Map();
   var nextBattle = 0;
   function noteBattle(inBattle) {
-    var key = trainer.gameKey, session = store.sessionFor(key);
+    var key = trainer.gameKey,
+      session = store.sessionFor(key);
     if (!key) return;
     var previous = battles.get(key);
-    if (!previous || (inBattle && (!previous.inBattle || previous.connectedAt !== (session && session.connectedAt)))) {
-      previous = { token: ++nextBattle, connectedAt: session && session.connectedAt };
+    if (
+      !previous ||
+      (inBattle &&
+        (!previous.inBattle ||
+          previous.connectedAt !== (session && session.connectedAt)))
+    ) {
+      previous = {
+        token: ++nextBattle,
+        connectedAt: session && session.connectedAt
+      };
       battles.set(key, previous);
     }
     previous.inBattle = !!inBattle;
@@ -67,11 +76,17 @@
     tracked: function (flags, key, promise) {
       var epoch = store.state.selectionEpoch;
       flags[key] = true;
-      return promise.finally(function () { if (epoch === store.state.selectionEpoch) flags[key] = false; });
+      return promise.finally(function () {
+        if (epoch === store.state.selectionEpoch) flags[key] = false;
+      });
     },
 
-    noEntries: function (payload) { return !(payload.entries || []).length; },
-    noTotal: function (payload) { return !payload.total; }
+    noEntries: function (payload) {
+      return !(payload.entries || []).length;
+    },
+    noTotal: function (payload) {
+      return !payload.total;
+    }
   });
 
   function resetTrainer() {
@@ -83,25 +98,37 @@
     trainer.actor = null;
     trainer.maps = [];
     trainer.battle = null;
-    Object.keys(trainer.loading).forEach(function (key) { trainer.loading[key] = false; });
+    Object.keys(trainer.loading).forEach(function (key) {
+      trainer.loading[key] = false;
+    });
   }
 
   function selectGame(gameKey) {
-    if (trainer.gameKey) viewStates.set(trainer.gameKey, {
-      selected: Object.assign({}, store.data.selected), query: Object.assign({}, store.data.query),
-      transfer: Object.assign({}, trainer.transfer), mapQuery: trainer.mapQuery, selfSwitchMap: store.data.selfSwitches.mapId
-    });
+    if (trainer.gameKey)
+      viewStates.set(trainer.gameKey, {
+        selected: Object.assign({}, store.data.selected),
+        query: Object.assign({}, store.data.query),
+        transfer: Object.assign({}, trainer.transfer),
+        mapQuery: trainer.mapQuery,
+        selfSwitchMap: store.data.selfSwitches.mapId
+      });
     generation += 1;
     store.state.selectionEpoch += 1;
     var gen = generation;
-    var alive = function () { return isCurrent(gen); };
+    var alive = function () {
+      return isCurrent(gen);
+    };
 
     trainer.gameKey = gameKey || null;
-    trainer.battleToken = battles.has(trainer.gameKey) ? battles.get(trainer.gameKey).token : 0;
+    trainer.battleToken = battles.has(trainer.gameKey)
+      ? battles.get(trainer.gameKey).token
+      : 0;
     resetTrainer();
     store.resetData();
     var saved = viewStates.get(trainer.gameKey);
-    trainer.transfer = saved ? saved.transfer : { mapId: null, x: null, y: null };
+    trainer.transfer = saved
+      ? saved.transfer
+      : { mapId: null, x: null, y: null };
     trainer.mapQuery = saved ? saved.mapQuery : "";
     if (saved) {
       Object.assign(store.data.selected, saved.selected);
@@ -114,19 +141,55 @@
       if (payload && alive()) trainer.options = payload.options || {};
     });
 
-    store.tracked(trainer.loading, "party",
-      store.retryLoad(alive, function () { return store.cmd("party.info", {}); },
-        function (p) { return !(p.members || []).length; })
-    ).then(function (p) { if (p && alive()) trainer.party = p.members || []; });
+    store
+      .tracked(
+        trainer.loading,
+        "party",
+        store.retryLoad(
+          alive,
+          function () {
+            return store.cmd("party.info", {});
+          },
+          function (p) {
+            return !(p.members || []).length;
+          }
+        )
+      )
+      .then(function (p) {
+        if (p && alive()) trainer.party = p.members || [];
+      });
 
-    store.tracked(trainer.loading, "roster",
-      store.retryLoad(alive, function () { return store.cmd("catalog.query", { kind: "actor", limit: 20000 }); },
-        store.noTotal)
-    ).then(function (p) { if (p && alive()) trainer.roster = p.entries || []; });
+    store
+      .tracked(
+        trainer.loading,
+        "roster",
+        store.retryLoad(
+          alive,
+          function () {
+            return store.cmd("catalog.query", { kind: "actor", limit: 20000 });
+          },
+          store.noTotal
+        )
+      )
+      .then(function (p) {
+        if (p && alive()) trainer.roster = p.entries || [];
+      });
 
-    store.tracked(trainer.loading, "maps",
-      store.retryLoad(alive, function () { return store.cmd("map.list", {}); }, store.noEntries)
-    ).then(function (p) { if (p && alive()) trainer.maps = p.entries || []; });
+    store
+      .tracked(
+        trainer.loading,
+        "maps",
+        store.retryLoad(
+          alive,
+          function () {
+            return store.cmd("map.list", {});
+          },
+          store.noEntries
+        )
+      )
+      .then(function (p) {
+        if (p && alive()) trainer.maps = p.entries || [];
+      });
 
     store.primeData(alive);
     if (store.data.selected.actor != null) openActor(store.data.selected.actor);
@@ -150,37 +213,53 @@
   }
 
   function loadRoster() {
-    return store.tracked(trainer.loading, "roster",
-      store.cmd("catalog.query", { kind: "actor", limit: 20000 }).then(function (p) {
-        if (p) trainer.roster = p.entries || [];
-        return p;
-      }));
+    return store.tracked(
+      trainer.loading,
+      "roster",
+      store
+        .cmd("catalog.query", { kind: "actor", limit: 20000 })
+        .then(function (p) {
+          if (p) trainer.roster = p.entries || [];
+          return p;
+        })
+    );
   }
 
   function loadMaps() {
-    return store.tracked(trainer.loading, "maps",
+    return store.tracked(
+      trainer.loading,
+      "maps",
       store.cmd("map.list", {}).then(function (p) {
         if (p) trainer.maps = p.entries || [];
         return p;
-      }));
+      })
+    );
   }
 
   function setOptions(patch) {
-    return store.cmdWarn("trainer.options.set", { options: patch }).then(function (p) {
-      if (p) trainer.options = p.options || {};
-      return p;
-    });
+    return store
+      .cmdWarn("trainer.options.set", { options: patch })
+      .then(function (p) {
+        if (p) trainer.options = p.options || {};
+        return p;
+      });
   }
 
   function openActor(id) {
     return store.cmd("actor.info", { id: id }).then(function (p) {
-      if (p && p.actor && store.data.selected.actor === id) trainer.actor = p.actor;
+      if (p && p.actor && store.data.selected.actor === id)
+        trainer.actor = p.actor;
       return p;
     });
   }
 
   function applyActor(payload) {
-    if (payload && payload.actor && payload.actor.id === store.data.selected.actor) trainer.actor = payload.actor;
+    if (
+      payload &&
+      payload.actor &&
+      payload.actor.id === store.data.selected.actor
+    )
+      trainer.actor = payload.actor;
     return payload;
   }
 
@@ -188,7 +267,8 @@
   function applyLiveState(payload) {
     noteBattle(payload.inBattle);
     trainer.live = payload;
-    if (payload.gold !== undefined && payload.gold !== null) trainer.gold = payload.gold;
+    if (payload.gold !== undefined && payload.gold !== null)
+      trainer.gold = payload.gold;
     if (!payload.inBattle) trainer.battle = null;
     store.noteLiveMap(payload.map && payload.map.mapId);
   }

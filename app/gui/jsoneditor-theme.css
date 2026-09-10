@@ -72,7 +72,7 @@ body.rm-light {
 .rm-je .jsoneditor {
   border: 1px solid var(--rm-je-border);
   border-radius: 8px;
-  overflow: hidden;              /* the menu bar has square corners of its own */
+  overflow: hidden; /* the menu bar has square corners of its own */
   color: var(--rm-je-text);
 }
 
@@ -94,7 +94,9 @@ body.rm-light {
   border-color: transparent;
 }
 
-.rm-je .jsoneditor-menu a.jsoneditor-poweredBy { display: none; }
+.rm-je .jsoneditor-menu a.jsoneditor-poweredBy {
+  display: none;
+}
 
 /* Search box: jsoneditor pins it top-right of the menu bar, so our action
    buttons (which float in after the mode switcher) never collide with it. */
@@ -113,7 +115,9 @@ body.rm-light {
   padding: 0 6px;
 }
 
-.rm-je .jsoneditor-results { color: #fff; }
+.rm-je .jsoneditor-results {
+  color: #fff;
+}
 
 /* Prev/next/refresh use the sprite's dark variant — invisible on the dark
    menu bar, so invert them like the tree buttons. */
@@ -146,12 +150,18 @@ body.rm-dark .rm-je .ace_editor.ace_autocomplete {
   border-color: var(--rm-je-border);
   color: var(--rm-je-text);
 }
-body.rm-dark .rm-je .ace_editor.ace_autocomplete .ace_marker-layer .ace_active-line,
+body.rm-dark
+  .rm-je
+  .ace_editor.ace_autocomplete
+  .ace_marker-layer
+  .ace_active-line,
 body.rm-dark .rm-je .ace_editor.ace_autocomplete .ace_line-hover {
   background: var(--rm-je-hover);
   border-color: var(--rm-je-border);
 }
-body.rm-dark .rm-je .ace_editor.ace_autocomplete .ace_rightAlignedText { color: var(--rm-je-text-dim); }
+body.rm-dark .rm-je .ace_editor.ace_autocomplete .ace_rightAlignedText {
+  color: var(--rm-je-text-dim);
+}
 body.rm-dark .rm-je .ace_gutter {
   background: var(--rm-je-bg-alt);
   color: var(--rm-je-text-dim);
@@ -160,20 +170,42 @@ body.rm-dark .rm-je .ace_gutter-active-line,
 body.rm-dark .rm-je .ace_marker-layer .ace_active-line {
   background: var(--rm-je-hover);
 }
-body.rm-dark .rm-je .ace_cursor { color: var(--rm-je-text); }
-body.rm-dark .rm-je .ace_marker-layer .ace_selection { background: var(--rm-je-row); }
-body.rm-dark .rm-je .ace_print-margin { background: var(--rm-je-border); }
-body.rm-dark .rm-je .ace_indent-guide { background: none; box-shadow: inset -1px 0 0 rgba(124, 132, 150, 0.25); }
-body.rm-dark .rm-je .ace_string { color: var(--rm-je-string); }
+body.rm-dark .rm-je .ace_cursor {
+  color: var(--rm-je-text);
+}
+body.rm-dark .rm-je .ace_marker-layer .ace_selection {
+  background: var(--rm-je-row);
+}
+body.rm-dark .rm-je .ace_print-margin {
+  background: var(--rm-je-border);
+}
+body.rm-dark .rm-je .ace_indent-guide {
+  background: none;
+  box-shadow: inset -1px 0 0 rgba(124, 132, 150, 0.25);
+}
+body.rm-dark .rm-je .ace_string {
+  color: var(--rm-je-string);
+}
 /* JSON mode tags keys as .ace_variable — textmate renders it near-black. */
-body.rm-dark .rm-je .ace_variable { color: var(--rm-je-field); }
-body.rm-dark .rm-je .ace_constant.ace_numeric { color: var(--rm-je-number); }
+body.rm-dark .rm-je .ace_variable {
+  color: var(--rm-je-field);
+}
+body.rm-dark .rm-je .ace_constant.ace_numeric {
+  color: var(--rm-je-number);
+}
 body.rm-dark .rm-je .ace_constant.ace_language,
-body.rm-dark .rm-je .ace_keyword { color: var(--rm-je-boolean); }
+body.rm-dark .rm-je .ace_keyword {
+  color: var(--rm-je-boolean);
+}
 body.rm-dark .rm-je .ace_paren,
 body.rm-dark .rm-je .ace_punctuation,
-body.rm-dark .rm-je .ace_operator { color: var(--rm-je-text-dim); }
-body.rm-dark .rm-je .ace_invalid { color: var(--rm-je-text); background: rgba(239, 68, 68, 0.3); }
+body.rm-dark .rm-je .ace_operator {
+  color: var(--rm-je-text-dim);
+}
+body.rm-dark .rm-je .ace_invalid {
+  color: var(--rm-je-text);
+  background: rgba(239, 68, 68, 0.3);
+}
 body.rm-dark .rm-je .ace_search {
   background: var(--rm-je-panel);
   border-color: var(--rm-je-border);
@@ -185,7 +217,11 @@ body.rm-dark .rm-je .ace_searchbtn {
   border-color: var(--rm-je-border);
   color: var(--rm-je-text);
 }
-body.rm-dark .rm-je .ace_fold-widget { filter: var(--rm-je-icon-filter); box-shadow: none; background: none; }
+body.rm-dark .rm-je .ace_fold-widget {
+  filter: var(--rm-je-icon-filter);
+  box-shadow: none;
+  background: none;
+}
 
 /* Value autocomplete (tree mode): vendor pins it white with dark text —
    readable, but blinding in dark mode. */
@@ -193,9 +229,15 @@ body.rm-dark .rm-je .jsoneditor .autocomplete.dropdown {
   background: var(--rm-je-panel);
   border-color: var(--rm-je-border);
 }
-body.rm-dark .rm-je .jsoneditor .autocomplete.dropdown .item { color: var(--rm-je-text); }
-body.rm-dark .rm-je .jsoneditor .autocomplete.dropdown .item.hover { background-color: var(--rm-je-hover); }
-body.rm-dark .rm-je .jsoneditor .autocomplete.hint { color: var(--rm-je-text-dim); }
+body.rm-dark .rm-je .jsoneditor .autocomplete.dropdown .item {
+  color: var(--rm-je-text);
+}
+body.rm-dark .rm-je .jsoneditor .autocomplete.dropdown .item.hover {
+  background-color: var(--rm-je-hover);
+}
+body.rm-dark .rm-je .jsoneditor .autocomplete.hint {
+  color: var(--rm-je-text-dim);
+}
 
 /* --- 更新数据 / 应用至游戏 (teleported into the menu bar, MTool style) ------ */
 
@@ -223,19 +265,28 @@ body.rm-dark .rm-je .jsoneditor .autocomplete.hint { color: var(--rm-je-text-dim
   cursor: pointer;
 }
 
-.rm-je .rm-je-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.26); }
-.rm-je .rm-je-btn:disabled { opacity: 0.45; cursor: default; }
+.rm-je .rm-je-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.26);
+}
+.rm-je .rm-je-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .rm-je .rm-je-btn-primary {
   background: var(--rm-je-btn-bg);
   border-color: var(--rm-je-btn-bg);
   color: var(--rm-je-btn-fg);
   font-weight: 500;
 }
-.rm-je .rm-je-btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.rm-je .rm-je-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
 
 /* --- tree ----------------------------------------------------------------- */
 
-.rm-je div.jsoneditor-tree { background: var(--rm-je-bg); }
+.rm-je div.jsoneditor-tree {
+  background: var(--rm-je-bg);
+}
 
 .rm-je div.jsoneditor td,
 .rm-je div.jsoneditor th,
@@ -243,33 +294,56 @@ body.rm-dark .rm-je .jsoneditor .autocomplete.hint { color: var(--rm-je-text-dim
 .rm-je div.jsoneditor-value,
 .rm-je pre.jsoneditor-preview,
 .rm-je textarea.jsoneditor-text {
-  font-family: "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+  font-family:
+    "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
   font-size: 12.5px;
   color: var(--rm-je-text);
 }
 
-.rm-je div.jsoneditor-field { color: var(--rm-je-field); }
-.rm-je div.jsoneditor-readonly { color: var(--rm-je-text-dim); }
-.rm-je div.jsoneditor-empty { border-color: var(--rm-je-border); }
-.rm-je div.jsoneditor-separator { color: var(--rm-je-text-dim); }
+.rm-je div.jsoneditor-field {
+  color: var(--rm-je-field);
+}
+.rm-je div.jsoneditor-readonly {
+  color: var(--rm-je-text-dim);
+}
+.rm-je div.jsoneditor-empty {
+  border-color: var(--rm-je-border);
+}
+.rm-je div.jsoneditor-separator {
+  color: var(--rm-je-text-dim);
+}
 
-.rm-je div.jsoneditor-value.jsoneditor-string { color: var(--rm-je-string); }
-.rm-je div.jsoneditor-value.jsoneditor-number { color: var(--rm-je-number); }
-.rm-je div.jsoneditor-value.jsoneditor-boolean { color: var(--rm-je-boolean); }
-.rm-je div.jsoneditor-value.jsoneditor-null { color: var(--rm-je-null); }
-.rm-je div.jsoneditor-value.jsoneditor-invalid { color: var(--rm-je-text); }
+.rm-je div.jsoneditor-value.jsoneditor-string {
+  color: var(--rm-je-string);
+}
+.rm-je div.jsoneditor-value.jsoneditor-number {
+  color: var(--rm-je-number);
+}
+.rm-je div.jsoneditor-value.jsoneditor-boolean {
+  color: var(--rm-je-boolean);
+}
+.rm-je div.jsoneditor-value.jsoneditor-null {
+  color: var(--rm-je-null);
+}
+.rm-je div.jsoneditor-value.jsoneditor-invalid {
+  color: var(--rm-je-text);
+}
 
 .rm-je tr.jsoneditor-highlight,
-.rm-je tr.jsoneditor-selected { background-color: var(--rm-je-row); }
-.rm-je div.jsoneditor-tree tr:hover { background-color: var(--rm-je-hover); }
+.rm-je tr.jsoneditor-selected {
+  background-color: var(--rm-je-row);
+}
+.rm-je div.jsoneditor-tree tr:hover {
+  background-color: var(--rm-je-hover);
+}
 
 /* Search hits keep jsoneditor's yellow role, toned for a dark surface. */
 .rm-je div.jsoneditor-field.jsoneditor-highlight,
 .rm-je div.jsoneditor-value.jsoneditor-highlight,
-.rm-je div.jsoneditor-field[contenteditable=true]:focus,
-.rm-je div.jsoneditor-field[contenteditable=true]:hover,
-.rm-je div.jsoneditor-value[contenteditable=true]:focus,
-.rm-je div.jsoneditor-value[contenteditable=true]:hover {
+.rm-je div.jsoneditor-field[contenteditable="true"]:focus,
+.rm-je div.jsoneditor-field[contenteditable="true"]:hover,
+.rm-je div.jsoneditor-value[contenteditable="true"]:focus,
+.rm-je div.jsoneditor-value[contenteditable="true"]:hover {
   background-color: var(--rm-je-hit-bg);
   border-color: var(--rm-je-hit-border);
 }
@@ -280,7 +354,9 @@ body.rm-dark .rm-je .jsoneditor .autocomplete.hint { color: var(--rm-je-text-dim
   font-family: inherit;
   font-size: 12px;
 }
-.rm-je div.jsoneditor-tree div.jsoneditor-show-more a { color: #5b8cff; }
+.rm-je div.jsoneditor-tree div.jsoneditor-show-more a {
+  color: #5b8cff;
+}
 
 /* Row buttons (expand caret / ▾ action menu / drag handle) use the sprite's
    dark variant — legible on white, invisible on #161a23. */
@@ -300,8 +376,12 @@ body.rm-dark .rm-je div.jsoneditor-tree button.jsoneditor-button {
 }
 
 .rm-je .jsoneditor-treepath .jsoneditor-treepath-element,
-.rm-je .jsoneditor-treepath .jsoneditor-treepath-seperator { color: var(--rm-je-text-dim); }
-.rm-je .jsoneditor-treepath span.jsoneditor-treepath-element:hover { color: #5b8cff; }
+.rm-je .jsoneditor-treepath .jsoneditor-treepath-seperator {
+  color: var(--rm-je-text-dim);
+}
+.rm-je .jsoneditor-treepath span.jsoneditor-treepath-element:hover {
+  color: #5b8cff;
+}
 
 /* --- row action menu + modals (rendered on <body>, not inside .rm-je) ----- */
 
@@ -312,18 +392,28 @@ body.rm-dark .jsoneditor-contextmenu .jsoneditor-menu {
 }
 
 body.rm-dark .jsoneditor-contextmenu .jsoneditor-menu button,
-body.rm-dark .jsoneditor-contextmenu .jsoneditor-text { color: var(--rm-je-text); }
+body.rm-dark .jsoneditor-contextmenu .jsoneditor-text {
+  color: var(--rm-je-text);
+}
 
 body.rm-dark .jsoneditor-contextmenu .jsoneditor-menu button:hover,
 body.rm-dark .jsoneditor-contextmenu .jsoneditor-menu button:focus,
-body.rm-dark .jsoneditor-contextmenu .jsoneditor-menu li button.jsoneditor-selected,
+body.rm-dark
+  .jsoneditor-contextmenu
+  .jsoneditor-menu
+  li
+  button.jsoneditor-selected,
 body.rm-dark .jsoneditor-contextmenu .jsoneditor-menu li ul li button:hover {
   background-color: var(--rm-je-hover);
   color: var(--rm-je-text);
 }
 
-body.rm-dark .jsoneditor-contextmenu .jsoneditor-icon { filter: var(--rm-je-icon-filter); }
-body.rm-dark .jsoneditor-contextmenu .jsoneditor-separator { border-color: var(--rm-je-border); }
+body.rm-dark .jsoneditor-contextmenu .jsoneditor-icon {
+  filter: var(--rm-je-icon-filter);
+}
+body.rm-dark .jsoneditor-contextmenu .jsoneditor-separator {
+  border-color: var(--rm-je-border);
+}
 
 body.rm-dark .jsoneditor-modal {
   background: var(--rm-je-panel) !important;
@@ -332,7 +422,7 @@ body.rm-dark .jsoneditor-modal {
 }
 
 body.rm-dark .jsoneditor-modal input,
-body.rm-dark .jsoneditor-modal input[type=text],
+body.rm-dark .jsoneditor-modal input[type="text"],
 body.rm-dark .jsoneditor-modal select,
 body.rm-dark .jsoneditor-modal option,
 body.rm-dark .jsoneditor-modal textarea,
@@ -346,12 +436,15 @@ body.rm-dark .jsoneditor-modal .jsoneditor-transform-preview {
 }
 
 body.rm-dark .jsoneditor-modal .selectr-option.selected,
-body.rm-dark .jsoneditor-modal .selectr-option.active { background: var(--rm-je-hover); }
+body.rm-dark .jsoneditor-modal .selectr-option.active {
+  background: var(--rm-je-hover);
+}
 body.rm-dark .jsoneditor-modal table th,
-body.rm-dark .jsoneditor-modal .jsoneditor-jmespath-label { color: var(--rm-je-text); }
-body.rm-dark .jsoneditor-modal input[type=button],
-body.rm-dark .jsoneditor-modal input[type=submit] {
+body.rm-dark .jsoneditor-modal .jsoneditor-jmespath-label {
+  color: var(--rm-je-text);
+}
+body.rm-dark .jsoneditor-modal input[type="button"],
+body.rm-dark .jsoneditor-modal input[type="submit"] {
   background: var(--rm-je-hover);
   color: var(--rm-je-text);
 }
-

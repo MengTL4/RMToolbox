@@ -42,7 +42,12 @@ function syncSavesBack(shadowRoot, gameRoot, options = {}) {
     console.warn(message, result);
     // GUI users have no terminal; retain the report in the shared GUI log.
     const projectRoot = path.resolve(shadowRoot, "..", "..", "..");
-    try { appendFileSync(path.join(projectRoot, "runtime", "gui.log"), `[${new Date().toISOString()}] ${message} ${JSON.stringify(result)}\n`); } catch (_) {}
+    try {
+      appendFileSync(
+        path.join(projectRoot, "runtime", "gui.log"),
+        `[${new Date().toISOString()}] ${message} ${JSON.stringify(result)}\n`
+      );
+    } catch (_) {}
   }
   return result;
 }
@@ -153,12 +158,17 @@ class RgssSession extends EventEmitter {
   }
 
   send(type, args = {}, timeout = COMMAND_TIMEOUT_MS) {
-    if (!this.alive) return Promise.reject(new Error("bridge is not connected"));
+    if (!this.alive)
+      return Promise.reject(new Error("bridge is not connected"));
     // MV/MZ's save.contents.apply carries {json} for an in-page JsonEx.parse.
     // The RGSS bridge evals generated Ruby source instead (Ruby 1.8.1 has no
     // JSON parser worth the name), so translate here and callers keep the
     // MV/MZ vocabulary. A multi-MB tree can outgrow the default timeout.
-    if (type === "save.contents.apply" && args && typeof args.json === "string") {
+    if (
+      type === "save.contents.apply" &&
+      args &&
+      typeof args.json === "string"
+    ) {
       args = { code: rgssContentsCode(args.json), reload: args.reload };
       timeout = Math.max(timeout, 120000);
     }
@@ -171,7 +181,10 @@ class RgssSession extends EventEmitter {
       }, timeout);
       this.pending.set(id, { resolve, reject, timer });
       try {
-        appendFileSync(this.cmdPath, JSON.stringify({ t: "cmd", id, type, args }) + "\n");
+        appendFileSync(
+          this.cmdPath,
+          JSON.stringify({ t: "cmd", id, type, args }) + "\n"
+        );
       } catch (error) {
         this.pending.delete(id);
         clearTimeout(timer);
@@ -189,7 +202,12 @@ class RgssSession extends EventEmitter {
 /**
  * Prepare, launch, and wait for the bridge to announce itself.
  */
-export async function launchRgssGame({ gameRoot, projectRoot, gameKey, onLaunch } = {}) {
+export async function launchRgssGame({
+  gameRoot,
+  projectRoot,
+  gameKey,
+  onLaunch
+} = {}) {
   if (!gameRoot) throw new RgssLaunchError("gameRoot is required");
   if (!projectRoot) throw new RgssLaunchError("projectRoot is required");
 
@@ -198,10 +216,18 @@ export async function launchRgssGame({ gameRoot, projectRoot, gameKey, onLaunch 
   // Rebuild from scratch every launch: the shadow accumulates patched-archive
   // bytes otherwise. Rescue any in-shadow saves first -- they only exist here
   // if the previous run died before its exit-time sync.
-  const shadowRoot = path.join(projectRoot, "runtime", "rgss-shadow", resolvedKey);
+  const shadowRoot = path.join(
+    projectRoot,
+    "runtime",
+    "rgss-shadow",
+    resolvedKey
+  );
   if (existsSync(shadowRoot)) {
     const recovered = syncSavesBack(shadowRoot, gameRoot);
-    if (recovered.errors.length) throw new RgssLaunchError("存档回流失败，已保留影子目录；请查看 runtime/gui.log 后重试。");
+    if (recovered.errors.length)
+      throw new RgssLaunchError(
+        "存档回流失败，已保留影子目录；请查看 runtime/gui.log 后重试。"
+      );
     rmSync(shadowRoot, { recursive: true, force: true });
   }
 
@@ -217,20 +243,26 @@ export async function launchRgssGame({ gameRoot, projectRoot, gameKey, onLaunch 
       token: ""
     });
   } catch (error) {
-    throw error instanceof RgssError ? new RgssLaunchError(error.message) : error;
+    throw error instanceof RgssError
+      ? new RgssLaunchError(error.message)
+      : error;
   }
 
-  const session = new RgssSession({ dir: prepared.shadowRoot, gameKey: resolvedKey });
+  const session = new RgssSession({
+    dir: prepared.shadowRoot,
+    gameKey: resolvedKey
+  });
   let recordedSaveLocation = "";
-  session.on("state", state => {
+  session.on("state", (state) => {
     if (state && state.saveLocation) {
       const encoded = JSON.stringify(state.saveLocation);
       if (encoded === recordedSaveLocation) return;
       try {
         recordRgssSaveLocation(prepared.shadowRoot, state.saveLocation);
         recordedSaveLocation = encoded;
+      } catch (error) {
+        console.warn("Could not retain RGSS save location:", error.message);
       }
-      catch (error) { console.warn("Could not retain RGSS save location:", error.message); }
     }
   });
 
@@ -243,7 +275,11 @@ export async function launchRgssGame({ gameRoot, projectRoot, gameKey, onLaunch 
       const rtpHint = prepared.detect.rtp.length
         ? `; Game.ini declares RTP "${prepared.detect.rtp.join(", ")}" — if the game is stuck before the title screen, install the RTP first (https://rpgmakerweb.com/run-time-package)`
         : "";
-      reject(new RgssLaunchError(`timed out waiting for the injected bridge to start${rtpHint}`));
+      reject(
+        new RgssLaunchError(
+          `timed out waiting for the injected bridge to start${rtpHint}`
+        )
+      );
     }, CONNECT_TIMEOUT_MS);
     session.once("hello", () => {
       clearTimeout(timer);
@@ -276,7 +312,10 @@ export async function launchRgssGame({ gameRoot, projectRoot, gameKey, onLaunch 
     // user deletes later is not resurrected from the stale shadow. Abnormal
     // toolbox deaths skip this entirely, which is exactly the case the
     // launch-time rescue above covers.
-    syncSavesBack(prepared.shadowRoot, gameRoot, { saveLocation: session.state && session.state.saveLocation, removeSynced: true });
+    syncSavesBack(prepared.shadowRoot, gameRoot, {
+      saveLocation: session.state && session.state.saveLocation,
+      removeSynced: true
+    });
     session.close();
   });
 
@@ -308,7 +347,11 @@ export async function adoptRgssSession({ dir, gameKey, pid }) {
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       session.close();
-      reject(new RgssLaunchError("timed out waiting for the attached bridge to start"));
+      reject(
+        new RgssLaunchError(
+          "timed out waiting for the attached bridge to start"
+        )
+      );
     }, CONNECT_TIMEOUT_MS);
     session.once("hello", () => {
       clearTimeout(timer);

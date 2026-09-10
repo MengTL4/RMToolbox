@@ -6,7 +6,9 @@ import { RgssSession } from "../core/rgss-launcher.mjs";
 
 const [dir, type, rawArgs] = process.argv.slice(2);
 if (!dir || !type) {
-  console.error("usage: node tools/_probe-shadow-cmd.mjs <shadowDir> <type> [argsJSON]");
+  console.error(
+    "usage: node tools/_probe-shadow-cmd.mjs <shadowDir> <type> [argsJSON]"
+  );
   process.exit(1);
 }
 const args = rawArgs ? JSON.parse(rawArgs) : {};
@@ -21,7 +23,12 @@ try {
   const payload = await session.send(type, args, 20000);
   console.log(JSON.stringify({ ok: true, payload }, null, 2).slice(0, 3000));
 } catch (error) {
-  console.log(JSON.stringify({ ok: false, error: String(error && error.message || error) }));
+  console.log(
+    JSON.stringify({
+      ok: false,
+      error: String((error && error.message) || error)
+    })
+  );
 } finally {
   session.close();
 }

@@ -4,20 +4,32 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 export const GROVER_BRIDGE_READY_MS = 60000;
 
-export function isKnownSangforModule(value, programFiles = process.env["ProgramFiles(x86)"]) {
+export function isKnownSangforModule(
+  value,
+  programFiles = process.env["ProgramFiles(x86)"]
+) {
   if (!programFiles) return false;
-  const prefix = path.win32.join(programFiles, "Sangfor", "SSL").toLowerCase() + "\\";
+  const prefix =
+    path.win32.join(programFiles, "Sangfor", "SSL").toLowerCase() + "\\";
   const full = path.win32.normalize(String(value)).toLowerCase();
   if (!full.startsWith(prefix)) return false;
   const rel = full.slice(prefix.length);
-  return /^sangforpwex\\sangforudprotectex_[0-9]+[.]dll$/.test(rel) ||
-    ["sangforpwex\\sangforvpnlibcrypto-1_1.dll", "clientcomponent\\sangfortcp.dll", "clientcomponent\\5_sangfornsp.dll"].includes(rel);
+  return (
+    /^sangforpwex\\sangforudprotectex_[0-9]+[.]dll$/.test(rel) ||
+    [
+      "sangforpwex\\sangforvpnlibcrypto-1_1.dll",
+      "clientcomponent\\sangfortcp.dll",
+      "clientcomponent\\5_sangfornsp.dll"
+    ].includes(rel)
+  );
 }
 
 export function isKnownMacTypeModule(value) {
   const full = path.win32.normalize(String(value)).toLowerCase();
-  return path.win32.basename(path.win32.dirname(full)) === "mactype" &&
-    ["mactype.dll", "mactype.core.dll"].includes(path.win32.basename(full));
+  return (
+    path.win32.basename(path.win32.dirname(full)) === "mactype" &&
+    ["mactype.dll", "mactype.core.dll"].includes(path.win32.basename(full))
+  );
 }
 
 export function isKnownCompatibilityModule(value) {
@@ -44,11 +56,18 @@ export function buildModuleReportCompatibility() {
 export function hasGroverModuleMonitor(jsDir) {
   try {
     const bytes = readFileSync(path.join(jsDir, "plugins", "TH-QianC.js"));
-    return ["modulesMmt", "sharedObjects", "Suspect Module =>"].every(s => bytes.includes(Buffer.from(s)));
-  } catch (_) { return false; }
+    return ["modulesMmt", "sharedObjects", "Suspect Module =>"].every((s) =>
+      bytes.includes(Buffer.from(s))
+    );
+  } catch (_) {
+    return false;
+  }
 }
 
-export function buildGroverCompatibilityBootstrap(statusPath, { delayedBootstrapPath = null, delayMs = 60000, matchedModules = null } = {}) {
+export function buildGroverCompatibilityBootstrap(
+  statusPath,
+  { delayedBootstrapPath = null, delayMs = 60000, matchedModules = null } = {}
+) {
   // Only the observed Sangfor components and the two MacType font DLLs qualify.
   // This does not change DLL loading or stop any component.
   return `(function(){
@@ -61,7 +80,9 @@ export function buildGroverCompatibilityBootstrap(statusPath, { delayedBootstrap
     function observe(phase){try{var sm=gameWindow.SceneManager;fs.appendFileSync(statusPath+'.runtime.jsonl',JSON.stringify({phase:phase,at:Date.now(),href:gameWindow.location.href,closed:gameWindow.closed,hidden:gameWindow.document.hidden,scene:sm&&sm._scene&&sm._scene.constructor.name,frame:gameWindow.Graphics&&gameWindow.Graphics.frameCount,lexicalScene:typeof SceneManager!=='undefined'&&SceneManager._scene&&SceneManager._scene.constructor.name})+'\\n');}catch(e){try{fs.appendFileSync(statusPath+'.runtime.jsonl',JSON.stringify({phase:phase,error:String(e)})+'\\n')}catch(_){}}}
     observe('compatibility-entry');
     function ready(w){var s=w&&w.SceneManager&&w.SceneManager._scene;return w&&!w.closed&&w.$dataSystem&&s&&s.constructor.name!=='Scene_Boot';}
-    function later(){${delayedBootstrapPath ? `
+    function later(){${
+      delayedBootstrapPath
+        ? `
       if(gameWindow.__rmchGroverBridgeScheduled)return;
       gameWindow.__rmchGroverBridgeScheduled=true;
       var timers=require('timers'),nwWindows=nw.Window;
@@ -87,7 +108,9 @@ export function buildGroverCompatibilityBootstrap(statusPath, { delayedBootstrap
           });
         },250);
       },${JSON.stringify(delayMs)});
-    ` : ""}}
+    `
+        : ""
+    }}
     if(window.__rmchGroverCompatibility){later();return;}
     if(!report||typeof report.getReport!=='function'){status({status:'unavailable'});return;}
     var original=report.getReport;

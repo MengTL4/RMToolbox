@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, renameSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  truncateSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { JsonlReader } from "../core/jsonl-reader.mjs";
@@ -22,7 +29,13 @@ try {
   assert.deepEqual(reader.readLines(), ["unfinished-tail"]);
 
   // A truncation discards both pending text and an incomplete UTF-8 codepoint.
-  appendFileSync(file, Buffer.concat([Buffer.from("old partial"), Buffer.from("中").subarray(0, 1)]));
+  appendFileSync(
+    file,
+    Buffer.concat([
+      Buffer.from("old partial"),
+      Buffer.from("中").subarray(0, 1)
+    ])
+  );
   reader.readLines();
   truncateSync(file, 0);
   assert.deepEqual(reader.readLines(), []);
@@ -32,7 +45,9 @@ try {
   // A replacement may be larger than the old offset and still starts at zero.
   renameSync(file, file + ".old");
   writeFileSync(file, "replacement is longer than the previous file\n");
-  assert.deepEqual(reader.readLines(), ["replacement is longer than the previous file"]);
+  assert.deepEqual(reader.readLines(), [
+    "replacement is longer than the previous file"
+  ]);
   const tail = new JsonlReader(file, { fromEnd: true });
   assert.deepEqual(tail.readLines(), []);
   appendFileSync(file, "fresh\n");
@@ -66,4 +81,6 @@ try {
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
-console.log("test-jsonl-reader: UTF-8 splits, tails, truncation, replacement and large lines passed");
+console.log(
+  "test-jsonl-reader: UTF-8 splits, tails, truncation, replacement and large lines passed"
+);

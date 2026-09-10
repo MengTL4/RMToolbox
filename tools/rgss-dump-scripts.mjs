@@ -17,7 +17,9 @@ if (!gameRoot || !outDir) {
 }
 
 const detect = detectRgss(gameRoot);
-const parsed = parseScripts(readScriptsArchive(detect), { ruby19: detect.ruby19 });
+const parsed = parseScripts(readScriptsArchive(detect), {
+  ruby19: detect.ruby19
+});
 mkdirSync(outDir, { recursive: true });
 
 let written = 0;
@@ -28,9 +30,15 @@ for (const entry of parsed.entries) {
   } catch {
     continue; // some entries are placeholders with no zlib body
   }
-  const safeName = entry.name.replace(/[^\w.-]+/g, "_") || `entry${entry.index}`;
-  const file = path.join(outDir, `${String(entry.index).padStart(3, "0")}_${safeName}.rb`);
+  const safeName =
+    entry.name.replace(/[^\w.-]+/g, "_") || `entry${entry.index}`;
+  const file = path.join(
+    outDir,
+    `${String(entry.index).padStart(3, "0")}_${safeName}.rb`
+  );
   writeFileSync(file, source);
   written += 1;
 }
-console.log(`${detect.engine} ${parsed.count} entries, ${written} written -> ${outDir}`);
+console.log(
+  `${detect.engine} ${parsed.count} entries, ${written} written -> ${outDir}`
+);

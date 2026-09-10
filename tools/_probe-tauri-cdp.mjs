@@ -8,7 +8,9 @@ const cdp = await openCdpSession({
   timeoutMs: 8000
 });
 console.log("connected:", cdp.target.url);
-const out = await cdp.evaluate("JSON.stringify({title: document.title, mz: !!(window.Utils && Utils.RPGMAKER_NAME), name: window.Utils && Utils.RPGMAKER_NAME, ver: window.Utils && Utils.RPGMAKER_VERSION})");
+const out = await cdp.evaluate(
+  "JSON.stringify({title: document.title, mz: !!(window.Utils && Utils.RPGMAKER_NAME), name: window.Utils && Utils.RPGMAKER_NAME, ver: window.Utils && Utils.RPGMAKER_VERSION})"
+);
 console.log("eval:", out);
 cdp.close();
 process.exit(0);

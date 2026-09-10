@@ -8,7 +8,10 @@ import { fileURLToPath } from "node:url";
 import { buildGuiBundle } from "../core/gui-bundler.mjs";
 import { buildFrontend } from "./gui-frontend.mjs";
 
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const projectRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  ".."
+);
 const outputPath = buildGuiBundle(projectRoot);
 await buildFrontend(projectRoot);
 console.log(`gui bundle built: ${outputPath}`);

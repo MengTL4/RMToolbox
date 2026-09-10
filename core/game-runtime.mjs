@@ -46,7 +46,14 @@ function exposeLaunchPlan(summary, plan, attempts) {
 }
 
 export class GameRuntime {
-  constructor({ scan = scanGame, launch = launchGame, attach = attachGame, launchInject = launchNwInjectGame, plan = planLaunch, log = null } = {}) {
+  constructor({
+    scan = scanGame,
+    launch = launchGame,
+    attach = attachGame,
+    launchInject = launchNwInjectGame,
+    plan = planLaunch,
+    log = null
+  } = {}) {
     this.scan = scan;
     this.launchNormal = launch;
     this.attachRunning = attach;
@@ -62,13 +69,19 @@ export class GameRuntime {
 
   attemptRoute(id, options, scan, isFallback) {
     if (id === "dll") {
-      return this.launchInject({ scan, projectRoot: options.projectRoot, port: options.port });
+      return this.launchInject({
+        scan,
+        projectRoot: options.projectRoot,
+        port: options.port
+      });
     }
     // The route the user asked for reaches the launcher untouched: the launcher
     // owns the precise diagnostics (missing bg-script, ambiguous exe). Only a
     // fallback attempt has to spell the route out, because by then it differs
     // from what was requested.
-    return this.launchNormal(isFallback ? { ...options, strategy: id } : options);
+    return this.launchNormal(
+      isFallback ? { ...options, strategy: id } : options
+    );
   }
 
   async launch(options) {
@@ -78,7 +91,10 @@ export class GameRuntime {
 
     // Fallback is only honoured before the bridge is up: once a game has
     // announced itself, another attempt would just spawn a second instance.
-    const order = [plan.selected, ...(plan.fallback || [])].slice(0, MAX_ATTEMPTS);
+    const order = [plan.selected, ...(plan.fallback || [])].slice(
+      0,
+      MAX_ATTEMPTS
+    );
     const attempts = [];
     let lastError = null;
 
@@ -92,7 +108,11 @@ export class GameRuntime {
       if (isFallback) {
         const preflight = preflightOf(scan, id);
         if (!preflight.ok) {
-          attempts.push({ id, label: routeLabel(id), skipped: preflight.reason });
+          attempts.push({
+            id,
+            label: routeLabel(id),
+            skipped: preflight.reason
+          });
           continue;
         }
       }
@@ -100,16 +120,32 @@ export class GameRuntime {
         const summary = await this.attemptRoute(id, options, scan, isFallback);
         attempts.push({ id, label: routeLabel(id), ok: true });
         if (isFallback && this.log) {
-          this.log("launch route fallback", { gameRoot: options.gameRoot, attempts });
+          this.log("launch route fallback", {
+            gameRoot: options.gameRoot,
+            attempts
+          });
         }
-        if (summary && typeof summary === "object" && summary.strategy === undefined) {
+        if (
+          summary &&
+          typeof summary === "object" &&
+          summary.strategy === undefined
+        ) {
           summary.strategy = id;
         }
         return exposeLaunchPlan(summary, plan, attempts);
       } catch (error) {
         lastError = error;
-        attempts.push({ id, label: routeLabel(id), error: String(error && error.message || error) });
-        if (this.log) this.log("launch route failed", { gameRoot: options.gameRoot, route: id, error: String(error && error.message || error) });
+        attempts.push({
+          id,
+          label: routeLabel(id),
+          error: String((error && error.message) || error)
+        });
+        if (this.log)
+          this.log("launch route failed", {
+            gameRoot: options.gameRoot,
+            route: id,
+            error: String((error && error.message) || error)
+          });
         // The OS refusing to run the file is not a route problem: every other
         // route would hit the same executable.
         if (!isRetryable(error)) break;
@@ -117,7 +153,10 @@ export class GameRuntime {
     }
 
     if (!lastError) {
-      lastError = new LaunchPlanError({ ...plan, error: `所有候选路线在启动前就被否决：${attempts.map((a) => a.id + "(" + a.skipped + ")").join("; ")}` });
+      lastError = new LaunchPlanError({
+        ...plan,
+        error: `所有候选路线在启动前就被否决：${attempts.map((a) => a.id + "(" + a.skipped + ")").join("; ")}`
+      });
     }
     throw lastError;
   }

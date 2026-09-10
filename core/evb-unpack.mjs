@@ -22,7 +22,20 @@
 // Legacy (pre-8) interleaved table+content images are not supported; the
 // walk bails out with EvbError when the table stops making sense.
 
-import { openSync, closeSync, readSync, mkdirSync, existsSync, statSync, symlinkSync, fstatSync, writeSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import {
+  openSync,
+  closeSync,
+  readSync,
+  mkdirSync,
+  existsSync,
+  statSync,
+  symlinkSync,
+  fstatSync,
+  writeSync,
+  readFileSync,
+  writeFileSync,
+  renameSync
+} from "node:fs";
 import path from "node:path";
 
 export class EvbError extends Error {}
@@ -52,8 +65,13 @@ function isCompleteExtraction(exePath, outDir) {
   try {
     const marker = JSON.parse(readFileSync(completionPath(outDir), "utf8"));
     const source = sourceStamp(exePath);
-    return marker && marker.version === 1 && marker.sourceSize === source.size &&
-      marker.sourceMtimeMs === source.mtimeMs && Number(marker.files) > 0;
+    return (
+      marker &&
+      marker.version === 1 &&
+      marker.sourceSize === source.size &&
+      marker.sourceMtimeMs === source.mtimeMs &&
+      Number(marker.files) > 0
+    );
   } catch (_) {
     return false;
   }
@@ -69,7 +87,8 @@ function markCompleteExtraction(exePath, outDir, result) {
     bytes: result.bytes,
     completedAt: new Date().toISOString()
   };
-  const temporary = completionPath(outDir) + `.tmp-${process.pid}-${Date.now()}`;
+  const temporary =
+    completionPath(outDir) + `.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(temporary, JSON.stringify(marker) + "\n", "utf8");
   renameSync(temporary, completionPath(outDir));
 }
@@ -86,13 +105,15 @@ export function readPeSections(exePath) {
     if (head.toString("latin1", 0, 2) !== "MZ") return null;
     const peOffset = head.readUInt32LE(0x3c);
     if (peOffset + 24 > head.length) return null;
-    if (head.toString("latin1", peOffset, peOffset + 4) !== "PE\0\0") return null;
+    if (head.toString("latin1", peOffset, peOffset + 4) !== "PE\0\0")
+      return null;
     const machine = head.readUInt16LE(peOffset + 4);
     const sectionCount = head.readUInt16LE(peOffset + 6);
     const optSize = head.readUInt16LE(peOffset + 20);
     const sectionsPos = peOffset + 24 + optSize;
     const table = Buffer.alloc(sectionCount * 40);
-    if (readSync(fd, table, 0, table.length, sectionsPos) < table.length) return null;
+    if (readSync(fd, table, 0, table.length, sectionsPos) < table.length)
+      return null;
     const sections = [];
     for (let i = 0; i < sectionCount; i += 1) {
       const base = i * 40;
@@ -102,7 +123,15 @@ export function readPeSections(exePath) {
         rawPos: table.readUInt32LE(base + 20)
       });
     }
-    return { arch: machine === 0x8664 ? "x64" : machine === 0x14c ? "x86" : `0x${machine.toString(16)}`, sections };
+    return {
+      arch:
+        machine === 0x8664
+          ? "x64"
+          : machine === 0x14c
+            ? "x86"
+            : `0x${machine.toString(16)}`,
+      sections
+    };
   } finally {
     closeSync(fd);
   }
@@ -172,7 +201,8 @@ function readNamedNode(cursor) {
     const unit = pair.readUInt16LE(0);
     if (unit === 0) break;
     units.push(unit);
-    if (units.length > 512) throw new EvbError("EVB node name exceeds 512 chars");
+    if (units.length > 512)
+      throw new EvbError("EVB node name exceeds 512 chars");
   }
   const type = cursor.read(1)[0];
   return { name: String.fromCharCode(...units), type };
@@ -227,7 +257,11 @@ export function parseEvbTree(exePath) {
         currentObjects += 1;
       } else if (named.type === NODE_TYPE_FOLDER) {
         cursor.skip(25);
-        nodes.push({ type: NODE_TYPE_FOLDER, name: named.name, objectsCount: header.objectsCount });
+        nodes.push({
+          type: NODE_TYPE_FOLDER,
+          name: named.name,
+          objectsCount: header.objectsCount
+        });
         maxObjects += header.objectsCount;
         currentObjects += 1;
       } else {
@@ -235,7 +269,8 @@ export function parseEvbTree(exePath) {
       }
       if (maxObjects > 0 && currentObjects > maxObjects) break;
     }
-    if (nodes.length >= MAX_NODES) throw new EvbError("EVB node table did not terminate");
+    if (nodes.length >= MAX_NODES)
+      throw new EvbError("EVB node table did not terminate");
 
     // Nodes arrive depth-first; rebuild paths with a recursive consumer.
     const files = [];
@@ -245,10 +280,17 @@ export function parseEvbTree(exePath) {
         const node = nodes[index];
         index += 1;
         if (!node) throw new EvbError("EVB file table is truncated");
-        if (/[/\\:]/.test(node.name) || node.name === "." || node.name === "..") {
+        if (
+          /[/\\:]/.test(node.name) ||
+          node.name === "." ||
+          node.name === ".."
+        ) {
           throw new EvbError(`unsafe node name: ${JSON.stringify(node.name)}`);
         }
-        const name = node.type === NODE_TYPE_FOLDER ? (FOLDER_ALTNAMES[node.name] ?? node.name) : node.name;
+        const name =
+          node.type === NODE_TYPE_FOLDER
+            ? (FOLDER_ALTNAMES[node.name] ?? node.name)
+            : node.name;
         const rel = prefix ? `${prefix}/${name}` : name;
         if (node.type === NODE_TYPE_FOLDER) {
           walk(rel, node.objectsCount);
@@ -270,7 +312,6 @@ export function parseEvbTree(exePath) {
   }
 }
 
-
 /**
  * Extract the whole virtual filesystem into outDir. onProgress receives
  * { files, filesTotal, bytes, bytesTotal, current } at most once per file.
@@ -279,10 +320,13 @@ export function extractEvb(exePath, outDir, { onProgress } = {}) {
   const { files } = parseEvbTree(exePath);
   const compressed = files.filter((f) => f.compressed);
   if (compressed.length) {
-    const first = compressed.slice(0, 3).map((f) => f.path).join(", ");
+    const first = compressed
+      .slice(0, 3)
+      .map((f) => f.path)
+      .join(", ");
     throw new EvbError(
       `EVB image uses aPLib compression on ${compressed.length} file(s) (${first}…) — ` +
-      "compressed extraction is not ported yet (raw-only images work)"
+        "compressed extraction is not ported yet (raw-only images work)"
     );
   }
   const fd = openSync(exePath, "r");
@@ -311,7 +355,14 @@ export function extractEvb(exePath, outDir, { onProgress } = {}) {
       }
       filesDone += 1;
       bytesDone += file.storedSize;
-      if (onProgress) onProgress({ files: filesDone, filesTotal: files.length, bytes: bytesDone, bytesTotal, current: file.path });
+      if (onProgress)
+        onProgress({
+          files: filesDone,
+          filesTotal: files.length,
+          bytes: bytesDone,
+          bytesTotal,
+          current: file.path
+        });
     }
     return { files: filesDone, bytes: bytesDone };
   } finally {
@@ -336,10 +387,13 @@ export async function extractEvbAsync(exePath, outDir, { onProgress } = {}) {
   const { files } = parseEvbTree(exePath);
   const compressed = files.filter((f) => f.compressed);
   if (compressed.length) {
-    const first = compressed.slice(0, 3).map((f) => f.path).join(", ");
+    const first = compressed
+      .slice(0, 3)
+      .map((f) => f.path)
+      .join(", ");
     throw new EvbError(
       `EVB image uses aPLib compression on ${compressed.length} file(s) (${first}…) — ` +
-      "compressed extraction is not ported yet (raw-only images work)"
+        "compressed extraction is not ported yet (raw-only images work)"
     );
   }
   const fd = openSync(exePath, "r");
@@ -372,10 +426,21 @@ export async function extractEvbAsync(exePath, outDir, { onProgress } = {}) {
       }
       filesDone += 1;
       bytesDone += file.storedSize;
-      if (onProgress) await onProgress({ files: filesDone, filesTotal: files.length, bytes: bytesDone, bytesTotal, current: file.path });
+      if (onProgress)
+        await onProgress({
+          files: filesDone,
+          filesTotal: files.length,
+          bytes: bytesDone,
+          bytesTotal,
+          current: file.path
+        });
       // Empty/small files do not enter the chunk loop; batch their yields so
       // a 40k-file image remains responsive without adding 40k timers.
-      if (filesDone === files.length || filesDone % 32 === 0 || Date.now() - lastYield >= 50) {
+      if (
+        filesDone === files.length ||
+        filesDone % 32 === 0 ||
+        Date.now() - lastYield >= 50
+      ) {
         lastYield = Date.now();
         await yieldToEventLoop();
       }
@@ -416,7 +481,12 @@ export function ensureEvbUnpacked(exePath, { onProgress } = {}) {
   const result = extractEvb(exePath, outDir, { onProgress });
   markCompleteExtraction(exePath, outDir, result);
   linkSaveDir(exePath, outDir);
-  return { dir: outDir, extracted: true, files: result.files, bytes: result.bytes };
+  return {
+    dir: outDir,
+    extracted: true,
+    files: result.files,
+    bytes: result.bytes
+  };
 }
 
 /** Async, repaint-safe launcher entry used by the GUI for large EVB images. */
@@ -429,7 +499,12 @@ export async function ensureEvbUnpackedAsync(exePath, { onProgress } = {}) {
   const result = await extractEvbAsync(exePath, outDir, { onProgress });
   markCompleteExtraction(exePath, outDir, result);
   linkSaveDir(exePath, outDir);
-  return { dir: outDir, extracted: true, files: result.files, bytes: result.bytes };
+  return {
+    dir: outDir,
+    extracted: true,
+    files: result.files,
+    bytes: result.bytes
+  };
 }
 
 function linkSaveDir(exePath, outDir) {
@@ -441,4 +516,3 @@ function linkSaveDir(exePath, outDir) {
     symlinkSync(original, inside, "junction");
   } catch (_) {}
 }
-

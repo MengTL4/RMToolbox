@@ -31,7 +31,17 @@
 
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync, openSync, readSync, closeSync, readFileSync, statSync, writeSync, readdirSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  openSync,
+  readSync,
+  closeSync,
+  readFileSync,
+  statSync,
+  writeSync,
+  readdirSync
+} from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { openCdpSession, listTargets } from "./cdp-client.mjs";
@@ -53,7 +63,12 @@ const BOOT_GRACE_MS = Number(process.env.RMCH_TAURI_BOOT_GRACE_MS || 5000);
 // Verbose launch diagnostics: RMCH_TAURI_DEBUG=1 node ...
 const DEBUG = process.env.RMCH_TAURI_DEBUG === "1";
 function dbg(...args) {
-  if (DEBUG) console.error("[tauri-cdp]", new Date().toISOString().slice(11, 23), ...args);
+  if (DEBUG)
+    console.error(
+      "[tauri-cdp]",
+      new Date().toISOString().slice(11, 23),
+      ...args
+    );
 }
 
 // The WRY default AdditionalBrowserArguments tokens, as found in the exe's
@@ -75,7 +90,10 @@ const PROBE_WINDOW_BYTES = 16 * 1024 * 1024;
 // The page origin differs by builder: some serve https://tauri.localhost/,
 // others plain http:// (实测: 重装机兵黎明 serves http). Accept both anywhere we
 // pin a target by URL.
-const TAURI_PAGE_PREFIXES = ["http://tauri.localhost/", "https://tauri.localhost/"];
+const TAURI_PAGE_PREFIXES = [
+  "http://tauri.localhost/",
+  "https://tauri.localhost/"
+];
 
 function isTauriPageUrl(url) {
   const text = String(url || "");
@@ -146,8 +164,17 @@ export function probeTauriShell(exePath, { deep = false } = {}) {
       return empty;
     }
     if (full.length > head.length) found = scan(full);
-    if (found) return { isTauri: true, anchor: found.offset === -1 ? null : found, buffer: full };
-    return { isTauri: TAURI_MARKERS.every((m) => full.includes(m)), anchor: null, buffer: full };
+    if (found)
+      return {
+        isTauri: true,
+        anchor: found.offset === -1 ? null : found,
+        buffer: full
+      };
+    return {
+      isTauri: TAURI_MARKERS.every((m) => full.includes(m)),
+      anchor: null,
+      buffer: full
+    };
   }
   if (!found) return empty;
   return { isTauri: true, anchor: found.offset === -1 ? null : found };
@@ -160,7 +187,9 @@ export function probeTauriShell(exePath, { deep = false } = {}) {
 export function buildPatchReplacement(regionLength, cdpPort) {
   const replacement = `--remote-debugging-port=${cdpPort}`;
   if (replacement.length > regionLength) {
-    throw new TauriLaunchError(`CDP switch does not fit the ${regionLength}-byte patch region`);
+    throw new TauriLaunchError(
+      `CDP switch does not fit the ${regionLength}-byte patch region`
+    );
   }
   return replacement + " ".repeat(regionLength - replacement.length);
 }
@@ -171,23 +200,33 @@ export function buildPatchReplacement(regionLength, cdpPort) {
 // known anchor tokens; we do not patch strings we don't recognize.
 export function buildPatchedExe({ exePath, destPath, anchor, cdpPort }) {
   const source = readPrefix(exePath, Number.MAX_SAFE_INTEGER);
-  const region = source.toString("latin1", anchor.offset, anchor.offset + anchor.length);
+  const region = source.toString(
+    "latin1",
+    anchor.offset,
+    anchor.offset + anchor.length
+  );
   const printable = /^[\x20-\x7e]+$/;
-  const anchorPresent = PATCH_ANCHORS.some((candidate) => region.startsWith(candidate));
+  const anchorPresent = PATCH_ANCHORS.some((candidate) =>
+    region.startsWith(candidate)
+  );
   if (!anchorPresent || !printable.test(region)) {
     throw new TauriLaunchError(
       `patch region mismatch at offset ${anchor.offset} (game updated?) — expected a printable args string containing a known anchor, found ${JSON.stringify(region.slice(0, 80))}...`
     );
   }
   copyFileSync(exePath, destPath);
-  const replacement = Buffer.from(buildPatchReplacement(anchor.length, cdpPort), "latin1");
+  const replacement = Buffer.from(
+    buildPatchReplacement(anchor.length, cdpPort),
+    "latin1"
+  );
   const fd = openSync(destPath, "r+");
   try {
     const written = Buffer.alloc(anchor.length);
     // Patch bytes land, then read back to prove the write took.
     writeSync(fd, replacement, 0, anchor.length, anchor.offset);
     readSync(fd, written, 0, anchor.length, anchor.offset);
-    if (!written.equals(replacement)) throw new TauriLaunchError("patch read-back mismatch");
+    if (!written.equals(replacement))
+      throw new TauriLaunchError("patch read-back mismatch");
   } finally {
     closeSync(fd);
   }
@@ -319,7 +358,9 @@ export class TauriSession extends EventEmitter {
           this.cdp = null;
         }
         if (Date.now() > deadline) {
-          throw new TauriLaunchError(`CDP session never became ready: ${lastError.message}`);
+          throw new TauriLaunchError(
+            `CDP session never became ready: ${lastError.message}`
+          );
         }
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
@@ -335,7 +376,7 @@ export class TauriSession extends EventEmitter {
     // never emits raw newlines. Splice-then-join drains atomically from the
     // page's perspective (evaluate runs to completion on the main thread).
     const DRAIN =
-      "(window.__rmchOutbox && window.__rmchOutbox.length ? window.__rmchOutbox.splice(0).join(\"\\n\") : \"\")";
+      '(window.__rmchOutbox && window.__rmchOutbox.length ? window.__rmchOutbox.splice(0).join("\\n") : "")';
     this.pollTimer = setInterval(async () => {
       if (!this.alive || !this.cdp) return;
       let batch;
@@ -396,7 +437,11 @@ export class TauriSession extends EventEmitter {
         for (const name of readdirSync(dir)) {
           if (!/\.(rpgsave|rmmzsave)$/i.test(name)) continue;
           const stat = statSync(path.join(dir, name));
-          entries.push({ name, size: stat.size, mtime: stat.mtime.toISOString() });
+          entries.push({
+            name,
+            size: stat.size,
+            mtime: stat.mtime.toISOString()
+          });
         }
       } catch (_) {}
     }
@@ -405,10 +450,13 @@ export class TauriSession extends EventEmitter {
   }
 
   async send(type, args = {}, timeout = COMMAND_TIMEOUT_MS) {
-    if (!this.alive || !this.cdp) return Promise.reject(new Error("bridge is not connected"));
+    if (!this.alive || !this.cdp)
+      return Promise.reject(new Error("bridge is not connected"));
     if (type === "save.list") {
       const webStorage = await this.cdp.evaluate(
-        "!!(window.StorageManager && (typeof StorageManager.webStorageKey === 'function' || typeof StorageManager.forageKey === 'function') && typeof StorageManager.isLocalMode === 'function' && !StorageManager.isLocalMode())", timeout);
+        "!!(window.StorageManager && (typeof StorageManager.webStorageKey === 'function' || typeof StorageManager.forageKey === 'function') && typeof StorageManager.isLocalMode === 'function' && !StorageManager.isLocalMode())",
+        timeout
+      );
       if (!webStorage) return this.answerSaveList();
     }
     if (type === "save.contents.apply") timeout = Math.max(timeout, 120000);
@@ -422,7 +470,11 @@ export class TauriSession extends EventEmitter {
       this.pending.set(id, { resolve, reject, timer });
       const text = JSON.stringify({ t: "cmd", id, type, args });
       // __rmchDispatch is installed by the bridge's CDP transport (55-transport).
-      this.cdp.evaluate(`window.__rmchDispatch && window.__rmchDispatch(${JSON.stringify(text)})`, timeout)
+      this.cdp
+        .evaluate(
+          `window.__rmchDispatch && window.__rmchDispatch(${JSON.stringify(text)})`,
+          timeout
+        )
         .catch((error) => {
           this.pending.delete(id);
           clearTimeout(timer);
@@ -444,7 +496,9 @@ async function waitForBootGrace(child, graceMs) {
   const deadline = Date.now() + graceMs;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
-      throw new TauriLaunchError(`game exited during startup (code ${child.exitCode})`);
+      throw new TauriLaunchError(
+        `game exited during startup (code ${child.exitCode})`
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
@@ -458,16 +512,25 @@ async function waitForTauriPage(cdpPort, child, timeoutMs) {
   let lastStatus = "";
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
-      throw new TauriLaunchError(`game exited during startup (code ${child.exitCode})`);
+      throw new TauriLaunchError(
+        `game exited during startup (code ${child.exitCode})`
+      );
     }
     let status;
     try {
       const targets = await listTargets(cdpPort, 1500);
       if (targets.some((t) => t.type === "page" && isTauriPageUrl(t.url))) {
-        dbg("page target found:", targets.map((t) => `${t.type}:${t.url}`).join(" | "));
+        dbg(
+          "page target found:",
+          targets.map((t) => `${t.type}:${t.url}`).join(" | ")
+        );
         return;
       }
-      status = "targets: " + (targets.map((t) => `${t.type}:${String(t.url || "").slice(0, 60)}`).join(" | ") || "none");
+      status =
+        "targets: " +
+        (targets
+          .map((t) => `${t.type}:${String(t.url || "").slice(0, 60)}`)
+          .join(" | ") || "none");
       lastError = new TauriLaunchError("page target not listed yet");
     } catch (error) {
       status = "poll error: " + error.message;
@@ -479,11 +542,23 @@ async function waitForTauriPage(cdpPort, child, timeoutMs) {
     }
     await new Promise((resolve) => setTimeout(resolve, CDP_POLL_MS));
   }
-  throw new TauriLaunchError(`timed out waiting for CDP on 127.0.0.1:${cdpPort}: ${lastError ? lastError.message : "no targets"}`);
+  throw new TauriLaunchError(
+    `timed out waiting for CDP on 127.0.0.1:${cdpPort}: ${lastError ? lastError.message : "no targets"}`
+  );
 }
 
-export function buildTauriBootstrap({ gameRoot, projectRoot, gameKey, saveDir }) {
-  const bridgePath = path.join(projectRoot, "runtime", "bridge", "page-bridge.js");
+export function buildTauriBootstrap({
+  gameRoot,
+  projectRoot,
+  gameKey,
+  saveDir
+}) {
+  const bridgePath = path.join(
+    projectRoot,
+    "runtime",
+    "bridge",
+    "page-bridge.js"
+  );
   const bridgeSource = readFileSync(bridgePath, "utf8");
   const env = {
     RMCH_GAME_ROOT: gameRoot,
@@ -523,7 +598,9 @@ async function reusablePatchedPort(sourceExe, patchedExe, anchor) {
     try {
       const buffer = Buffer.alloc(anchor.length);
       readSync(fd, buffer, 0, anchor.length, anchor.offset);
-      match = /^--remote-debugging-port=(\d+) +$/.exec(buffer.toString("latin1"));
+      match = /^--remote-debugging-port=(\d+) +$/.exec(
+        buffer.toString("latin1")
+      );
     } finally {
       closeSync(fd);
     }
@@ -543,7 +620,8 @@ function launchSummary(session, scan) {
     engine: scan.engine.id,
     protection: scan.protection,
     strategy: "tauri-cdp",
-    strategyReason: "Tauri WebView2: patched exe copy opens CDP; bridge transport is evaluate-polled outbox",
+    strategyReason:
+      "Tauri WebView2: patched exe copy opens CDP; bridge transport is evaluate-polled outbox",
     pid: session.pid,
     patchedExe: session.patchedExe,
     cdpPort: session.cdpPort,
@@ -581,28 +659,44 @@ export function launchTauriGame({ scan, projectRoot }) {
 async function doLaunchTauriGame({ scan, projectRoot }) {
   const sourceExe = scan.paths && scan.paths.exe;
   if (!sourceExe || !existsSync(sourceExe)) {
-    throw new TauriLaunchError(`game exe not found: ${sourceExe || "(none scanned)"}`);
+    throw new TauriLaunchError(
+      `game exe not found: ${sourceExe || "(none scanned)"}`
+    );
   }
   const probe = probeTauriShell(sourceExe, { deep: true });
-  if (!probe.isTauri) throw new TauriLaunchError(`${sourceExe} does not look like a Tauri/WRY app`);
-  if (!probe.anchor) throw new TauriLaunchError("no patchable browser-args string found in the exe");
+  if (!probe.isTauri)
+    throw new TauriLaunchError(
+      `${sourceExe} does not look like a Tauri/WRY app`
+    );
+  if (!probe.anchor)
+    throw new TauriLaunchError(
+      "no patchable browser-args string found in the exe"
+    );
 
   buildBridge(projectRoot);
 
   const parsed = path.parse(sourceExe);
-  const patchedExe = path.join(parsed.dir, `${parsed.name}.rmch-cdp${parsed.ext}`);
+  const patchedExe = path.join(
+    parsed.dir,
+    `${parsed.name}.rmch-cdp${parsed.ext}`
+  );
   let cdpPort = await reusablePatchedPort(sourceExe, patchedExe, probe.anchor);
   if (cdpPort) {
     dbg("reusing patched exe, embedded port", cdpPort);
   } else {
     cdpPort = await pickFreePort();
     try {
-      buildPatchedExe({ exePath: sourceExe, destPath: patchedExe, anchor: probe.anchor, cdpPort });
+      buildPatchedExe({
+        exePath: sourceExe,
+        destPath: patchedExe,
+        anchor: probe.anchor,
+        cdpPort
+      });
     } catch (error) {
       if (error && error.code === "EBUSY") {
         throw new TauriLaunchError(
           `无法写入 ${path.basename(patchedExe)}：文件被占用。通常是游戏还在运行` +
-          "（从库里直接连接那个会话，或先关掉游戏）；也可能是杀毒软件正在扫描，稍候重试。"
+            "（从库里直接连接那个会话，或先关掉游戏）；也可能是杀毒软件正在扫描，稍候重试。"
         );
       }
       throw error;

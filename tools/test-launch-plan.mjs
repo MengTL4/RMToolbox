@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { LaunchPlanError, planLaunch } from "../core/launch-plan.mjs";
-import { ROUTES, ATTACH_ROUTES, routeLabel, routeMechanismText, preflightOf } from "../core/launch-routes.mjs";
+import {
+  ROUTES,
+  ATTACH_ROUTES,
+  routeLabel,
+  routeMechanismText,
+  preflightOf
+} from "../core/launch-routes.mjs";
 
 const exe = "C:/games/Test/Game.exe";
 
@@ -28,7 +34,10 @@ function ids(plan) {
   assert.equal(plan.preferred, "shadow");
   assert.equal(plan.selected, "shadow");
   assert.deepEqual(ids(plan), ["shadow", "extension", "dll"]);
-  assert.equal(plan.blocked.some((entry) => entry.id === "shadow"), false);
+  assert.equal(
+    plan.blocked.some((entry) => entry.id === "shadow"),
+    false
+  );
   assert.deepEqual(plan.fallback, ["extension", "dll"]);
 }
 
@@ -37,13 +46,21 @@ function ids(plan) {
   const plan = planLaunch(nw());
   assert.equal(plan.preferred, "extension");
   assert.deepEqual(ids(plan), ["extension", "dll"]);
-  assert.equal(plan.blocked.find((entry) => entry.id === "shadow").reason.includes("bg-script"), true);
+  assert.equal(
+    plan.blocked
+      .find((entry) => entry.id === "shadow")
+      .reason.includes("bg-script"),
+    true
+  );
   assert.equal(planLaunch(nw(), { strategy: "dll" }).selected, "dll");
 }
 
 // Grover keeps the explicit shadow route but defaults to plain launch + DLL.
 {
-  const scan = nw({ manifest: { bgScript: "loading" }, protection: { flags: ["grover-boot"] } });
+  const scan = nw({
+    manifest: { bgScript: "loading" },
+    protection: { flags: ["grover-boot"] }
+  });
   const auto = planLaunch(scan);
   assert.equal(auto.preferred, "dll");
   assert.deepEqual(ids(auto), ["dll", "shadow"]);
@@ -59,8 +76,14 @@ for (const container of ["nb-evalnwbin", "enigma-nb"]) {
   const plan = planLaunch(nw({ container }));
   assert.equal(plan.selected, "dll");
   assert.deepEqual(ids(plan), ["dll"]);
-  assert.equal(plan.blocked.some((entry) => entry.id === "shadow"), true);
-  assert.equal(planLaunch(nw({ container }), { strategy: "shadow" }).selected, "dll");
+  assert.equal(
+    plan.blocked.some((entry) => entry.id === "shadow"),
+    true
+  );
+  assert.equal(
+    planLaunch(nw({ container }), { strategy: "shadow" }).selected,
+    "dll"
+  );
 }
 
 // Dedicated containers never fall through to a generic MV/MZ route.
@@ -75,7 +98,10 @@ for (const [container, selected] of [
   assert.deepEqual(ids(plan), [selected]);
 }
 
-assert.equal(planLaunch({ engine: { id: "RGSS1" }, container: "rgss" }).selected, "rgss-script");
+assert.equal(
+  planLaunch({ engine: { id: "RGSS1" }, container: "rgss" }).selected,
+  "rgss-script"
+);
 assert.equal(planLaunch({ engine: { id: "RM2K" } }).selected, null);
 assert.equal(planLaunch(nw({ container: "nb-shell" })).selected, null);
 
@@ -84,27 +110,42 @@ assert.equal(planLaunch(nw({ container: "nb-shell" })).selected, null);
 {
   const plan = planLaunch(nw({ paths: {} }), { strategy: "dll" });
   assert.equal(plan.selected, "dll");
-  assert.equal(plan.blocked.some((entry) => entry.id === "preflight"), true);
+  assert.equal(
+    plan.blocked.some((entry) => entry.id === "preflight"),
+    true
+  );
 }
 
 const rejected = planLaunch(nw(), { strategy: "shadow" });
 assert.equal(rejected.selected, null);
 assert.match(rejected.error, /shadow/);
-assert.throws(() => { throw new LaunchPlanError(rejected); }, LaunchPlanError);
-
+assert.throws(() => {
+  throw new LaunchPlanError(rejected);
+}, LaunchPlanError);
 
 // One catalogue, one vocabulary: every strategy string the toolbox can report
 // (launch routes and attach-side strategies alike) has a Chinese name and a
 // mechanism, so the GUI dropdown, the plan and the log cannot drift apart.
 for (const id of [...Object.keys(ROUTES), ...Object.keys(ATTACH_ROUTES)]) {
-  assert.notEqual(routeLabel(id), id, `route ${id} must be named in the catalogue`);
-  assert.ok(routeMechanismText(id).length > 0, `route ${id} must declare a mechanism`);
+  assert.notEqual(
+    routeLabel(id),
+    id,
+    `route ${id} must be named in the catalogue`
+  );
+  assert.ok(
+    routeMechanismText(id).length > 0,
+    `route ${id} must declare a mechanism`
+  );
 }
 
 // Launch routes share the operation axis with attach strategies, and each one
 // carries the user-goal phrase the GUI shows instead of keeping its own labels.
 for (const route of Object.values(ROUTES)) {
-  assert.equal(route.operation, "launch", `route ${route.id} must declare operation "launch"`);
+  assert.equal(
+    route.operation,
+    "launch",
+    `route ${route.id} must declare operation "launch"`
+  );
   assert.ok(route.userGoal, `route ${route.id} must carry a userGoal`);
 }
 
@@ -129,8 +170,17 @@ assert.match(routeMechanismText("evb-unpack-rgss-script"), /解包/);
 // The static half of preflight is decided by the catalogue, not inline.
 assert.equal(preflightOf(nw(), "shadow").ok, false);
 assert.match(preflightOf(nw(), "shadow").reason, /bg-script/);
-assert.equal(preflightOf(nw({ manifest: { bgScript: "loading" } }), "shadow").ok, true);
+assert.equal(
+  preflightOf(nw({ manifest: { bgScript: "loading" } }), "shadow").ok,
+  true
+);
 assert.equal(preflightOf(nw({ paths: {} }), "extension").ok, false);
-assert.equal(preflightOf(nw({ paths: {} }), "rgss-script").ok, true, "RGSS preflight is a runtime question");
+assert.equal(
+  preflightOf(nw({ paths: {} }), "rgss-script").ok,
+  true,
+  "RGSS preflight is a runtime question"
+);
 
-console.log("test-launch-plan: route classification, overrides and catalogue naming passed");
+console.log(
+  "test-launch-plan: route classification, overrides and catalogue naming passed"
+);
