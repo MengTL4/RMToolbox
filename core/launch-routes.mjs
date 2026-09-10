@@ -20,6 +20,10 @@
 // hard links plus real copies for patched files — "影子目录" is its MV/MZ form)
 // is one mechanism shared by several routes, which is why it never made sense
 // as a route a user picks for an Essentials or Tauri game.
+//
+// Each route also carries a userGoal: the short goal-oriented phrase the GUI
+// shows as the route's display name. Presentation lives here in the catalogue —
+// the GUI keeps no label table of its own.
 
 export const MECHANISMS = Object.freeze({
   extension: {
@@ -64,7 +68,9 @@ export const ROUTES = Object.freeze({
   extension: {
     id: "extension",
     label: "扩展启动",
+    operation: "launch",
     mechanism: "extension",
+    userGoal: "原版直接启动",
     transport: "load-extension",
     preflight: ["game-executable", "private-profile", "bridge-hello"],
     reason: "标准 NW.js 使用原版 Game.exe 加载 bridge 扩展"
@@ -72,7 +78,9 @@ export const ROUTES = Object.freeze({
   shadow: {
     id: "shadow",
     label: "影子目录",
+    operation: "launch",
     mechanism: "copy",
+    userGoal: "不动原目录",
     transport: "shadow-dir",
     preflight: ["bg-script", "patch-anchor", "shadow-spawn", "bridge-hello"],
     reason: "bg-script 启动链可在独立影子目录中打补丁"
@@ -80,7 +88,9 @@ export const ROUTES = Object.freeze({
   dll: {
     id: "dll",
     label: "DLL 附加",
+    operation: "launch",
     mechanism: "dll",
+    userGoal: "壳拒绝参数时的兜底",
     transport: "native-dll-file",
     preflight: ["plain-spawn", "renderer", "pe-arch", "bridge-hello"],
     reason: "裸启动后向渲染进程投递原生桥"
@@ -88,8 +98,10 @@ export const ROUTES = Object.freeze({
   "rgss-script": {
     id: "rgss-script",
     label: "RGSS 脚本注入",
+    operation: "launch",
     mechanism: "script",
     alsoUses: ["copy"],
+    userGoal: "RGSS 游戏专用",
     transport: "rgss-shadow",
     preflight: ["game.ini-library", "scripts-archive"],
     reason: "RGSS 游戏把 Ruby 桥接写进运行副本的 Scripts 归档"
@@ -97,8 +109,10 @@ export const ROUTES = Object.freeze({
   "evb-unpack-rgss-script": {
     id: "evb-unpack-rgss-script",
     label: "EVB 解包 + RGSS 脚本",
+    operation: "launch",
     mechanism: "unpack",
     alsoUses: ["copy", "script"],
+    userGoal: "EVB 壳游戏专用",
     transport: "evb-unpack",
     preflight: ["evb-executable"],
     reason: "EVB 单文件壳先解包，再走 RGSS 运行副本脚本注入"
@@ -106,8 +120,10 @@ export const ROUTES = Object.freeze({
   "tauri-cdp": {
     id: "tauri-cdp",
     label: "Tauri / WebView2 CDP",
+    operation: "launch",
     mechanism: "cdp",
     alsoUses: ["copy"],
+    userGoal: "Tauri 游戏专用",
     transport: "cdp",
     preflight: ["tauri-executable"],
     reason: "Tauri/WebView2 需要一份打过补丁的可执行副本来打开 CDP"
@@ -115,8 +131,10 @@ export const ROUTES = Object.freeze({
   "extension-cdp-seed": {
     id: "extension-cdp-seed",
     label: "扩展 + CDP 发布引擎",
+    operation: "launch",
     mechanism: "extension",
     alsoUses: ["cdp"],
+    userGoal: "封闭 MZ 专用",
     transport: "extension-cdp",
     preflight: ["remote-debug-port", "heap-seed"],
     reason: "封闭 MZ 需要启动调试端口并用 CDP 把引擎对象发布出来"
@@ -124,8 +142,10 @@ export const ROUTES = Object.freeze({
   "shadow-engine-publish": {
     id: "shadow-engine-publish",
     label: "合体引擎副本发布",
+    operation: "launch",
     mechanism: "copy",
     alsoUses: ["script"],
+    userGoal: "合体引擎专用",
     transport: "shadow-patched-script",
     preflight: ["bundle-script-anchor"],
     reason: "合体引擎只能在运行副本的闭包里发布运行时对象"

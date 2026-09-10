@@ -17,7 +17,7 @@ MV/MZ、封闭引擎、RGSS、Essentials 等属于不同的运行时适配器。
   requested: "auto",
   preferred: "shadow",
   selected: "shadow",
-  candidates: [{ id: "shadow", label: "影子目录", mechanism: ["copy"], mechanismLabel: "运行副本", … }, …],
+  candidates: [{ id: "shadow", label: "影子目录", userGoal: "不动原目录", mechanism: ["copy"], mechanismLabel: "运行副本", … }, …],
   fallback: ["extension", "dll"],
   blocked: [],
   readiness: {
@@ -73,6 +73,23 @@ MV/MZ、封闭引擎、RGSS、Essentials 等属于不同的运行时适配器。
 | `nb-shell` | 拒绝 | — | 无 | 壳会检测启动参数和 DLL |
 
 附加侧的策略字符串（`nw-inject`、`nw-launch-inject-file`、`rgss-inject`、`sealed-relaunch`、`bundled-relaunch`…）不是启动路线，但也登记在同一份目录里，日志里出现的每个 strategy 都能查到中文名和机制。
+
+## 机制 × 路线矩阵
+
+路线按容器划分、机制是路线的属性；换一个方向看，一种机制可以被多条路线共用。下表按机制归组路线（数据来自 `core/launch-routes.mjs` 的 `mechanism` / `alsoUses`）：
+
+| 机制 | 作为主机制的路线 | 叠加使用的路线 |
+| --- | --- | --- |
+| 扩展加载 | extension、extension-cdp-seed | — |
+| 运行副本 | shadow、shadow-engine-publish | rgss-script、evb-unpack-rgss-script、tauri-cdp |
+| DLL 附加 | dll | — |
+| CDP 注入 | tauri-cdp | extension-cdp-seed |
+| 脚本补丁 | rgss-script | evb-unpack-rgss-script、shadow-engine-publish |
+| 解包 | evb-unpack-rgss-script | — |
+
+运行副本是覆盖最广的机制（5 条路线）；DLL 附加只有一条路线，但它是所有拒绝启动参数的壳（grover-boot、nb-evalnwbin、enigma-nb）的唯一活路。
+
+GUI 的路线呈现也只有目录这一个来源：主标签取目录里的 `userGoal`（面向用户目标的短句），提示取 `mechanismLabel` 与 `reason`，GUI 不保留自己的标签表。用户在下拉中做的路线选择只保存在内存（每次会话有效），不落盘——若未来要"记住选择"，需要新增存储并定义其格式。
 
 ## 失败和缓存
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { LaunchPlanError, LAUNCH_ROUTES, planLaunch } from "../core/launch-plan.mjs";
+import { LaunchPlanError, planLaunch } from "../core/launch-plan.mjs";
 import { ROUTES, ATTACH_ROUTES, routeLabel, routeMechanismText, preflightOf } from "../core/launch-routes.mjs";
 
 const exe = "C:/games/Test/Game.exe";
@@ -25,8 +25,8 @@ function ids(plan) {
 {
   const plan = planLaunch(nw({ manifest: { bgScript: "loading" } }));
   assert.equal(plan.family, "standard-nwjs");
-  assert.equal(plan.preferred, LAUNCH_ROUTES.SHADOW);
-  assert.equal(plan.selected, LAUNCH_ROUTES.SHADOW);
+  assert.equal(plan.preferred, "shadow");
+  assert.equal(plan.selected, "shadow");
   assert.deepEqual(ids(plan), ["shadow", "extension", "dll"]);
   assert.equal(plan.blocked.some((entry) => entry.id === "shadow"), false);
   assert.deepEqual(plan.fallback, ["extension", "dll"]);
@@ -35,7 +35,7 @@ function ids(plan) {
 // A no-bg-script game cannot be forced through the ordinary shadow patch.
 {
   const plan = planLaunch(nw());
-  assert.equal(plan.preferred, LAUNCH_ROUTES.EXTENSION);
+  assert.equal(plan.preferred, "extension");
   assert.deepEqual(ids(plan), ["extension", "dll"]);
   assert.equal(plan.blocked.find((entry) => entry.id === "shadow").reason.includes("bg-script"), true);
   assert.equal(planLaunch(nw(), { strategy: "dll" }).selected, "dll");
@@ -79,10 +79,10 @@ assert.equal(planLaunch({ engine: { id: "RGSS1" }, container: "rgss" }).selected
 assert.equal(planLaunch({ engine: { id: "RM2K" } }).selected, null);
 assert.equal(planLaunch(nw({ container: "nb-shell" })).selected, null);
 
-// Aliases are accepted for scripts and the missing executable remains a clear
-// preflight diagnostic rather than changing the chosen delivery route.
+// A missing executable stays a clear preflight diagnostic rather than changing
+// the chosen delivery route.
 {
-  const plan = planLaunch(nw({ paths: {} }), { strategy: "inject" });
+  const plan = planLaunch(nw({ paths: {} }), { strategy: "dll" });
   assert.equal(plan.selected, "dll");
   assert.equal(plan.blocked.some((entry) => entry.id === "preflight"), true);
 }
@@ -101,6 +101,13 @@ for (const id of [...Object.keys(ROUTES), ...Object.keys(ATTACH_ROUTES)]) {
   assert.ok(routeMechanismText(id).length > 0, `route ${id} must declare a mechanism`);
 }
 
+// Launch routes share the operation axis with attach strategies, and each one
+// carries the user-goal phrase the GUI shows instead of keeping its own labels.
+for (const route of Object.values(ROUTES)) {
+  assert.equal(route.operation, "launch", `route ${route.id} must declare operation "launch"`);
+  assert.ok(route.userGoal, `route ${route.id} must carry a userGoal`);
+}
+
 // 运行副本 is a mechanism, not a route a user picks: the copy-based routes say
 // so instead of each inventing its own name for the same trick.
 assert.deepEqual(ROUTES["rgss-script"].alsoUses, ["copy"]);
@@ -108,11 +115,13 @@ assert.deepEqual(ROUTES["evb-unpack-rgss-script"].alsoUses, ["copy", "script"]);
 assert.equal(ROUTES.shadow.mechanism, "copy");
 assert.match(routeMechanismText("evb-unpack-rgss-script"), /解包/);
 
-// Candidates carry their label and mechanism so the GUI needs no second map.
+// Candidates carry their label, userGoal and mechanism so the GUI needs no
+// second map.
 {
   const plan = planLaunch(nw({ manifest: { bgScript: "loading" } }));
   const shadow = plan.candidates.find((entry) => entry.id === "shadow");
   assert.equal(shadow.label, "影子目录");
+  assert.equal(shadow.userGoal, "不动原目录");
   assert.equal(shadow.mechanismLabel, "运行副本");
   assert.equal(plan.selectedLabel, "影子目录");
 }
