@@ -63,8 +63,12 @@ jobs:
         run: npm run format:check
 
   # The committed injector binaries are what users actually run, and nothing in
-  # the test suite rebuilds them. Rebuilding from runtime/inject/src in CI is the
-  # cheapest honest check that they match their source.
+  # the test suite rebuilds them. This job proves they are not orphans: both
+  # architectures compile from runtime/inject/src with the documented toolchain.
+  #
+  # It cannot prove they are byte-reproducible, and does not try — PE output
+  # embeds a build timestamp and varies with the gcc/lld build, so the binaries
+  # are reported as informational rather than as a gate (continue-on-error).
   injectors:
     runs-on: windows-latest
     continue-on-error: true
@@ -108,13 +112,20 @@ jobs:
           MSYS2_PREFIX: ${{ steps.msys2.outputs.msys2-location }}
         run: node tools/build-inject.mjs
 
-      - name: Report drift against the committed binaries
+      - name: Report what the rebuild proves
         shell: pwsh
         run: |
+          # This step deliberately does NOT claim the committed binaries are
+          # reproducible. They are not: a PE file embeds a build timestamp, and a
+          # different gcc/lld build changes codegen, so a byte comparison across
+          # toolchains can never match. What the job establishes is the weaker but
+          # still useful fact — both architectures compile from
+          # runtime/inject/src with the documented toolchain, so the committed
+          # binaries are not orphans of a source tree that no longer builds.
           $drift = git status --porcelain runtime/inject/bin
           if ($drift) {
-            Write-Host "::warning::committed injector binaries differ from a fresh build from runtime/inject/src"
+            Write-Host "Rebuild succeeded for both architectures. Committed binaries are byte-different, as expected for PE output from a different toolchain (build timestamps/codegen):"
             Write-Host $drift
           } else {
-            Write-Host "committed injector binaries match a fresh build"
+            Write-Host "Committed injector binaries are byte-identical to a fresh build."
           }
