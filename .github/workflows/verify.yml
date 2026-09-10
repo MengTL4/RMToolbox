@@ -94,7 +94,20 @@ jobs:
       - run: npm ci
 
       - name: Rebuild the injectors from source
-        shell: pwsh
+        # MSYS2 for the toolchain, inherited Windows PATH for node.
+        #
+        # These two requirements pull in opposite directions and each failure
+        # mode is distinct, both observed on this workflow:
+        #   - `shell: pwsh` cannot see the msys2-installed i686 toolchain (only
+        #     the runner's preinstalled C:\mingw64 is on PATH), so the build dies
+        #     with "win32: toolchain NOT found".
+        #   - `shell: msys2` cannot see node from setup-node, so it dies earlier
+        #     with exit 127 "node: command not found".
+        # MSYS2_PATH_TYPE=inherit hands the msys2 shell the Windows PATH, making
+        # both reachable.
+        shell: msys2 {0}
+        env:
+          MSYS2_PATH_TYPE: inherit
         run: node tools/build-inject.mjs
 
       - name: Report drift against the committed binaries
