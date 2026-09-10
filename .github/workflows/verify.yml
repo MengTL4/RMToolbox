@@ -71,13 +71,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Only install the toolchain here. The build itself runs under pwsh
-      # (below): `node` comes from setup-node on the Windows PATH, and MSYS2's
-      # shell does not inherit it, so running node inside `shell: msys2` fails
-      # with "node: command not found" (exit 127). tools/build-inject.mjs finds
-      # gcc/ld.lld through the common msys64 roots when they are not on PATH, so
-      # installing here and building from pwsh is the combination that works.
+      # Both halves of this job were learned from real failures:
+      #
+      # 1. build-inject.mjs probes the msys64 roots it knows (C:\msys64,
+      #    E:\Path\msys64) plus PATH. On a runner msys2 lives under D:\a\_temp, so
+      #    neither matches and the i686 toolchain looks "NOT found" even though it
+      #    is installed. The action knows its own location, so pass it through the
+      #    env var build-inject.mjs already honours instead of guessing paths.
+      # 2. `shell: pwsh` cannot see msys2's toolchain, and `shell: msys2` cannot
+      #    see node from setup-node. MSYS2_PATH_TYPE=inherit gives the msys2 shell
+      #    the Windows PATH, so one shell has both.
       - uses: msys2/setup-msys2@v2
+        id: msys2
         with:
           msystem: UCRT64
           update: true
@@ -94,20 +99,13 @@ jobs:
       - run: npm ci
 
       - name: Rebuild the injectors from source
-        # MSYS2 for the toolchain, inherited Windows PATH for node.
-        #
-        # These two requirements pull in opposite directions and each failure
-        # mode is distinct, both observed on this workflow:
-        #   - `shell: pwsh` cannot see the msys2-installed i686 toolchain (only
-        #     the runner's preinstalled C:\mingw64 is on PATH), so the build dies
-        #     with "win32: toolchain NOT found".
-        #   - `shell: msys2` cannot see node from setup-node, so it dies earlier
-        #     with exit 127 "node: command not found".
-        # MSYS2_PATH_TYPE=inherit hands the msys2 shell the Windows PATH, making
-        # both reachable.
         shell: msys2 {0}
         env:
           MSYS2_PATH_TYPE: inherit
+          # The action's own location. build-inject.mjs honours MSYS2_PREFIX
+          # first, so the i686 toolchain is found without relying on the
+          # hardcoded msys64 roots it would otherwise probe.
+          MSYS2_PREFIX: ${{ steps.msys2.outputs.msys2-location }}
         run: node tools/build-inject.mjs
 
       - name: Report drift against the committed binaries
