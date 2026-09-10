@@ -14,9 +14,9 @@ jobs:
   verify:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -69,8 +69,14 @@ jobs:
     runs-on: windows-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
+      # Only install the toolchain here. The build itself runs under pwsh
+      # (below): `node` comes from setup-node on the Windows PATH, and MSYS2's
+      # shell does not inherit it, so running node inside `shell: msys2` fails
+      # with "node: command not found" (exit 127). tools/build-inject.mjs finds
+      # gcc/ld.lld through the common msys64 roots when they are not on PATH, so
+      # installing here and building from pwsh is the combination that works.
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -80,7 +86,7 @@ jobs:
             mingw-w64-i686-gcc
             mingw-w64-ucrt-x86_64-lld
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -88,7 +94,7 @@ jobs:
       - run: npm ci
 
       - name: Rebuild the injectors from source
-        shell: msys2 {0}
+        shell: pwsh
         run: node tools/build-inject.mjs
 
       - name: Report drift against the committed binaries
