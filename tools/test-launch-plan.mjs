@@ -27,63 +27,70 @@ function ids(plan) {
 }
 
 // A normal bg-script game has both possible delivery planes. Shadow is the
-// safe default, while native DLL remains an explicit fallback/override.
+// safe default and the extension route remains as the fallback.
 {
   const plan = planLaunch(nw({ manifest: { bgScript: "loading" } }));
   assert.equal(plan.family, "standard-nwjs");
   assert.equal(plan.preferred, "shadow");
   assert.equal(plan.selected, "shadow");
-  assert.deepEqual(ids(plan), ["shadow", "extension", "dll"]);
+  assert.deepEqual(ids(plan), ["shadow", "extension"]);
   assert.equal(
     plan.blocked.some((entry) => entry.id === "shadow"),
     false
   );
-  assert.deepEqual(plan.fallback, ["extension", "dll"]);
+  assert.deepEqual(plan.fallback, ["extension"]);
 }
 
 // A no-bg-script game cannot be forced through the ordinary shadow patch.
 {
   const plan = planLaunch(nw());
   assert.equal(plan.preferred, "extension");
-  assert.deepEqual(ids(plan), ["extension", "dll"]);
+  assert.deepEqual(ids(plan), ["extension"]);
   assert.equal(
     plan.blocked
       .find((entry) => entry.id === "shadow")
       .reason.includes("bg-script"),
     true
   );
-  assert.equal(planLaunch(nw(), { strategy: "dll" }).selected, "dll");
 }
 
-// Grover keeps the explicit shadow route but defaults to plain launch + DLL.
+// The dll 兜底 route is retired: no family launches bare anymore, so an
+// explicit dll request is refused by every plan, loudly.
+{
+  const retired = planLaunch(nw(), { strategy: "dll" });
+  assert.equal(retired.selected, null);
+  assert.match(retired.error, /dll/);
+}
+
+// Grover keeps the shadow route as its only launch route.
 {
   const scan = nw({
     manifest: { bgScript: "loading" },
     protection: { flags: ["grover-boot"] }
   });
   const auto = planLaunch(scan);
-  assert.equal(auto.preferred, "dll");
-  assert.deepEqual(ids(auto), ["dll", "shadow"]);
+  assert.equal(auto.preferred, "shadow");
+  assert.deepEqual(ids(auto), ["shadow"]);
   assert.equal(planLaunch(scan, { strategy: "shadow" }).selected, "shadow");
   const extension = planLaunch(scan, { strategy: "extension" });
-  assert.equal(extension.selected, "dll");
-  assert.match(extension.override, /保护壳拒绝/);
+  assert.equal(extension.selected, null);
+  assert.match(extension.error, /extension/);
 }
 
-// NB shells expose only their safe native route; no flag-bearing route is
-// silently attempted.
+// NB shells refuse every launch flag: no launch route exists at all — the
+// plan tells the user to start the game and attach instead of naming a route.
 for (const container of ["nb-evalnwbin", "enigma-nb"]) {
   const plan = planLaunch(nw({ container }));
-  assert.equal(plan.selected, "dll");
-  assert.deepEqual(ids(plan), ["dll"]);
+  assert.equal(plan.selected, null);
+  assert.deepEqual(ids(plan), []);
+  assert.match(plan.error, /附加到运行中/);
   assert.equal(
     plan.blocked.some((entry) => entry.id === "shadow"),
     true
   );
-  assert.equal(
-    planLaunch(nw({ container }), { strategy: "shadow" }).selected,
-    "dll"
-  );
+  const requested = planLaunch(nw({ container }), { strategy: "shadow" });
+  assert.equal(requested.selected, null);
+  assert.match(requested.error, /附加到运行中/);
 }
 
 // Dedicated containers never fall through to a generic MV/MZ route.
@@ -108,8 +115,8 @@ assert.equal(planLaunch(nw({ container: "nb-shell" })).selected, null);
 // A missing executable stays a clear preflight diagnostic rather than changing
 // the chosen delivery route.
 {
-  const plan = planLaunch(nw({ paths: {} }), { strategy: "dll" });
-  assert.equal(plan.selected, "dll");
+  const plan = planLaunch(nw({ paths: {} }), { strategy: "extension" });
+  assert.equal(plan.selected, "extension");
   assert.equal(
     plan.blocked.some((entry) => entry.id === "preflight"),
     true
@@ -148,19 +155,21 @@ for (const route of Object.values(ROUTES)) {
   );
   assert.ok(route.userGoal, `route ${route.id} must carry a userGoal`);
   // The primary action button is labelled with what the route actually DOES,
-  // because "启动并注入" alone hides the difference that matters: the dll route
-  // starts the game bare (no launch flags) and hooks it afterwards, which is
-  // the only thing a blacklist shell accepts. A route without its own wording
-  // would fall back to the generic label and re-hide that.
+  // because "启动并注入" alone hides the difference that matters (a rebuilt
+  // copy, an unpack first, ...). A route without its own wording would fall
+  // back to the generic label and re-hide that.
   assert.ok(
     route.actionLabel,
     `route ${route.id} must carry an actionLabel for the launch button`
   );
 }
 
-// The dll route is the one whose action is least guessable from its name, so
-// pin the wording that says the game starts bare.
-assert.match(ROUTES.dll.actionLabel, /裸启动|不带任何启动参数/);
+// The retired dll 兜底 must not creep back in as a launch route: the shells it
+// served are attach-only now.
+assert.equal(ROUTES.dll, undefined);
+assert.equal(ATTACH_ROUTES["nw-launch-inject"], undefined);
+assert.equal(ATTACH_ROUTES["nw-launch-inject-file"], undefined);
+assert.equal(ATTACH_ROUTES["nw-launch-oep"], undefined);
 
 // 运行副本 is a mechanism, not a route a user picks: the copy-based routes say
 // so instead of each inventing its own name for the same trick.
@@ -181,9 +190,9 @@ assert.match(routeMechanismText("evb-unpack-rgss-script"), /解包/);
   assert.equal(plan.selectedLabel, "影子目录");
 }
 
-// The nb-evalnwbin family has exactly one route and it is dll: whatever else
-// happens, the plan handed to the GUI must carry the bare-launch wording that
-// stops the button from reading as "the toolbox will relaunch the game its way".
+// The nb-evalnwbin family has no launch route at all: the plan handed to the
+// GUI must say so and point at 附加到运行中, so the card can drop the launch
+// button and show the manual-start guidance instead.
 {
   const plan = planLaunch({
     root: "C:/games/_V1.2.2_B电脑端",
@@ -192,9 +201,10 @@ assert.match(routeMechanismText("evb-unpack-rgss-script"), /解包/);
     paths: { exe: "C:/games/_V1.2.2_B电脑端/万族穿越-源启崛起.exe" },
     protection: { level: 2, flags: [] }
   });
-  assert.equal(plan.selected, "dll");
-  assert.equal(plan.candidates.length, 1);
-  assert.match(plan.candidates[0].actionLabel, /裸启动/);
+  assert.equal(plan.selected, null);
+  assert.equal(plan.candidates.length, 0);
+  assert.match(plan.error, /自行双击启动游戏/);
+  assert.match(plan.error, /附加到运行中/);
   assert.equal(plan.fallback.length, 0);
 }
 

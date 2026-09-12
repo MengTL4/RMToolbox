@@ -4,8 +4,8 @@
 
 “启动并注入”先解决递送方式，再解决运行时适配。这里有两层，不要混用：
 
-- **启动路线**：某个游戏壳对应的一套固定做法（扩展启动、影子目录、DLL 附加、Tauri/CDP、EVB 解包 + RGSS 脚本……）。
-- **投递机制**：路线把桥接送进运行时所用的手段（扩展加载、运行副本、DLL 附加、CDP 注入、脚本补丁、解包）。一条路线用一种主机制，可叠加其他机制；一种机制可以被多条路线共用——运行副本就是影子目录、RGSS、Tauri、合体引擎四条路线共用的机制。
+- **启动路线**：某个游戏壳对应的一套固定做法（扩展启动、影子目录、RGSS 脚本注入、Tauri/CDP、EVB 解包 + RGSS 脚本……）。拒绝一切启动参数的壳没有启动路线——它们只能由用户自行启动后附加（见 `docs/adr/0003-retire-dll-launch-route.md`）。
+- **投递机制**：路线把桥接送进运行时所用的手段（扩展加载、运行副本、DLL 附加、CDP 注入、脚本补丁、解包）。一条路线用一种主机制，可叠加其他机制；一种机制可以被多条路线共用——运行副本就是影子目录、RGSS、Tauri、合体引擎四条路线共用的机制。DLL 附加不再是启动路线的机制，只服务于附加策略。
 
 MV/MZ、封闭引擎、RGSS、Essentials 等属于不同的运行时适配器。不能因为 DLL 返回成功就把游戏标记为已适配，也不能因为一个场景停在对话中就再次注入。
 
@@ -18,7 +18,7 @@ MV/MZ、封闭引擎、RGSS、Essentials 等属于不同的运行时适配器。
   preferred: "shadow",
   selected: "shadow",
   candidates: [{ id: "shadow", label: "影子目录", userGoal: "不动原目录", mechanism: ["copy"], mechanismLabel: "运行副本", … }, …],
-  fallback: ["extension", "dll"],
+  fallback: ["extension"],
   blocked: [],
   readiness: {
     required: ["process", "bridge-hello", "runtime-ready"],
@@ -27,7 +27,7 @@ MV/MZ、封闭引擎、RGSS、Essentials 等属于不同的运行时适配器。
 }
 ```
 
-`GameRuntime` 把计划映射到现有启动器：DLL 路线仍接收原来的窄参数，避免破坏 GUI、CLI 和附加逻辑；返回结果带有不可枚举的 `launchPlan` 和 `routeAttempts`，宿主可以显示或记录选择原因。
+`GameRuntime` 把计划映射到现有启动器；返回结果带有不可枚举的 `launchPlan` 和 `routeAttempts`，宿主可以显示或记录选择原因。
 
 计划里的 `fallback` 在这层被真正执行：首选路线在桥接 hello 之前失败时，自动尝试下一个候选（最多两条），尝试过程写进 `routeAttempts` 和日志。静态就能否决的候选（`preflightOf`：缺 bg-script、入口 EXE 不确定）跳过而不是硬试；操作系统直接拒绝执行文件（ENOENT / EACCES / EPERM / ENOEXEC）不重试——那是游戏坏了，不是路线错了。用户显式选定的路线永远原样交给启动器，由启动器给出精确诊断。
 
@@ -36,9 +36,9 @@ MV/MZ、封闭引擎、RGSS、Essentials 等属于不同的运行时适配器。
 1. 先按容器和引擎排除专用路线：`nb-shell`、EVB、RGSS、Tauri、sealed、bundled、RM2K。
 2. 对普通 NW.js 检查 `bg-script` 和保护标记。
 3. `bg-script` 存在时把影子目录加入候选；没有时影子目录进入阻断原因。
-4. 普通 NW.js 同时保留扩展和 DLL 候选，实际健康状态必须由启动后的桥接握手确认。
-5. `grover-boot` 首选裸启动后 DLL；影子目录只作为显式备用路线。
-6. `nb-evalnwbin` 和 Enigma-NB 只允许裸启动后 DLL，分别使用文件通道和 WebSocket。
+4. 普通 NW.js 同时保留扩展候选作为回退，实际健康状态必须由启动后的桥接握手确认。
+5. `grover-boot` 只保留影子目录一条启动路线。
+6. `nb-evalnwbin` 和 Enigma-NB 没有启动路线：计划不产候选，直接指引用户自行启动后点「附加到运行中」（附加时分别使用文件通道和 WebSocket）。
 7. `nb-shell` 直接拒绝，不进行“再试一条注入路线”的危险重试。
 
 ## 路线健康标准
@@ -58,21 +58,21 @@ MV/MZ、封闭引擎、RGSS、Essentials 等属于不同的运行时适配器。
 
 ## 当前路线矩阵（机制一列来自 `core/launch-routes.mjs`）
 
-| 扫描特征                  | 首选                     | 机制                       | 允许的备用                    | 说明                                  |
-| ------------------------- | ------------------------ | -------------------------- | ----------------------------- | ------------------------------------- |
-| 普通 NW.js + `bg-script`  | `shadow`                 | 运行副本                   | `extension`, `dll`            | 影子目录补丁启动链，原目录不改        |
-| 普通 NW.js 无 `bg-script` | `extension`              | 扩展加载                   | `dll`                         | 没有影子补丁入口                      |
-| `grover-boot`             | `dll`                    | DLL 附加                   | `shadow`（有 `bg-script` 时） | 裸启动后等待保护检查，再投递 DLL      |
-| `nb-evalnwbin`            | `dll`                    | DLL 附加                   | 无                            | 启动参数和页内 WebSocket 会使游戏退出 |
-| `enigma-nb`               | `dll`                    | DLL 附加                   | 无                            | 启动参数会使 Enigma 盒退出            |
-| RGSS / Essentials         | `rgss-script`            | 脚本补丁 + 运行副本        | 专用 RGSS attach              | 不套 MV/MZ 桥                         |
-| EVB 单文件壳              | `evb-unpack-rgss-script` | 解包 + 脚本补丁 + 运行副本 | 无                            | 先展开虚拟文件系统                    |
-| Tauri / WebView2          | `tauri-cdp`              | CDP 注入 + 运行副本        | 无                            | 需要打过补丁的可执行副本              |
-| sealed MZ                 | `extension-cdp-seed`     | 扩展加载 + CDP 注入        | 无                            | CDP 堆扫描发布引擎对象                |
-| 合体引擎                  | `shadow-engine-publish`  | 运行副本 + 脚本补丁        | 无                            | 只能在闭包内发布运行时对象            |
-| `nb-shell`                | 拒绝                     | —                          | 无                            | 壳会检测启动参数和 DLL                |
+| 扫描特征                  | 首选                     | 机制                       | 允许的备用       | 说明                                                      |
+| ------------------------- | ------------------------ | -------------------------- | ---------------- | --------------------------------------------------------- |
+| 普通 NW.js + `bg-script`  | `shadow`                 | 运行副本                   | `extension`      | 影子目录补丁启动链，原目录不改                            |
+| 普通 NW.js 无 `bg-script` | `extension`              | 扩展加载                   | 无               | 没有影子补丁入口                                          |
+| `grover-boot`             | `shadow`                 | 运行副本                   | 无               | 仅当有可补丁的 `bg-script`；否则只能附加                  |
+| `nb-evalnwbin`            | 无（仅附加）             | DLL 附加（附加时）         | —                | 启动参数和页内 WebSocket 会使游戏退出；用户自行启动后附加 |
+| `enigma-nb`               | 无（仅附加）             | DLL 附加（附加时）         | —                | 启动参数会使 Enigma 盒退出；用户自行启动后附加            |
+| RGSS / Essentials         | `rgss-script`            | 脚本补丁 + 运行副本        | 专用 RGSS attach | 不套 MV/MZ 桥                                             |
+| EVB 单文件壳              | `evb-unpack-rgss-script` | 解包 + 脚本补丁 + 运行副本 | 无               | 先展开虚拟文件系统                                        |
+| Tauri / WebView2          | `tauri-cdp`              | CDP 注入 + 运行副本        | 无               | 需要打过补丁的可执行副本                                  |
+| sealed MZ                 | `extension-cdp-seed`     | 扩展加载 + CDP 注入        | 无               | CDP 堆扫描发布引擎对象                                    |
+| 合体引擎                  | `shadow-engine-publish`  | 运行副本 + 脚本补丁        | 无               | 只能在闭包内发布运行时对象                                |
+| `nb-shell`                | 拒绝                     | —                          | 无               | 壳会检测启动参数和 DLL                                    |
 
-附加侧的策略字符串（`nw-inject`、`nw-launch-inject-file`、`rgss-inject`、`sealed-relaunch`、`bundled-relaunch`…）不是启动路线，但也登记在同一份目录里，日志里出现的每个 strategy 都能查到中文名和机制。
+附加侧的策略字符串（`nw-inject`、`nw-inject-file`、`rgss-inject`、`sealed-relaunch`、`bundled-relaunch`…）不是启动路线，但也登记在同一份目录里，日志里出现的每个 strategy 都能查到中文名和机制。
 
 ## 机制 × 路线矩阵
 
@@ -82,14 +82,14 @@ MV/MZ、封闭引擎、RGSS、Essentials 等属于不同的运行时适配器。
 | -------- | ----------------------------- | ---------------------------------------------- |
 | 扩展加载 | extension、extension-cdp-seed | —                                              |
 | 运行副本 | shadow、shadow-engine-publish | rgss-script、evb-unpack-rgss-script、tauri-cdp |
-| DLL 附加 | dll                           | —                                              |
+| DLL 附加 | —（仅附加策略使用）           | —                                              |
 | CDP 注入 | tauri-cdp                     | extension-cdp-seed                             |
 | 脚本补丁 | rgss-script                   | evb-unpack-rgss-script、shadow-engine-publish  |
 | 解包     | evb-unpack-rgss-script        | —                                              |
 
-运行副本是覆盖最广的机制（5 条路线）；DLL 附加只有一条路线，但它是所有拒绝启动参数的壳（grover-boot、nb-evalnwbin、enigma-nb）的唯一活路。
+运行副本是覆盖最广的机制（5 条路线）。DLL 附加没有启动路线：拒绝启动参数的壳（nb-evalnwbin、enigma-nb，以及没有可补丁 bg-script 的 grover-boot）只能由用户自行启动游戏，再通过附加策略（`nw-inject` / `nw-inject-file`）接入。
 
-GUI 的路线呈现也只有目录这一个来源：主标签取目录里的 `userGoal`（面向用户目标的短句），提示取 `mechanismLabel` 与 `reason`，GUI 不保留自己的标签表。用户在下拉中做的路线选择只保存在内存（每次会话有效），不落盘——若未来要"记住选择"，需要新增存储并定义其格式。
+GUI 的路线呈现也只有目录这一个来源：主标签取目录里的 `userGoal`（面向用户目标的短句），提示取 `mechanismLabel` 与 `reason`，GUI 不保留自己的标签表。用户在卡片上手动选择的路线会按游戏记住（策略覆盖记录），恢复自动即清除。
 
 ## 失败和缓存
 

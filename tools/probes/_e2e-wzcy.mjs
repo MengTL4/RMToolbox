@@ -1,13 +1,14 @@
 // End-to-end real-machine verification for the nb-evalnwbin sealed game
-// (万族穿越-源启崛起 V1.2.2_B). Drives the exact GUI launch path
-// (launchNwInjectGame) and asserts: game survives, boot db capture lands,
-// catalog-cache.json is written, and the data-page commands answer with real
-// content over the file channel. Exits 1 on any failed check.
+// (万族穿越-源启崛起 V1.2.2_B). Drives the exact GUI attach path (attachGame —
+// the dll launch route is retired, so the game must ALREADY be running: start
+// it by double-clicking its own exe first) and asserts: the game survives the
+// attach and the data-page commands answer with real content over the file
+// channel. Exits 1 on any failed check.
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { scanGame } from "../../core/scanner.mjs";
-import { launchNwInjectGame } from "../../core/attach.mjs";
+import { attachGame } from "../../core/attach.mjs";
 
 const projectRoot = "E:\\project\\RMToolbox";
 const gameRoot = "D:\\Downloads\\RPG\\_V1.2.2_B电脑端";
@@ -60,13 +61,18 @@ elog(
 if (scan.container !== "nb-evalnwbin")
   throw new Error("unexpected container: " + scan.container);
 
-const summary = await launchNwInjectGame({ scan, projectRoot, port: 47412 });
+const summary = await attachGame({ gameRoot, projectRoot, port: 47412 });
 elog(
-  "launch returned",
+  "attach returned",
   `strategy=${summary.strategy} pid=${summary.pid} injected=${(summary.injected || []).join("/")}`
 );
 
-check("catalog-cache exists", existsSync(cachePath));
+// The catalog cache is a live-capture product now (no boot-time tap on
+// attach), so it may legitimately not exist yet — report, don't assert.
+elog(
+  "catalog-cache state",
+  existsSync(cachePath) ? "present" : "absent (expected right after attach)"
+);
 if (existsSync(cachePath)) {
   const cache = JSON.parse(readFileSync(cachePath, "utf8"));
   const kinds = Object.keys(cache.tables || {});

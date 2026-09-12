@@ -28,7 +28,7 @@ process.on("exit", () => {
 
 const plan = {
   selected: "shadow",
-  candidates: [{ id: "shadow" }, { id: "extension" }, { id: "dll" }]
+  candidates: [{ id: "shadow" }, { id: "extension" }]
 };
 
 // Default: nothing persisted, nothing loaded.
@@ -36,8 +36,8 @@ assert.equal(loadStrategyOverride(scratch, "测试游戏"), null);
 assert.deepEqual(listStrategyOverrides(scratch), {});
 
 // Manual override persists as only the diff field.
-const record = saveStrategyOverride(scratch, "测试游戏", "dll");
-assert.equal(record.route, "dll");
+const record = saveStrategyOverride(scratch, "测试游戏", "extension");
+assert.equal(record.route, "extension");
 assert.equal(record.version, 1);
 assert.ok(existsSync(path.join(scratch, "runtime", "strategy-overrides")));
 // Keys with filesystem-hostile characters land in a sanitised file name.
@@ -49,16 +49,16 @@ assert.ok(
 
 // A "fresh boot" reads it back.
 const loaded = loadStrategyOverride(scratch, "测试游戏");
-assert.equal(loaded.route, "dll");
+assert.equal(loaded.route, "extension");
 assert.ok(loaded.savedAt);
-assert.deepEqual(listStrategyOverrides(scratch), { 测试游戏: "dll" });
+assert.deepEqual(listStrategyOverrides(scratch), { 测试游戏: "extension" });
 
 // The override resolves while the plan still offers the route…
-assert.equal(resolveRouteOverride(plan, loaded.route), "dll");
+assert.equal(resolveRouteOverride(plan, loaded.route), "extension");
 // …and is ignored once the game no longer offers it (e.g. after an update).
 assert.equal(
   resolveRouteOverride(
-    { selected: "extension", candidates: [{ id: "extension" }] },
+    { selected: "shadow", candidates: [{ id: "shadow" }] },
     loaded.route
   ),
   null
@@ -79,7 +79,7 @@ assert.equal(clearStrategyOverride(scratch, "测试游戏").cleared, false);
 
 // Corrupt or malformed records are tolerated: load returns null, and the next
 // save replaces the evidence.
-saveStrategyOverride(scratch, "坏档", "dll");
+saveStrategyOverride(scratch, "坏档", "extension");
 const badFile = path.join(
   scratch,
   "runtime",
@@ -90,7 +90,11 @@ writeFileSync(badFile, "{not json", "utf8");
 assert.equal(loadStrategyOverride(scratch, "坏档"), null);
 writeFileSync(badFile, JSON.stringify({ version: 1, route: "" }), "utf8");
 assert.equal(loadStrategyOverride(scratch, "坏档"), null);
-writeFileSync(badFile, JSON.stringify({ version: 99, route: "dll" }), "utf8");
+writeFileSync(
+  badFile,
+  JSON.stringify({ version: 99, route: "extension" }),
+  "utf8"
+);
 assert.equal(loadStrategyOverride(scratch, "坏档"), null);
 assert.deepEqual(listStrategyOverrides(scratch), {});
 

@@ -11,14 +11,11 @@ import path from "node:path";
 import net from "node:net";
 import { GameRuntime, gameRuntime } from "../core/game-runtime.mjs";
 import { scanGame } from "../core/scanner.mjs";
-import { planLaunch } from "../core/launch-plan.mjs";
+import { LaunchPlanError, planLaunch } from "../core/launch-plan.mjs";
 
 // GUI and CLI use this same interface. Real platform execution is replaced,
 // so selecting a fatal extension route is caught without launching a game.
 const fixtures = [
-  ["nb-evalnwbin", [], "inject"],
-  ["enigma-nb", [], "inject"],
-  ["nwjs", ["grover-boot"], "inject"],
   ["nwjs", [], "normal"],
   ["tauri", [], "normal"],
   ["nwjs-sealed", [], "normal"],
@@ -44,15 +41,6 @@ for (const [container, flags, expected] of fixtures) {
         assert.strictEqual(received, options);
         return summary;
       },
-      launchInject: async (received) => {
-        assert.equal(expected, "inject");
-        assert.deepEqual(received, {
-          scan,
-          projectRoot: options.projectRoot,
-          port: options.port
-        });
-        return summary;
-      },
       attach: async (received) => {
         assert.strictEqual(received, options);
         return { ...summary, strategy: "attached" };
@@ -61,6 +49,46 @@ for (const [container, flags, expected] of fixtures) {
     assert.strictEqual(await runtime.launch(options), summary);
     assert.equal((await runtime.attach(options)).strategy, "attached");
   }
+}
+
+// The flag-refusing shells have no launch route at all: launch() refuses at
+// the plan stage, before any process effect, and the refusal points at attach.
+// Attach stays available for the game the user started themselves.
+for (const container of ["nb-evalnwbin", "enigma-nb"]) {
+  const scan = { container, protection: { flags: [] } };
+  const options = { gameRoot: "game", projectRoot: "toolbox", port: 47500 };
+  const runtime = new GameRuntime({
+    scan: () => scan,
+    launch: async () => {
+      throw Error("an attach-only game must never reach the launcher");
+    },
+    attach: async (received) => {
+      assert.strictEqual(received, options);
+      return { strategy: "nw-inject", pid: 42 };
+    }
+  });
+  await assert.rejects(runtime.launch(options), LaunchPlanError);
+  await assert.rejects(runtime.launch(options), /附加到运行中/);
+  assert.equal((await runtime.attach(options)).strategy, "nw-inject");
+}
+
+// Grover's only launch route is shadow: asking for another route by name is
+// refused with the available routes listed.
+{
+  const runtime = new GameRuntime({
+    scan: () => ({ container: "nwjs", protection: { flags: ["grover-boot"] } }),
+    launch: async () => {
+      throw Error("a refused route must never reach the launcher");
+    }
+  });
+  await assert.rejects(
+    runtime.launch({
+      gameRoot: "game",
+      projectRoot: "toolbox",
+      strategy: "extension"
+    }),
+    /不适用于此游戏；可用路线：shadow/
+  );
 }
 
 const shadowOptions = {
@@ -73,14 +101,13 @@ const shadowRuntime = new GameRuntime({
   launch: async (options) => {
     assert.strictEqual(options, shadowOptions);
     return "shadow";
-  },
-  launchInject: async () => {
-    throw Error("explicit shadow choice was discarded");
   }
 });
 assert.equal(await shadowRuntime.launch(shadowOptions), "shadow");
 
-const dllSummary = { strategy: "dll", pid: 43 };
+// The retired dll route is refused at the plan stage even when asked for by
+// name (a stale remembered route is reclaimed as 自动 before this — the plan
+// refusal is the CLI-facing backstop).
 const dllRuntime = new GameRuntime({
   scan: () => ({
     container: "nwjs",
@@ -89,27 +116,22 @@ const dllRuntime = new GameRuntime({
     protection: { flags: [] }
   }),
   launch: async () => {
-    throw Error("explicit dll route used normal launcher");
-  },
-  launchInject: async (received) => {
-    assert.deepEqual(received, {
-      scan: dllRuntime.scan("game"),
-      projectRoot: "toolbox",
-      port: 47501
-    });
-    return dllSummary;
+    throw Error("the retired dll route reached the launcher");
   }
 });
-assert.strictEqual(
-  await dllRuntime.launch({
+await assert.rejects(
+  dllRuntime.launch({
     gameRoot: "game",
     projectRoot: "toolbox",
     port: 47501,
     strategy: "dll"
   }),
-  dllSummary
+  (error) => {
+    assert.ok(error instanceof LaunchPlanError);
+    assert.match(error.message, /dll/);
+    return true;
+  }
 );
-assert.equal(dllSummary.launchPlan.selected, "dll");
 
 // Refusal through the production interface must happen before any execution
 // or runtime output. This uses the real scanner and both real dispatchers.
@@ -139,7 +161,7 @@ try {
   );
   assert.equal(
     planLaunch(renamedScan).selected,
-    "dll",
+    "shadow",
     "Grover scan must plan the route GameRuntime dispatches"
   );
   writeFileSync(path.join(renamed, "AnotherGame.exe"), "other game");
@@ -224,9 +246,6 @@ try {
       // ("auto"); only the fallback attempt spells the route out.
       if (calls === 1) throw Error("shadow patch anchor missing");
       return { pid: 7 };
-    },
-    launchInject: async () => {
-      throw Error("renderer never appeared");
     }
   });
   const summary = await runtime.launch({

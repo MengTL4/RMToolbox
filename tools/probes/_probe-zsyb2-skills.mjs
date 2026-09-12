@@ -1,12 +1,13 @@
 // Probe: 再刷一把2：金色传说 — user reports the skill catalog stops at exactly
-// 2000 entries. Launches the game through the real inject path and asks the
-// bridge for the full skill catalog over the file channel, printing
+// 2000 entries. Attaches to the ALREADY-RUNNING game through the real inject
+// path (the dll launch route is retired — start the game yourself first) and
+// asks the bridge for the full skill catalog over the file channel, printing
 // total vs entries.length so a clamp is visible as entries.length < total.
 import { execSync, spawn } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { scanGame } from "../../core/scanner.mjs";
-import { launchNwInjectGame } from "../../core/attach.mjs";
+import { attachGame } from "../../core/attach.mjs";
 
 const projectRoot = "E:\\project\\RMToolbox";
 const gameRoot = "F:\\SteamLibrary\\steamapps\\common\\再刷一把2：金色传说";
@@ -31,9 +32,9 @@ elog(
   `scan: engine=${scan.engine && scan.engine.id} container=${scan.container || "(none)"} key=${scan.gameKey}`
 );
 
-const summary = await launchNwInjectGame({ scan, projectRoot, port: 47413 });
+const summary = await attachGame({ gameRoot, projectRoot, port: 47413 });
 elog(
-  `launch: strategy=${summary.strategy} pid=${summary.pid} injected=${(summary.injected || []).join("/")}`
+  `attach: strategy=${summary.strategy} pid=${summary.pid} injected=${(summary.injected || []).join("/")}`
 );
 
 let cmdN = 0;

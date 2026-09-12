@@ -39,12 +39,11 @@ function routeHint(id, plan) {
 }
 
 // The label on the primary action button. The button says "启动并注入" for
-// every family, but what that MEANS differs by route — worst case, the dll
-// route deliberately starts the game bare with no launch flags because the
-// shell kills anything handed a flag. A user who reads "启动并注入" and expects
-// the toolbox to relaunch the game its own way reads the result as a freeze,
-// so the button names the route's actual action instead. "auto" resolves to the
-// plan's own selection, exactly as the host will resolve it.
+// every launchable family, but what that MEANS differs by route (a rebuilt
+// copy, an unpack first, ...), so the button names the route's actual action.
+// "auto" resolves to the plan's own selection, exactly as the host will
+// resolve it. Attach-only families (the flag-refusing shells) get no launch
+// button at all — see launchable().
 function routeAction(id, plan) {
   if (!plan) return "";
   var want = !id || id === "auto" ? plan.selected : id;
@@ -107,6 +106,20 @@ export default {
       return (
         game.container === "nwjs-sealed" || game.container === "nwjs-bundled"
       );
+    }
+    // 启动并注入 only exists when the plan has a launch route. Shell families
+    // that refuse every launch flag (nb-evalnwbin / enigma-nb) are attach-only
+    // by plan: the user starts the game themselves and 附加到运行中 is the way
+    // in, so the card's primary action becomes attach.
+    function launchable(game) {
+      var plan = routePlan(game);
+      if (!plan.selected) plan = readPlan(game.root) || plan;
+      return !!plan.selected;
+    }
+    function attachOnlyHint(game) {
+      var plan = routePlan(game);
+      if (!plan.selected) plan = readPlan(game.root) || plan;
+      return plan.error || "此游戏需要自行启动后附加";
     }
     function attach(game) {
       if (!takeover(game)) return store.attach(game);
@@ -239,6 +252,8 @@ export default {
       connectedCount: connectedCount,
       unavailable: unavailable,
       takeover: takeover,
+      launchable: launchable,
+      attachOnlyHint: attachOnlyHint,
       attach: attach,
       stop: stop,
       retry: retry,
@@ -423,6 +438,21 @@ export default {
               }}
             </n-tooltip>
             <n-tooltip
+              v-else-if="
+                !unavailable(game) &&
+                !routePlan(game).selected &&
+                routePlan(game).error
+              "
+              trigger="hover"
+            >
+              <template #trigger
+                ><n-tag size="small" :bordered="false" type="warning"
+                  >手动启动后附加</n-tag
+                ></template
+              >
+              {{ routePlan(game).error }}
+            </n-tooltip>
+            <n-tooltip
               v-if="!sessionFor(game.gameKey) && unavailable(game)"
               trigger="hover"
             >
@@ -434,7 +464,10 @@ export default {
               </template>
               {{ unavailable(game) }}
             </n-tooltip>
-            <n-tooltip v-else-if="!sessionFor(game.gameKey)" trigger="hover">
+            <n-tooltip
+              v-else-if="!sessionFor(game.gameKey) && launchable(game)"
+              trigger="hover"
+            >
               <template #trigger>
                 <n-button
                   type="primary"
@@ -456,6 +489,21 @@ export default {
               </template>
               {{ launchHint(game) || "由工具箱启动游戏并注入桥接" }}
             </n-tooltip>
+            <n-tooltip v-else-if="!sessionFor(game.gameKey)" trigger="hover">
+              <template #trigger>
+                <n-button
+                  type="primary"
+                  size="small"
+                  :loading="state.busy[game.gameKey] === 'attaching'"
+                  :disabled="!!state.busy[game.gameKey]"
+                  @click="attach(game)"
+                >
+                  <template #icon><rm-icon name="zap" :size="15" /></template
+                  >{{ state.busy[game.gameKey] ? "连接中…" : "附加到运行中" }}
+                </n-button>
+              </template>
+              {{ attachOnlyHint(game) }}
+            </n-tooltip>
             <n-button
               v-else
               type="primary"
@@ -472,7 +520,8 @@ export default {
               v-if="
                 !sessionFor(game.gameKey) &&
                 !unavailable(game) &&
-                game.container !== 'tauri'
+                game.container !== 'tauri' &&
+                launchable(game)
               "
               size="small"
               secondary

@@ -181,8 +181,13 @@ async function main() {
     assert.ok(evalScan.paths.exe, "exe resolved via the single-exe fallback");
     assert.equal(
       planLaunch(evalScan).selected,
-      "dll",
-      "evalNWBin tolerates only the native route"
+      null,
+      "evalNWBin refuses every launch flag: no toolbox launch route exists"
+    );
+    assert.match(
+      planLaunch(evalScan).error,
+      /附加到运行中/,
+      "the plan points at manual start + attach"
     );
 
     // nbtool.node present → stays the Themida variant, never evalnwbin.

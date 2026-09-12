@@ -627,10 +627,10 @@ function claims(scan) {
   return !!(scan && (scan.manifest || (scan.paths && scan.paths.exe)));
 }
 
-// The family's route decision, verbatim from the old planner: the nb-shell
-// refusal, the sealed/bundled single-route plans, and the standard branch
-// (nb-evalnwbin / enigma-nb / grover / plain NW.js). Returns null when the
-// scan is not this family's.
+// The family's route decision: the nb-shell refusal, the sealed/bundled
+// single-route plans, the attach-only flag-refusing shells (nb-evalnwbin /
+// enigma-nb), and the launchable families (grover shadow, plain NW.js).
+// Returns null when the scan is not this family's.
 function plan(scan = {}, { requested = "auto" } = {}) {
   if (!claims(scan)) return null;
   const route = requested || "auto";
@@ -670,7 +670,6 @@ function plan(scan = {}, { requested = "auto" } = {}) {
       candidates: [special],
       blocked: [
         blocked("shadow", "该游戏使用专用容器路线，不能套用普通影子目录"),
-        blocked("dll", "该游戏使用专用容器路线，不能套用普通 MV/MZ DLL 路线"),
         blocked("extension", "该游戏使用专用容器路线，不能套用普通扩展启动")
       ],
       override:
@@ -680,38 +679,46 @@ function plan(scan = {}, { requested = "auto" } = {}) {
     });
   }
 
+  // Shells that refuse every launch flag have no launch route at all: the
+  // toolbox never starts the game itself. The user double-clicks the game and
+  // 「附加到运行中」delivers the DLL bridge to the running renderer (the
+  // nw-inject / nw-inject-file attach strategies in launch-routes.mjs).
+  if (container === "nb-evalnwbin" || container === "enigma-nb") {
+    return finishPlan({
+      version: 1,
+      family: container,
+      requested: route,
+      preferred: null,
+      selected: null,
+      candidates: [],
+      blocked: [
+        blocked("shadow", "该壳会因启动参数退出"),
+        blocked("extension", "该壳会因启动参数退出")
+      ],
+      override:
+        route !== "auto"
+          ? `请求的 ${route} 不适用于 ${container}：保护壳拒绝一切启动参数`
+          : null,
+      error:
+        "保护壳拒绝一切启动参数，工具箱不再代为启动 —— " +
+        "请自行双击启动游戏，进入游戏后点「附加到运行中」"
+    });
+  }
+
   const candidates = [];
   const blockedRoutes = [];
 
-  if (container === "nb-evalnwbin") {
-    candidates.push(
-      candidate("dll", "NB evalNWBin 拒绝启动参数，只接受裸启动后 DLL 注入")
-    );
-    blockedRoutes.push(
-      blocked("shadow", "该壳会因启动参数退出"),
-      blocked("extension", "该壳会因启动参数退出")
-    );
-  } else if (container === "enigma-nb") {
-    candidates.push(
-      candidate("dll", "Enigma-NB 对任何启动参数敏感，采用裸启动后 DLL 注入")
-    );
-    blockedRoutes.push(
-      blocked("shadow", "Enigma-NB 会因启动参数退出"),
-      blocked("extension", "Enigma-NB 会因启动参数退出")
-    );
-  } else if (grover) {
-    candidates.push(
-      candidate("dll", "Grover 启动链需要裸启动并等待保护检查结束后注入")
-    );
+  if (grover) {
     // Keep an explicit shadow request visible even when a sparse scan/test
     // fixture omitted the manifest.  The launcher will perform the final
-    // bg-script preflight and report its precise error; silently converting
-    // that explicit request to DLL would hide the user's choice.
+    // bg-script preflight and report its precise error; silently dropping the
+    // candidate would hide the user's choice. Without a usable launch route
+    // the game is attach-only, like the flag-refusing shells above.
     candidates.push(
       candidate(
         "shadow",
         bgScript
-          ? "该游戏有可补丁的 bg-script，影子目录可作为显式备用路线"
+          ? "该游戏有可补丁的 bg-script，影子目录可作为启动路线"
           : "影子路线已被显式请求，但启动前仍需发现 bg-script"
       )
     );
@@ -729,9 +736,6 @@ function plan(scan = {}, { requested = "auto" } = {}) {
       blockedRoutes.push(blocked("shadow", preflightOf(scan, "shadow").reason));
     }
     candidates.push(candidate("extension"));
-    candidates.push(
-      candidate("dll", "标准 NW.js 可裸启动后向 renderer 投递 native bridge")
-    );
   }
 
   // A static scan cannot prove the executable is runnable. Keep the route in
@@ -753,16 +757,6 @@ function plan(scan = {}, { requested = "auto" } = {}) {
     const requestedCandidate = candidates.find((entry) => entry.id === route);
     if (requestedCandidate) {
       selected = requestedCandidate.id;
-    } else if (
-      (container === "nb-evalnwbin" || container === "enigma-nb" || grover) &&
-      route !== "dll" &&
-      preferred === "dll"
-    ) {
-      // Preserve the old public behaviour: a generic/extension request on a
-      // shell is translated to its only safe route, with the override made
-      // visible in the plan instead of being an unexplained dispatch.
-      selected = preferred;
-      override = `请求的 ${route} 被保护壳拒绝，已改用 ${preferred}`;
     } else {
       selected = null;
     }

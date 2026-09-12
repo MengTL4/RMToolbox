@@ -128,14 +128,33 @@ try {
     return g.gameKey === "a";
   })[0];
   assert.equal(store.state.routeChoices.a, undefined, "默认无覆盖记录");
-  store.chooseRoute(gameA, "dll");
-  assert.equal(host.routeChoices.a, "dll", "选择立即持久化到宿主");
-  assert.equal(store.state.routeChoices.a, "dll");
+  store.chooseRoute(gameA, "extension");
+  assert.equal(host.routeChoices.a, "extension", "选择立即持久化到宿主");
+  assert.equal(store.state.routeChoices.a, "extension");
   await store.init();
-  assert.equal(store.state.routeChoices.a, "dll", "重启后选择仍在");
+  assert.equal(store.state.routeChoices.a, "extension", "重启后选择仍在");
   store.chooseRoute(gameA, "auto");
   assert.equal(host.routeChoices.a, undefined, "恢复自动清除记录");
   assert.equal(store.state.routeChoices.a, undefined);
+
+  // 仅附加的壳游戏（nb-evalnwbin）：计划没有启动路线，卡片不给出
+  // 「启动并注入」入口，只留「附加到运行中」，并携带手动启动指引。
+  const library = setup(rmch.views.Library);
+  const shellGame = store.state.games.filter(function (g) {
+    return g.gameKey === "f";
+  })[0];
+  assert.equal(library.launchable(shellGame), false, "壳游戏不可启动并注入");
+  assert.equal(library.launchable(gameA), true, "普通游戏保留启动并注入");
+  assert.match(
+    library.attachOnlyHint(shellGame),
+    /附加到运行中/,
+    "仅附加卡片要指引手动启动后附加"
+  );
+  assert.equal(
+    library.unavailable(shellGame),
+    "",
+    "仅附加不等于不可用：附加入口保留"
+  );
 
   store.selectGame("b");
   await flush();

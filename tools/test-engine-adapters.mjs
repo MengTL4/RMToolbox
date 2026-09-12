@@ -151,8 +151,11 @@ assert.ok(
   assert.equal(scan.container, "nb-evalnwbin");
   const plan = planLaunch(scan);
   assert.equal(plan.family, "nb-evalnwbin");
-  assert.equal(plan.selected, "dll");
-  assert.equal(plan.candidates.length, 1);
+  // The shell refuses every launch flag, so the plan offers no launch route:
+  // the user starts the game and attaches.
+  assert.equal(plan.selected, null);
+  assert.equal(plan.candidates.length, 0);
+  assert.match(plan.error, /附加到运行中/);
 }
 
 // NB Themida shell: nbtool.node + bootEncryptedBin in index.html → refused.
@@ -194,8 +197,8 @@ assert.ok(
   assert.equal(planLaunch(scan).selected, "shadow-engine-publish");
 }
 
-// Grover boot: bg-script manifest + nwjc bytecode core → dll preferred,
-// explicit shadow request still honoured.
+// Grover boot: bg-script manifest + nwjc bytecode core → shadow is the only
+// launch route, explicit shadow request still honoured.
 {
   const root = makeGameDir("grover-game");
   mkdirSync(path.join(root, "js"), { recursive: true });
@@ -215,7 +218,7 @@ assert.ok(
   assert.ok(scan.protection.flags.includes("grover-boot"));
   const plan = planLaunch(scan);
   assert.equal(plan.family, "grover-nwjs");
-  assert.equal(plan.preferred, "dll");
+  assert.equal(plan.preferred, "shadow");
   assert.equal(planLaunch(scan, { strategy: "shadow" }).selected, "shadow");
 }
 

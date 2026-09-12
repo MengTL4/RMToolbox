@@ -53,7 +53,6 @@ function specialPlan(scan, requested, container, engine) {
     candidates: [special],
     blocked: [
       blocked("shadow", "该游戏使用专用容器路线，不能套用普通影子目录"),
-      blocked("dll", "该游戏使用专用容器路线，不能套用普通 MV/MZ DLL 路线"),
       blocked("extension", "该游戏使用专用容器路线，不能套用普通扩展启动")
     ],
     override:

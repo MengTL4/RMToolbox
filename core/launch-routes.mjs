@@ -27,12 +27,15 @@
 //
 // actionLabel names what the route DOES when it runs, because "启动并注入" alone
 // cannot carry it: a generic launch label reads as "restart the game and hook
-// it", while the dll route deliberately starts the game bare — no launch flags
-// at all — and hooks it afterwards. For blacklist/anti-tamper shells that die
-// when handed any flag (万族穿越-源启崛起 V1.2.2_B and its family), that
-// difference is the whole ballgame, so the button says so before the click.
-// Each phrase is the ACTION ONLY, not the whole sentence: the GUI renders it as
-// 启动并注入（<actionLabel>）, so repeating the verb there reads as noise.
+// it", while several routes do something narrower (a rebuilt copy, an unpack
+// first), so the button says so before the click. Each phrase is the ACTION
+// ONLY, not the whole sentence: the GUI renders it as 启动并注入（<actionLabel>）,
+// so repeating the verb there reads as noise.
+//
+// Shells that die when handed any launch flag (万族穿越-源启崛起 V1.2.2_B and its
+// family, Enigma-NB boxes, the Grover boot chain) have NO launch route at all:
+// the toolbox never starts those games itself. The user starts the game and the
+// attach strategies below deliver the bridge to the running process.
 
 export const MECHANISMS = Object.freeze({
   extension: {
@@ -48,7 +51,7 @@ export const MECHANISMS = Object.freeze({
   dll: {
     id: "dll",
     label: "DLL 附加",
-    note: "不带任何启动参数地启动游戏，再向渲染进程投递原生桥"
+    note: "向运行中游戏的渲染进程投递原生桥"
   },
   cdp: {
     id: "cdp",
@@ -95,17 +98,6 @@ export const ROUTES = Object.freeze({
     transport: "shadow-dir",
     preflight: ["bg-script", "patch-anchor", "shadow-spawn", "bridge-hello"],
     reason: "bg-script 启动链可在独立影子目录中打补丁"
-  },
-  dll: {
-    id: "dll",
-    label: "DLL 附加",
-    operation: "launch",
-    mechanism: "dll",
-    userGoal: "壳拒绝参数时的兜底",
-    actionLabel: "裸启动，不加任何启动参数",
-    transport: "native-dll-file",
-    preflight: ["plain-spawn", "renderer", "pe-arch", "bridge-hello"],
-    reason: "裸启动后向渲染进程投递原生桥"
   },
   "rgss-script": {
     id: "rgss-script",
@@ -185,24 +177,6 @@ export const ATTACH_ROUTES = Object.freeze({
     label: "附加到运行中（DLL·文件通道）",
     mechanism: "dll",
     operation: "attach"
-  },
-  "nw-launch-inject": {
-    id: "nw-launch-inject",
-    label: "启动并注入（DLL）",
-    mechanism: "dll",
-    operation: "launch"
-  },
-  "nw-launch-inject-file": {
-    id: "nw-launch-inject-file",
-    label: "启动并注入（DLL·文件通道）",
-    mechanism: "dll",
-    operation: "launch"
-  },
-  "nw-launch-oep": {
-    id: "nw-launch-oep",
-    label: "启动并注入（入口点注入）",
-    mechanism: "dll",
-    operation: "launch"
   },
   "rgss-inject": {
     id: "rgss-inject",

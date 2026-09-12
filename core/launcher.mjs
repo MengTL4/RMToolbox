@@ -123,22 +123,21 @@ export async function launchGame({
   }
   if (scan.container === "nb-evalnwbin") {
     // The shell refuses every launch flag (measured: even --user-data-dir
-    // alone dies at boot), so the standard extension launch would kill the
-    // game. Launching plain and then attaching works — but the inject
-    // machinery lives in attach.mjs, which already imports this module;
-    // routing host-side keeps the GUI bundle cycle-free. CLI: use attach.
+    // alone dies at boot), so any toolbox launch would kill the game. The
+    // toolbox never starts this family: the user starts it and attach.mjs
+    // delivers the bridge to the running process.
     throw new Error(
-      "nb-evalnwbin shell game: it refuses every launch flag, so the extension launch path would kill it — " +
-        'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
+      "nb-evalnwbin shell game: it refuses every launch flag, so a toolbox launch would kill it — " +
+        "请自行双击启动游戏，进入游戏后点「附加到运行中」"
     );
   }
   if (scan.container === "enigma-nb") {
     // Same shape as nb-evalnwbin: the Enigma box exits within 10-25s when ANY
-    // launch flag is present (measured on 三国修仙传 V1.91), so the extension
-    // path is fatal. Plain spawn + DLL attach lives in attach.mjs.
+    // launch flag is present (measured on 三国修仙传 V1.91). Attach-only, same
+    // as above.
     throw new Error(
-      "enigma-nb boxed game: any launch flag makes the Enigma box exit, so the extension launch path would kill it — " +
-        'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
+      "enigma-nb boxed game: any launch flag makes the Enigma box exit, so a toolbox launch would kill it — " +
+        "请自行双击启动游戏，进入游戏后点「附加到运行中」"
     );
   }
   if (
@@ -149,11 +148,11 @@ export async function launchGame({
   ) {
     // The Grover shell's toolbox-shadowed launch freezes the payload after its
     // (shim-assisted) verification, while the plainly launched real game runs
-    // fine — its suicide paths fail on their own. Route like enigma-nb:
-    // plain spawn + DLL attach lives in attach.mjs.
+    // fine — its suicide paths fail on their own. Only the shadow route may
+    // launch this family; everything else is attach-only.
     throw new Error(
-      "grover-boot shell game: the shadow launch freezes after the shell's verification — " +
-        'use attach instead (the GUI "启动并注入" button launches plain + injects automatically)'
+      "grover-boot shell game: only the shadow launch route survives its verification — " +
+        "改用影子目录路线，或自行启动游戏后点「附加到运行中」"
     );
   }
   if (scan.engine.id === "RM2K") {

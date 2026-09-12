@@ -3,8 +3,8 @@
 // Usage:
 //   node tools/rmch.mjs scan [gameRoot|steam] [--json]
 //   node tools/rmch.mjs serve [--port 47412]
-//   node tools/rmch.mjs launch <gameRoot> [--port 47412] [--strategy auto|shadow|extension|dll]
-//   node tools/rmch.mjs plan <gameRoot> [--strategy auto|shadow|extension|dll]
+//   node tools/rmch.mjs launch <gameRoot> [--port 47412] [--strategy auto|shadow|extension]
+//   node tools/rmch.mjs plan <gameRoot> [--strategy auto|shadow|extension]
 //   node tools/rmch.mjs attach <gameRoot> [--port 47412]
 //   node tools/rmch.mjs send <gameRoot|gameKey> <command.type> [jsonArgs]
 //   node tools/rmch.mjs bridge-build

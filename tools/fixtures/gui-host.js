@@ -66,6 +66,18 @@
       capabilities: RGSS_CAPS.filter(function (cap) {
         return cap !== "self-switches";
       })
+    },
+    {
+      // nb-evalnwbin shell: refuses every launch flag, so the plan has no
+      // launch route — the card offers 附加到运行中 as its only action.
+      gameKey: "f",
+      title: "壳之城",
+      root: "D:/Games/壳之城",
+      engine: { id: "MV/MZ" },
+      container: "nb-evalnwbin",
+      paths: { exe: "Game.exe" },
+      protection: { level: 3 },
+      capabilities: NW_CAPS
     }
   ];
   var host = {
@@ -145,12 +157,23 @@
     listSessions: function () {
       return host.sessions;
     },
-    plan: function () {
+    plan: function (root) {
+      if (root === "D:/Games/壳之城") {
+        return {
+          family: "nb-evalnwbin",
+          preferred: null,
+          selected: null,
+          candidates: [],
+          error:
+            "保护壳拒绝一切启动参数，工具箱不再代为启动 —— " +
+            "请自行双击启动游戏，进入游戏后点「附加到运行中」"
+        };
+      }
       return {
         family: "standard-nwjs",
         preferred: "shadow",
         selected: "shadow",
-        candidates: [{ id: "shadow" }, { id: "dll" }]
+        candidates: [{ id: "shadow" }, { id: "extension" }]
       };
     },
     setRouteChoice: function (root, gameKey, route) {

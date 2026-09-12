@@ -2,7 +2,7 @@
 // attach may use launcher for takeover, so launcher must never import attach.
 import { scanGame } from "./scanner.mjs";
 import { launchGame } from "./launcher.mjs";
-import { attachGame, launchNwInjectGame } from "./attach.mjs";
+import { attachGame } from "./attach.mjs";
 import { LaunchPlanError, planLaunch } from "./launch-plan.mjs";
 import { preflightOf, routeLabel } from "./launch-routes.mjs";
 
@@ -50,14 +50,12 @@ export class GameRuntime {
     scan = scanGame,
     launch = launchGame,
     attach = attachGame,
-    launchInject = launchNwInjectGame,
     plan = planLaunch,
     log = null
   } = {}) {
     this.scan = scan;
     this.launchNormal = launch;
     this.attachRunning = attach;
-    this.launchInject = launchInject;
     this.planLaunch = plan;
     this.log = log;
   }
@@ -67,14 +65,7 @@ export class GameRuntime {
     return this.planLaunch(scan, { strategy: options.strategy });
   }
 
-  attemptRoute(id, options, scan, isFallback) {
-    if (id === "dll") {
-      return this.launchInject({
-        scan,
-        projectRoot: options.projectRoot,
-        port: options.port
-      });
-    }
+  attemptRoute(id, options, isFallback) {
     // The route the user asked for reaches the launcher untouched: the launcher
     // owns the precise diagnostics (missing bg-script, ambiguous exe). Only a
     // fallback attempt has to spell the route out, because by then it differs
@@ -117,7 +108,7 @@ export class GameRuntime {
         }
       }
       try {
-        const summary = await this.attemptRoute(id, options, scan, isFallback);
+        const summary = await this.attemptRoute(id, options, isFallback);
         attempts.push({ id, label: routeLabel(id), ok: true });
         if (isFallback && this.log) {
           this.log("launch route fallback", {
