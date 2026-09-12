@@ -194,7 +194,12 @@ export default {
     }
 
     function chooseRoute(game, value) {
-      state.routeChoices[game.gameKey] = value;
+      store.chooseRoute(game, value);
+    }
+
+    // 手动选择会被记住（策略覆盖记录）；恢复自动即清除记录。
+    function routeRemembered(game) {
+      return routeChoice(game) !== "auto";
     }
 
     // nwdirectory is an NW.js-only <input> attribute, so the picker has to be
@@ -239,6 +244,7 @@ export default {
       retry: retry,
       routePlan: routePlan,
       routeChoice: routeChoice,
+      routeRemembered: routeRemembered,
       routeOptions: routeOptions,
       routeTitle: routeTitle,
       launchAction: launchAction,
@@ -387,6 +393,19 @@ export default {
               :disabled="!!state.busy[game.gameKey]"
               @update:value="(value) => chooseRoute(game, value)"
             />
+            <n-tooltip v-if="routeRemembered(game)" trigger="hover">
+              <template #trigger>
+                <n-button
+                  size="tiny"
+                  quaternary
+                  type="warning"
+                  @click="chooseRoute(game, 'auto')"
+                >
+                  已记住
+                </n-button>
+              </template>
+              已记住这个路线选择，点此恢复自动
+            </n-tooltip>
             <n-tooltip
               v-else-if="(routePlan(game).candidates || []).length === 1"
               trigger="hover"

@@ -123,6 +123,20 @@ try {
   store.selectGame("a");
   await flush();
 
+  // 策略覆盖记录：手动选择自动持久化，重启（重新 init）后仍在；恢复自动清除。
+  const gameA = store.state.games.filter(function (g) {
+    return g.gameKey === "a";
+  })[0];
+  assert.equal(store.state.routeChoices.a, undefined, "默认无覆盖记录");
+  store.chooseRoute(gameA, "dll");
+  assert.equal(host.routeChoices.a, "dll", "选择立即持久化到宿主");
+  assert.equal(store.state.routeChoices.a, "dll");
+  await store.init();
+  assert.equal(store.state.routeChoices.a, "dll", "重启后选择仍在");
+  store.chooseRoute(gameA, "auto");
+  assert.equal(host.routeChoices.a, undefined, "恢复自动清除记录");
+  assert.equal(store.state.routeChoices.a, undefined);
+
   store.selectGame("b");
   await flush();
   items.select({ id: 1 });

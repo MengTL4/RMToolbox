@@ -108,6 +108,7 @@
       },
       b: { expRate: 2 }
     },
+    routeChoices: {},
     setHandlers: function (handlers) {
       host.handlers = handlers;
     },
@@ -151,6 +152,20 @@
         selected: "shadow",
         candidates: [{ id: "shadow" }, { id: "dll" }]
       };
+    },
+    setRouteChoice: function (root, gameKey, route) {
+      host.calls.push({ type: "setRouteChoice", key: gameKey, route: route });
+      if (!route || route === "auto") delete host.routeChoices[gameKey];
+      else host.routeChoices[gameKey] = route;
+      return { ok: true, route: route || "auto" };
+    },
+    clearRouteChoice: function (gameKey) {
+      host.calls.push({ type: "clearRouteChoice", key: gameKey });
+      delete host.routeChoices[gameKey];
+      return { ok: true };
+    },
+    listRouteChoices: function () {
+      return Object.assign({}, host.routeChoices);
     },
     gameIcon: function () {
       return null;

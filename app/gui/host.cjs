@@ -104,6 +104,7 @@ async function boot() {
   const rgssArchive = await loadModule("core/rgss-archive.mjs");
   const saveFiles = await loadModule("core/save-files.mjs");
   const adapters = await loadModule("core/adapters/index.mjs");
+  const overrides = await loadModule("core/strategy-overrides.mjs");
   state.modules = {
     scanner,
     wsServer,
@@ -111,7 +112,8 @@ async function boot() {
     tokenMod,
     rgssArchive,
     saveFiles,
-    adapters
+    adapters,
+    overrides
   };
 
   state.libraryPath = path.join(
@@ -389,11 +391,34 @@ async function launch(gameRoot, strategy = "auto") {
       error: String((error && error.stack) || error)
     });
   }
+  // A remembered route choice that no longer fits the current scan (the game
+  // updated, the route retired) is ignored and reclaimed — launch falls back
+  // to 自动 rather than failing on the stale record, and the zombie record is
+  // removed so it cannot shadow future scans. (GUI callers only ever send
+  // dropdown-validated or remembered routes; the CLI path stays strict.)
+  let effective = strategy;
+  if (strategy && strategy !== "auto" && planned) {
+    effective =
+      state.modules.overrides.resolveRouteOverride(planned, strategy) || "auto";
+    if (effective !== strategy) {
+      guiLog("route override incompatible with current scan; using auto", {
+        gameRoot,
+        route: strategy
+      });
+      try {
+        const gameKey = state.modules.scanner.scanGame(gameRoot).gameKey;
+        state.modules.overrides.clearStrategyOverride(
+          state.projectRoot,
+          gameKey
+        );
+      } catch (_) {}
+    }
+  }
   const summary = await state.modules.gameRuntime.launch({
     gameRoot,
     projectRoot: state.projectRoot,
     port: 47412,
-    strategy,
+    strategy: effective,
     onProgress: (() => {
       let last = 0;
       return (progress) => {
@@ -439,6 +464,40 @@ function plan(gameRoot, strategy = "auto") {
     throw new Error("工具箱启动路线规划器尚未就绪");
   }
   return state.modules.gameRuntime.plan({ gameRoot, strategy });
+}
+
+// --- 策略覆盖记录 -------------------------------------------------------------
+// The route dropdown's manual choice is remembered per game (CONTEXT.md
+// 策略覆盖记录): only the diff from the scanner-derived default is stored.
+// Choosing 自动 (or asking to restore it) clears the record.
+
+function setRouteChoice(root, gameKey, route) {
+  const { overrides } = state.modules;
+  if (!route || route === "auto") {
+    overrides.clearStrategyOverride(state.projectRoot, gameKey);
+    guiLog("route override cleared", { gameKey });
+    return { ok: true, route: "auto" };
+  }
+  // Validate against the current plan: a route the game does not offer can
+  // never be persisted.
+  const planned = state.modules.gameRuntime.plan({ gameRoot: root });
+  const chosen = overrides.resolveRouteOverride(planned, route);
+  if (!chosen) {
+    return { ok: false, reason: `路线 ${route} 不适用于当前游戏` };
+  }
+  overrides.saveStrategyOverride(state.projectRoot, gameKey, chosen);
+  guiLog("route override saved", { gameKey, route: chosen });
+  return { ok: true, route: chosen };
+}
+
+function clearRouteChoice(gameKey) {
+  state.modules.overrides.clearStrategyOverride(state.projectRoot, gameKey);
+  guiLog("route override cleared", { gameKey });
+  return { ok: true };
+}
+
+function listRouteChoices() {
+  return state.modules.overrides.listStrategyOverrides(state.projectRoot);
 }
 
 // Session discovery and notifications are owned by BridgeSessions for both
@@ -844,8 +903,11 @@ function lockPath(gameKey) {
   );
 }
 
+// One sanitiser for all per-game file names (locks, strategy overrides): the
+// canonical implementation lives in core/strategy-overrides.mjs so the two
+// persistence idioms can never drift apart.
 function sanitizeKey(gameKey) {
-  return String(gameKey).replace(/[\\/:*?"<>|]/g, "_");
+  return state.modules.overrides.sanitizeKey(gameKey);
 }
 
 function saveLocks(gameKey, locks) {
@@ -885,6 +947,9 @@ module.exports = {
   removeManualRoot,
   listSessions,
   plan,
+  setRouteChoice,
+  clearRouteChoice,
+  listRouteChoices,
   launch,
   attach,
   stop,

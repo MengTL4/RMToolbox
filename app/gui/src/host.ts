@@ -54,6 +54,14 @@ export interface GuiHost {
   addManualRoot(root: string): unknown;
   removeManualRoot(root: string): unknown;
   plan(root: string, strategy?: string): { [field: string]: unknown };
+  /** 策略覆盖记录：手动路线选择按游戏持久化；选 auto 即清除。 */
+  setRouteChoice(
+    root: string,
+    gameKey: string,
+    route: string
+  ): { ok: boolean; route?: string; reason?: string };
+  clearRouteChoice(gameKey: string): { ok: boolean };
+  listRouteChoices(): Record<string, string>;
   launch(
     root: string,
     strategy?: string

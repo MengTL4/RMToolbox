@@ -116,6 +116,13 @@
               };
             }
           });
+          // 策略覆盖记录：手动选过的路线在重启后仍然生效。与当前扫描不再
+          // 相容的记录由卡片上的 routeChoice() 显示逻辑和宿主的启动回退
+          // 共同忽略——这里原样加载即可。
+          state.routeChoices =
+            typeof server.listRouteChoices === "function"
+              ? server.listRouteChoices()
+              : {};
         } catch (error) {
           store.fail("库扫描失败：" + error.message);
           state.games = [];
@@ -166,6 +173,26 @@
   function removeManualRoot(root) {
     server.removeManualRoot(root);
     return refreshLibrary();
+  }
+
+  // 手动选择的路线立即持久化（策略覆盖记录）；选回「自动」即清除记录。
+  // 记录错了不会让启动失败：宿主在启动时忽略并回收与当前扫描不相容的覆盖。
+  function chooseRoute(game, value) {
+    var route = value || "auto";
+    try {
+      var result =
+        route === "auto"
+          ? typeof server.clearRouteChoice === "function"
+            ? server.clearRouteChoice(game.gameKey)
+            : null
+          : server.setRouteChoice(game.root, game.gameKey, route);
+      if (result && result.ok === false) {
+        store.fail(game.title + "：" + (result.reason || "路线选择未生效"));
+        return;
+      }
+    } catch (_) {}
+    if (route === "auto") delete state.routeChoices[game.gameKey];
+    else state.routeChoices[game.gameKey] = route;
   }
 
   async function launch(game, strategy) {
@@ -256,6 +283,7 @@
     checkForUpdate: checkForUpdate,
     addManualRoot: addManualRoot,
     removeManualRoot: removeManualRoot,
+    chooseRoute: chooseRoute,
     launch: launch,
     attach: attach,
     stop: stop

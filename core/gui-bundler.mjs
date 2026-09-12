@@ -28,6 +28,7 @@ export const MODULES = [
   "core/adapters/index.mjs",
   "core/adapters/rgss.mjs",
   "core/adapters/nwjs.mjs",
+  "core/strategy-overrides.mjs",
   "core/scanner.mjs",
   "core/grover-compat.mjs",
   "core/bridge-bundler.mjs",
