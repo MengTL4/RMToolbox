@@ -103,6 +103,11 @@ export default {
       }
     ];
 
+    // 能力声明：XP（RGSS1）没有独立开关，不呈现入口而不是点了报错。
+    var showSelfSwitches = computed(function () {
+      return store.hasCapability(trainer.gameKey, "self-switches");
+    });
+
     return {
       store: store,
       data: data,
@@ -110,6 +115,7 @@ export default {
       listHeight: listHeight,
       currentMapId: currentMapId,
       selfSwitchColumns: selfSwitchColumns,
+      showSelfSwitches: showSelfSwitches,
       transfer: transfer,
       here: here,
       select: function (row) {
@@ -210,7 +216,7 @@ export default {
           </n-flex>
         </n-card>
         <map-event-panel />
-        <n-card size="small" title="独立开关">
+        <n-card v-if="showSelfSwitches" size="small" title="独立开关">
           <template #header-extra><rm-icon name="toggle" /></template>
           <n-flex vertical :size="10">
             <n-input-group>

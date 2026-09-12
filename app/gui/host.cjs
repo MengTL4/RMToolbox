@@ -103,13 +103,15 @@ async function boot() {
   const tokenMod = await loadModule("core/token.mjs");
   const rgssArchive = await loadModule("core/rgss-archive.mjs");
   const saveFiles = await loadModule("core/save-files.mjs");
+  const adapters = await loadModule("core/adapters/index.mjs");
   state.modules = {
     scanner,
     wsServer,
     gameRuntime,
     tokenMod,
     rgssArchive,
-    saveFiles
+    saveFiles,
+    adapters
   };
 
   state.libraryPath = path.join(
@@ -283,8 +285,28 @@ function notifySessions() {
   if (state.onSessions) state.onSessions(listSessions());
 }
 
+// Session engine arrives as a string from the RGSS bridge ("RGSS1") and as
+// { maker: "MZ" } from the MV/MZ bridge.
+function sessionEngineId(session) {
+  const engine = session && session.engine;
+  if (typeof engine === "string") return engine;
+  if (engine && typeof engine.maker === "string") return engine.maker;
+  return null;
+}
+
 function listSessions() {
-  return state.sessions ? state.sessions.list() : [];
+  if (!state.sessions) return [];
+  const { capabilitiesForScan } = state.modules.adapters || {};
+  const list = state.sessions.list();
+  if (!capabilitiesForScan) return list;
+  // 能力声明随会话一起流向界面：不在游戏库里（附加进来的）游戏也能按能力
+  // 渲染。未声明任何能力的家族保持原样——界面按历史全量呈现。
+  return list.map((session) => {
+    const id = sessionEngineId(session);
+    if (!id) return session;
+    const capabilities = capabilitiesForScan({ engine: { id } });
+    return capabilities.length ? { ...session, capabilities } : session;
+  });
 }
 
 function saveLibrary() {
@@ -303,10 +325,17 @@ function saveLibrary() {
 // install opens to an empty library, and removing an entry actually removes it.
 function listLibrary() {
   const { scanGame } = state.modules.scanner;
+  const { capabilitiesForScan } = state.modules.adapters || {};
   const games = [];
   for (const root of state.library.manualRoots) {
     try {
-      games.push(scanGame(root));
+      const info = scanGame(root);
+      // 能力声明随扫描结果流向界面（ADR 0002）：面板按能力渲染。
+      if (capabilitiesForScan) {
+        const capabilities = capabilitiesForScan(info);
+        if (capabilities.length) info.capabilities = capabilities;
+      }
+      games.push(info);
     } catch (error) {
       guiLog("manual library entry failed to scan", {
         root,

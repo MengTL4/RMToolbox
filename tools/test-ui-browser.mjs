@@ -28,7 +28,7 @@ const bootstrap = `<script>
   const store = RMCH.store;
   await store.init();
   if (page !== 'library') {
-    store.selectGame('a');
+    store.selectGame(params.get('game') || 'a');
     for (let i = 0; i < 30; i++) await Promise.resolve();
     store.applyLiveState({ engine: { maker: 'MZ' }, map: { mapId: 1 }, gold: 24860, inBattle: false });
   }
@@ -489,6 +489,36 @@ try {
   console.log(
     "browser event tools PASS: mini-map, select-only, force confirmation, reader, stale snapshot, hidden polling"
   );
+  // 能力声明驱动渲染：XP（RGSS1）游戏没有独立开关，数据·地图视图不呈现该
+  // 卡片；MZ 游戏保留。游戏 e 是夹具里的 RGSS1 游戏。
+  for (const [game, expected] of [
+    ["a", true],
+    ["e", false]
+  ]) {
+    await cdp("Page.navigate", {
+      url: `${origin}/?view=data:map&theme=light&game=${game}`
+    });
+    let capReady = false;
+    for (let i = 0; i < 80; i++) {
+      await sleep(100);
+      if (await evaluate("!!window.__uiReady")) {
+        capReady = true;
+        break;
+      }
+    }
+    assert.ok(capReady, `data:map game=${game} mounted`);
+    await sleep(250);
+    assert.equal(
+      await evaluate("document.body.innerText.includes('独立开关')"),
+      expected,
+      expected
+        ? "MZ shows the 独立开关 card"
+        : "XP (RGSS1) hides the 独立开关 card"
+    );
+    assert.equal(await evaluate("window.__uiError || ''"), "");
+    assert.deepEqual(errors, []);
+  }
+  console.log("browser capability gating PASS: XP hides 独立开关, MZ keeps it");
   await cdp("Page.navigate", { url: origin + "/?view=data:event&theme=light" });
   for (let i = 0; i < 80; i++) {
     await sleep(100);

@@ -7,6 +7,8 @@ export interface GameSummary {
   engine: { id: string };
   paths: { exe?: string | null };
   protection: { level: number };
+  /** 能力声明（ADR 0002）：引擎适配器声明的本游戏支持的修改能力。 */
+  capabilities?: string[];
 }
 
 export interface SessionSummary {

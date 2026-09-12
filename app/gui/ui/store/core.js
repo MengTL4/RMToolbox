@@ -124,6 +124,26 @@ import { createGameDrafts } from "../../src/state/drafts";
     return gameKey;
   }
 
+  // The family's declared capabilities (能力声明) ride on the library scan;
+  // the session entry is the fallback for games that are not in the library.
+  // null means "no data" — panels then show everything, the historical surface.
+  function capabilitiesFor(gameKey) {
+    for (var i = 0; i < state.games.length; i += 1) {
+      var game = state.games[i];
+      if (game.gameKey === gameKey && Array.isArray(game.capabilities))
+        return game.capabilities;
+    }
+    var session = sessionFor(gameKey);
+    if (session && Array.isArray(session.capabilities))
+      return session.capabilities;
+    return null;
+  }
+
+  function hasCapability(gameKey, capability) {
+    var capabilities = capabilitiesFor(gameKey);
+    return capabilities === null || capabilities.indexOf(capability) !== -1;
+  }
+
   var useDraft = createGameDrafts(function () {
     return store.trainer.gameKey;
   });
@@ -213,6 +233,8 @@ import { createGameDrafts } from "../../src/state/drafts";
     sessionPhase: sessionPhase,
     sessionStatus: sessionStatus,
     titleFor: titleFor,
+    capabilitiesFor: capabilitiesFor,
+    hasCapability: hasCapability,
     protectionTag: function (level) {
       return PROTECTION[level] || { label: "L" + level, type: "default" };
     },

@@ -96,6 +96,33 @@ try {
     0,
     "editing rates must not send"
   );
+  // Capability declarations flow from the library scan into the store, and the
+  // map view gates its 独立开关 card on them: XP (RGSS1) has no self-switches.
+  assert.ok(
+    store.hasCapability("a", "self-switches"),
+    "MZ keeps self-switches"
+  );
+  assert.ok(
+    !store.hasCapability("e", "self-switches"),
+    "XP (RGSS1) has no self-switches"
+  );
+  assert.ok(store.hasCapability("e", "variables"), "XP keeps variables");
+  assert.ok(
+    store.hasCapability("missing", "self-switches"),
+    "unknown games keep the historical full surface"
+  );
+  assert.ok(
+    !store.hasCapability("s", "self-switches"),
+    "a session-only game falls back to the session's capabilities"
+  );
+  const mapView = setup(rmch.views.DataMap);
+  assert.equal(mapView.showSelfSwitches.value, true, "MZ shows the card");
+  store.selectGame("e");
+  await flush();
+  assert.equal(mapView.showSelfSwitches.value, false, "XP hides the card");
+  store.selectGame("a");
+  await flush();
+
   store.selectGame("b");
   await flush();
   items.select({ id: 1 });

@@ -1,5 +1,23 @@
 // Controlled UI-only data. Never reads a game directory or sends game commands.
 (function () {
+  var NW_CAPS = [
+    "variables",
+    "switches",
+    "self-switches",
+    "gold",
+    "items",
+    "actors",
+    "party",
+    "saves",
+    "map",
+    "events",
+    "battle",
+    "scene",
+    "console",
+    "locks",
+    "assets"
+  ];
+  var RGSS_CAPS = NW_CAPS.concat(["trainer", "catalog"]);
   var games = [
     {
       gameKey: "a",
@@ -7,7 +25,8 @@
       root: "D:/Games/星河旅人",
       engine: { id: "MZ" },
       paths: { exe: "Game.exe" },
-      protection: { level: 0 }
+      protection: { level: 0 },
+      capabilities: NW_CAPS
     },
     {
       gameKey: "b",
@@ -15,7 +34,8 @@
       root: "D:/Games/迷雾森林",
       engine: { id: "MV" },
       paths: { exe: "Game.exe" },
-      protection: { level: 1 }
+      protection: { level: 1 },
+      capabilities: NW_CAPS
     },
     {
       gameKey: "c",
@@ -23,7 +43,8 @@
       root: "D:/Games/遗忘之城",
       engine: { id: "RGSS3" },
       paths: { exe: "Game.exe" },
-      protection: { level: 2 }
+      protection: { level: 2 },
+      capabilities: RGSS_CAPS
     },
     {
       gameKey: "d",
@@ -31,7 +52,20 @@
       root: "D:/Games/未完成的旅途",
       engine: { id: "MV" },
       paths: { exe: null },
-      protection: { level: 0 }
+      protection: { level: 0 },
+      capabilities: NW_CAPS
+    },
+    {
+      // RPG Maker XP (RGSS1): the family without self-switches.
+      gameKey: "e",
+      title: "蒸汽纪事",
+      root: "D:/Games/蒸汽纪事",
+      engine: { id: "RGSS1" },
+      paths: { exe: "Game.exe" },
+      protection: { level: 0 },
+      capabilities: RGSS_CAPS.filter(function (cap) {
+        return cap !== "self-switches";
+      })
     }
   ];
   var host = {
@@ -41,8 +75,28 @@
     eventRevision: "one",
     executions: {},
     sessions: [
-      { gameKey: "a", alive: true, connectedAt: 1 },
-      { gameKey: "b", alive: true, connectedAt: 1 }
+      // The real host attaches capabilities to sessions too (games that were
+      // attached rather than launched from the library have no library scan).
+      { gameKey: "a", alive: true, connectedAt: 1, capabilities: NW_CAPS },
+      { gameKey: "b", alive: true, connectedAt: 1, capabilities: NW_CAPS },
+      {
+        gameKey: "e",
+        alive: true,
+        connectedAt: 1,
+        capabilities: RGSS_CAPS.filter(function (cap) {
+          return cap !== "self-switches";
+        })
+      },
+      {
+        // Session-only game: no library entry, capabilities come from the
+        // session alone.
+        gameKey: "s",
+        alive: true,
+        connectedAt: 1,
+        capabilities: RGSS_CAPS.filter(function (cap) {
+          return cap !== "self-switches";
+        })
+      }
     ],
     options: {
       a: {
