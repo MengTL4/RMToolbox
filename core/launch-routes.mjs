@@ -24,6 +24,15 @@
 // Each route also carries a userGoal: the short goal-oriented phrase the GUI
 // shows as the route's display name. Presentation lives here in the catalogue —
 // the GUI keeps no label table of its own.
+//
+// actionLabel names what the route DOES when it runs, because "启动并注入" alone
+// cannot carry it: a generic launch label reads as "restart the game and hook
+// it", while the dll route deliberately starts the game bare — no launch flags
+// at all — and hooks it afterwards. For blacklist/anti-tamper shells that die
+// when handed any flag (万族穿越-源启崛起 V1.2.2_B and its family), that
+// difference is the whole ballgame, so the button says so before the click.
+// Each phrase is the ACTION ONLY, not the whole sentence: the GUI renders it as
+// 启动并注入（<actionLabel>）, so repeating the verb there reads as noise.
 
 export const MECHANISMS = Object.freeze({
   extension: {
@@ -71,6 +80,7 @@ export const ROUTES = Object.freeze({
     operation: "launch",
     mechanism: "extension",
     userGoal: "原版直接启动",
+    actionLabel: "扩展加载，原版 Game.exe",
     transport: "load-extension",
     preflight: ["game-executable", "private-profile", "bridge-hello"],
     reason: "标准 NW.js 使用原版 Game.exe 加载 bridge 扩展"
@@ -81,6 +91,7 @@ export const ROUTES = Object.freeze({
     operation: "launch",
     mechanism: "copy",
     userGoal: "不动原目录",
+    actionLabel: "运行副本，不动原目录",
     transport: "shadow-dir",
     preflight: ["bg-script", "patch-anchor", "shadow-spawn", "bridge-hello"],
     reason: "bg-script 启动链可在独立影子目录中打补丁"
@@ -91,6 +102,7 @@ export const ROUTES = Object.freeze({
     operation: "launch",
     mechanism: "dll",
     userGoal: "壳拒绝参数时的兜底",
+    actionLabel: "裸启动，不加任何启动参数",
     transport: "native-dll-file",
     preflight: ["plain-spawn", "renderer", "pe-arch", "bridge-hello"],
     reason: "裸启动后向渲染进程投递原生桥"
@@ -102,6 +114,7 @@ export const ROUTES = Object.freeze({
     mechanism: "script",
     alsoUses: ["copy"],
     userGoal: "RGSS 游戏专用",
+    actionLabel: "副本启动 + 脚本注入",
     transport: "rgss-shadow",
     preflight: ["game.ini-library", "scripts-archive"],
     reason: "RGSS 游戏把 Ruby 桥接写进运行副本的 Scripts 归档"
@@ -113,6 +126,7 @@ export const ROUTES = Object.freeze({
     mechanism: "unpack",
     alsoUses: ["copy", "script"],
     userGoal: "EVB 壳游戏专用",
+    actionLabel: "先解包单文件壳，再脚本注入",
     transport: "evb-unpack",
     preflight: ["evb-executable"],
     reason: "EVB 单文件壳先解包，再走 RGSS 运行副本脚本注入"
@@ -124,6 +138,7 @@ export const ROUTES = Object.freeze({
     mechanism: "cdp",
     alsoUses: ["copy"],
     userGoal: "Tauri 游戏专用",
+    actionLabel: "补丁副本 + CDP 端口",
     transport: "cdp",
     preflight: ["tauri-executable"],
     reason: "Tauri/WebView2 需要一份打过补丁的可执行副本来打开 CDP"
@@ -135,6 +150,7 @@ export const ROUTES = Object.freeze({
     mechanism: "extension",
     alsoUses: ["cdp"],
     userGoal: "封闭 MZ 专用",
+    actionLabel: "调试端口 + CDP 发布引擎",
     transport: "extension-cdp",
     preflight: ["remote-debug-port", "heap-seed"],
     reason: "封闭 MZ 需要启动调试端口并用 CDP 把引擎对象发布出来"
@@ -146,6 +162,7 @@ export const ROUTES = Object.freeze({
     mechanism: "copy",
     alsoUses: ["script"],
     userGoal: "合体引擎专用",
+    actionLabel: "副本 + 脚本发布",
     transport: "shadow-patched-script",
     preflight: ["bundle-script-anchor"],
     reason: "合体引擎只能在运行副本的闭包里发布运行时对象"
@@ -229,6 +246,51 @@ export function routeMechanismLabels(id) {
 
 export function routeMechanismText(id) {
   return routeMechanismLabels(id).join(" + ");
+}
+
+// --- Plan shaping ----------------------------------------------------------
+// A candidate is the catalogue entry plus the reason that applies to this
+// game, so every consumer (GUI dropdown, log, summary) reads the same label.
+// These helpers shape plan objects for whoever produces them — the legacy
+// planners in launch-plan.mjs and the engine adapters in core/adapters/.
+export function candidate(id, reason) {
+  const entry = ROUTES[id] || {
+    id,
+    label: id,
+    mechanism: null,
+    transport: null,
+    preflight: []
+  };
+  return {
+    id,
+    label: entry.label,
+    userGoal: entry.userGoal || null,
+    actionLabel: entry.actionLabel || null,
+    mechanism: routeMechanism(id),
+    mechanismLabel: routeMechanismText(id),
+    reason: reason || entry.reason,
+    transport: entry.transport,
+    preflight: [...(entry.preflight || [])]
+  };
+}
+
+export function blocked(id, reason) {
+  return { id, label: routeLabel(id), reason };
+}
+
+export function finishPlan(plan) {
+  const selected =
+    plan.candidates.find((entry) => entry.id === plan.selected) || null;
+  plan.selectedReason = selected ? selected.reason : null;
+  plan.selectedLabel = selected ? selected.label : null;
+  plan.fallback = plan.candidates
+    .filter((entry) => entry.id !== plan.selected)
+    .map((entry) => entry.id);
+  plan.canFallbackBeforeBridge = plan.fallback.length > 0;
+  if (!plan.selected && !plan.error) {
+    plan.error = "没有可用的启动路线";
+  }
+  return plan;
 }
 
 /**

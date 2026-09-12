@@ -261,8 +261,28 @@ try {
     1
   );
   assert.equal(await evaluate("__shell.tab"), "library");
+  // The primary button names the action the SELECTED route performs, so a route
+  // whose launch differs from the generic "relaunch and hook" reading (the dll
+  // route starts the game bare) says so on the button, not only in a tooltip.
+  {
+    const before = await evaluate(
+      `Array.from(document.querySelectorAll('.rm-game-card')).map(c => { const b = c.querySelector('.n-button--primary-type'); return b ? b.textContent.trim() : ''; })`
+    );
+    assert.ok(
+      before.some((text) => text.startsWith("启动并注入")),
+      `launch buttons keep the recognised verb: ${JSON.stringify(before)}`
+    );
+    // The fixture's minimal candidates carry no actionLabel, so the button must
+    // fall back to the bare verb rather than render "（）" or "undefined".
+    assert.ok(
+      before.every(
+        (text) => !text.includes("（）") && !text.includes("undefined")
+      ),
+      `no empty action label: ${JSON.stringify(before)}`
+    );
+  }
   await evaluate(
-    `Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '启动并注入').click()`
+    `Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim().startsWith('启动并注入')).click()`
   );
   await sleep(150);
   assert.equal(await evaluate("__shell.tab"), "library");

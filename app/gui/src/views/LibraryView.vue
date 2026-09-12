@@ -1,11 +1,14 @@
 <script>
 import Component_RmIcon from "../shell/RmIcon.vue";
 import Component_InjectionGuide from "../components/InjectionGuide.vue";
+import { getGuiHost } from "../host";
 
 var RMCH = (window.RMCH = window.RMCH || {});
 
 var store = RMCH.store;
 var state = store.state;
+
+var server = getGuiHost();
 
 var ref = Vue.ref;
 
@@ -33,6 +36,34 @@ function routeHint(id, plan) {
         .join(" · ");
   }
   return "";
+}
+
+// The label on the primary action button. The button says "启动并注入" for
+// every family, but what that MEANS differs by route — worst case, the dll
+// route deliberately starts the game bare with no launch flags because the
+// shell kills anything handed a flag. A user who reads "启动并注入" and expects
+// the toolbox to relaunch the game its own way reads the result as a freeze,
+// so the button names the route's actual action instead. "auto" resolves to the
+// plan's own selection, exactly as the host will resolve it.
+function routeAction(id, plan) {
+  if (!plan) return "";
+  var want = !id || id === "auto" ? plan.selected : id;
+  if (!want) return "";
+  var entries = plan.candidates || [];
+  for (var i = 0; i < entries.length; i += 1) {
+    if (entries[i].id === want) return entries[i].actionLabel || "";
+  }
+  return "";
+}
+
+function readPlan(root) {
+  if (!root || typeof server.plan !== "function") return null;
+  try {
+    var plan = server.plan(root, "auto");
+    return plan && plan.selected ? plan : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 export default {
@@ -143,6 +174,25 @@ export default {
       if (!plan.selected) return plan.error || "没有可用路线";
       return routeLabel(plan.preferred || plan.selected, plan);
     }
+
+    // What the primary button will actually do, in the route's own words. The
+    // cached plan is enough; it is re-read on demand only when the library scan
+    // has not filled it in yet, so a card never shows a guess.
+    function launchAction(game) {
+      var plan = routePlan(game);
+      if (!plan.selected) plan = readPlan(game.root) || plan;
+      return routeAction(routeChoice(game), plan);
+    }
+
+    function launchHint(game) {
+      var plan = routePlan(game);
+      if (!plan.selected) plan = readPlan(game.root) || plan;
+      var id = routeChoice(game) === "auto" ? plan.selected : routeChoice(game);
+      if (!id) return plan.error || "";
+      var verb = routeAction(id, plan);
+      return [verb, routeHint(id, plan)].filter(Boolean).join(" \u2014 ");
+    }
+
     function chooseRoute(game, value) {
       state.routeChoices[game.gameKey] = value;
     }
@@ -191,6 +241,8 @@ export default {
       routeChoice: routeChoice,
       routeOptions: routeOptions,
       routeTitle: routeTitle,
+      launchAction: launchAction,
+      launchHint: launchHint,
       chooseRoute: chooseRoute,
       routeLabel: routeLabel,
       routeHint: routeHint,
@@ -363,17 +415,28 @@ export default {
               </template>
               {{ unavailable(game) }}
             </n-tooltip>
-            <n-button
-              v-else-if="!sessionFor(game.gameKey)"
-              type="primary"
-              size="small"
-              :loading="state.busy[game.gameKey] === 'launching'"
-              :disabled="!!state.busy[game.gameKey]"
-              @click="store.launch(game)"
-            >
-              <template #icon><rm-icon name="play" :size="15" /></template
-              >{{ state.busy[game.gameKey] ? "连接中…" : "启动并注入" }}
-            </n-button>
+            <n-tooltip v-else-if="!sessionFor(game.gameKey)" trigger="hover">
+              <template #trigger>
+                <n-button
+                  type="primary"
+                  size="small"
+                  :loading="state.busy[game.gameKey] === 'launching'"
+                  :disabled="!!state.busy[game.gameKey]"
+                  @click="store.launch(game)"
+                >
+                  <template #icon><rm-icon name="play" :size="15" /></template
+                  >{{
+                    state.busy[game.gameKey]
+                      ? "连接中…"
+                      : "启动并注入" +
+                        (launchAction(game)
+                          ? "（" + launchAction(game) + "）"
+                          : "")
+                  }}
+                </n-button>
+              </template>
+              {{ launchHint(game) || "由工具箱启动游戏并注入桥接" }}
+            </n-tooltip>
             <n-button
               v-else
               type="primary"

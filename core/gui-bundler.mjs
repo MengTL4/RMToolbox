@@ -25,6 +25,8 @@ export const MODULES = [
   "core/rgss-savecode.mjs",
   "core/save-files.mjs",
   "core/evb-unpack.mjs",
+  "core/adapters/index.mjs",
+  "core/adapters/nwjs.mjs",
   "core/scanner.mjs",
   "core/grover-compat.mjs",
   "core/bridge-bundler.mjs",

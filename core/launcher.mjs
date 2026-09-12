@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanGame } from "./scanner.mjs";
 import { planLaunch } from "./launch-plan.mjs";
+import { payloadForScan } from "./adapters/index.mjs";
 import { buildBridge } from "./bridge-bundler.mjs";
 import { getToken } from "./token.mjs";
 import {
@@ -83,6 +84,15 @@ export async function ensureServer({ projectRoot, port, token }) {
   child.unref();
   const up = await waitForPort(port, 6000);
   return { running: up, started: true, pid: child.pid };
+}
+
+// The bridge extension directory belongs to the family's engine adapter
+// (ADR 0002: payload is part of the adapter interface). The historical
+// default stays for any scan no adapter claims.
+function bridgeExtensionDir(projectRoot, scan) {
+  const payload = payloadForScan(scan);
+  const rel = (payload && payload.dir) || "runtime/bridge";
+  return path.join(projectRoot, ...rel.split("/"));
 }
 
 export async function launchGame({
@@ -223,7 +233,7 @@ export async function launchGame({
 
   const token = getToken(projectRoot);
   if (build) buildBridge(projectRoot);
-  const extensionDir = path.join(projectRoot, "runtime", "bridge");
+  const extensionDir = bridgeExtensionDir(projectRoot, scan);
   if (!existsSync(path.join(extensionDir, "manifest.json")))
     throw new Error(`bridge extension missing: ${extensionDir}`);
 
@@ -388,7 +398,7 @@ async function launchBundledGame({ scan, projectRoot, port }) {
   }
   const token = getToken(projectRoot);
   buildBridge(projectRoot);
-  const extensionDir = path.join(projectRoot, "runtime", "bridge");
+  const extensionDir = bridgeExtensionDir(projectRoot, scan);
   if (!existsSync(path.join(extensionDir, "manifest.json")))
     throw new Error(`bridge extension missing: ${extensionDir}`);
 
@@ -440,7 +450,7 @@ async function launchSealedGame({ scan, projectRoot, port }) {
   }
   const token = getToken(projectRoot);
   buildBridge(projectRoot);
-  const extensionDir = path.join(projectRoot, "runtime", "bridge");
+  const extensionDir = bridgeExtensionDir(projectRoot, scan);
   if (!existsSync(path.join(extensionDir, "manifest.json")))
     throw new Error(`bridge extension missing: ${extensionDir}`);
 

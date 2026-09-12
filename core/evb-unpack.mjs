@@ -46,6 +46,17 @@ const NODE_TYPE_FOLDER = 3;
 const FOLDER_ALTNAMES = { "%DEFAULT FOLDER%": "" };
 const MAX_NODES = 2_000_000;
 const COMPLETE_MARKER = ".rmch-evb-complete.json";
+// v1 recorded only the source stamp plus the extraction totals. That is enough
+// to tell two packed exes apart, but not to tell a finished extraction from one
+// whose tree was later hollowed out — 宝可梦赤途's _unpacked shrank to 410 of
+// 41910 files (Graphics/ and Audio/ empty) and every launch after that reused
+// it, freezing the game on its loading screen. v2 additionally records paths
+// that a finished tree must contain, and those are re-checked before reuse.
+const MARKER_VERSION = 2;
+// How many paths the marker carries as proof of a finished tree. They are the
+// extraction's own last path (its last write) plus a spread of earlier ones, so
+// a truncated run is caught even when it got far into the table.
+const SENTINEL_LIMIT = 64;
 
 function sourceStamp(exePath) {
   const stat = statSync(exePath);
@@ -59,34 +70,77 @@ function completionPath(outDir) {
 // Game.exe is written near the start of the EVB table. Its presence therefore
 // only proves that extraction began, not that the graphics/audio tree is there.
 // Reuse a directory only after an atomic completion record written at the very
-// end of a successful extraction, and only for the same source executable.
+// end of a successful extraction, only for the same source executable, and only
+// while the record's own sentinel paths still exist on disk — a marker is a
+// statement about the past, not a statement about the tree in front of us.
 function isCompleteExtraction(exePath, outDir) {
   if (!existsSync(path.join(outDir, "Game.exe"))) return false;
+  let marker;
   try {
-    const marker = JSON.parse(readFileSync(completionPath(outDir), "utf8"));
-    const source = sourceStamp(exePath);
-    return (
-      marker &&
-      marker.version === 1 &&
-      marker.sourceSize === source.size &&
-      marker.sourceMtimeMs === source.mtimeMs &&
-      Number(marker.files) > 0
-    );
+    marker = JSON.parse(readFileSync(completionPath(outDir), "utf8"));
   } catch (_) {
     return false;
   }
+  if (!marker || marker.version !== MARKER_VERSION) return false;
+  const source = sourceStamp(exePath);
+  if (
+    marker.sourceSize !== source.size ||
+    marker.sourceMtimeMs !== source.mtimeMs ||
+    !(Number(marker.files) > 0)
+  ) {
+    return false;
+  }
+  const sentinels = markerSentinelPaths(marker);
+  if (!sentinels.length) return false;
+  return sentinels.every((rel) =>
+    existsSync(path.join(outDir, ...rel.split("/")))
+  );
 }
 
-function markCompleteExtraction(exePath, outDir, result) {
+/**
+ * The relative paths a marker offers as evidence that the tree is intact.
+ * Accepts version 2's `sentinels` and is deliberately strict: a marker without
+ * a usable path list cannot vouch for the tree, so the caller re-extracts.
+ */
+function markerSentinelPaths(marker) {
+  const list = marker && marker.sentinels;
+  if (!Array.isArray(list) || !list.length) return [];
+  return list.filter(
+    (rel) => typeof rel === "string" && rel && !rel.includes("..")
+  );
+}
+
+/**
+ * Paths that must exist for a finished extraction to be believed later: the
+ * table's last entry (written last, so its absence means the run was cut short)
+ * plus an even spread across the whole table.
+ */
+function sentinelPathsFor(files) {
+  const picked = [];
+  const seen = new Set();
+  const add = (file) => {
+    if (!file || seen.has(file.path)) return;
+    seen.add(file.path);
+    picked.push(file.path);
+  };
+  const step = Math.max(1, Math.ceil(files.length / (SENTINEL_LIMIT - 1)));
+  for (let i = 0; i < files.length; i += step) add(files[i]);
+  add(files[files.length - 1]);
+  return picked;
+}
+
+function markCompleteExtraction(exePath, outDir, result, files = []) {
   const source = sourceStamp(exePath);
   const marker = {
-    version: 1,
+    version: MARKER_VERSION,
     sourceSize: source.size,
     sourceMtimeMs: source.mtimeMs,
     files: result.files,
     bytes: result.bytes,
     completedAt: new Date().toISOString()
   };
+  const sentinels = sentinelPathsFor(files);
+  if (sentinels.length) marker.sentinels = sentinels;
   const temporary =
     completionPath(outDir) + `.tmp-${process.pid}-${Date.now()}`;
   writeFileSync(temporary, JSON.stringify(marker) + "\n", "utf8");
@@ -316,8 +370,8 @@ export function parseEvbTree(exePath) {
  * Extract the whole virtual filesystem into outDir. onProgress receives
  * { files, filesTotal, bytes, bytesTotal, current } at most once per file.
  */
-export function extractEvb(exePath, outDir, { onProgress } = {}) {
-  const { files } = parseEvbTree(exePath);
+export function extractEvb(exePath, outDir, { onProgress, tree } = {}) {
+  const { files } = tree || parseEvbTree(exePath);
   const compressed = files.filter((f) => f.compressed);
   if (compressed.length) {
     const first = compressed
@@ -383,8 +437,12 @@ function yieldToEventLoop() {
  * event loop so the toolbox window can repaint and process cancel/close input.
  * The synchronous function above remains available for CLI and fixture users.
  */
-export async function extractEvbAsync(exePath, outDir, { onProgress } = {}) {
-  const { files } = parseEvbTree(exePath);
+export async function extractEvbAsync(
+  exePath,
+  outDir,
+  { onProgress, tree } = {}
+) {
+  const { files } = tree || parseEvbTree(exePath);
   const compressed = files.filter((f) => f.compressed);
   if (compressed.length) {
     const first = compressed
@@ -472,14 +530,38 @@ function writeFileSyncSilently(outFd, buf, length) {
  * table and an interrupted extraction can leave a believable but unusable
  * directory behind.
  */
+/**
+ * Extraction rewrites files in place, so a game still running from the
+ * extraction directory (or a scanner holding it open) fails every write with a
+ * bare EBUSY/EPERM. Say what to do about it: the raw errno reaches the GUI
+ * toast verbatim.
+ */
+function describeEvbExtractionFailure(error) {
+  const code = error && error.code;
+  if (code === "EBUSY" || code === "EPERM" || code === "EACCES") {
+    return new EvbError(
+      "解包目录被占用，无法写入（游戏可能仍在运行）。请先关闭该游戏再重试。"
+    );
+  }
+  return error;
+}
+
 export function ensureEvbUnpacked(exePath, { onProgress } = {}) {
   const outDir = exePath.replace(/\.exe$/i, "") + "_unpacked";
   if (isCompleteExtraction(exePath, outDir)) {
     linkSaveDir(exePath, outDir);
     return { dir: outDir, extracted: false };
   }
-  const result = extractEvb(exePath, outDir, { onProgress });
-  markCompleteExtraction(exePath, outDir, result);
+  // Parse once: extractEvb reuses this table and it is also what records the
+  // sentinel paths the next call checks before trusting the tree.
+  const tree = parseEvbTree(exePath);
+  let result;
+  try {
+    result = extractEvb(exePath, outDir, { onProgress, tree });
+  } catch (error) {
+    throw describeEvbExtractionFailure(error);
+  }
+  markCompleteExtraction(exePath, outDir, result, tree.files);
   linkSaveDir(exePath, outDir);
   return {
     dir: outDir,
@@ -496,8 +578,17 @@ export async function ensureEvbUnpackedAsync(exePath, { onProgress } = {}) {
     linkSaveDir(exePath, outDir);
     return { dir: outDir, extracted: false };
   }
-  const result = await extractEvbAsync(exePath, outDir, { onProgress });
-  markCompleteExtraction(exePath, outDir, result);
+  const tree = parseEvbTree(exePath);
+  let result;
+  try {
+    result = await extractEvbAsync(exePath, outDir, {
+      onProgress,
+      tree
+    });
+  } catch (error) {
+    throw describeEvbExtractionFailure(error);
+  }
+  markCompleteExtraction(exePath, outDir, result, tree.files);
   linkSaveDir(exePath, outDir);
   return {
     dir: outDir,

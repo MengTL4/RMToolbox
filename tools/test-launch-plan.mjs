@@ -147,7 +147,20 @@ for (const route of Object.values(ROUTES)) {
     `route ${route.id} must declare operation "launch"`
   );
   assert.ok(route.userGoal, `route ${route.id} must carry a userGoal`);
+  // The primary action button is labelled with what the route actually DOES,
+  // because "启动并注入" alone hides the difference that matters: the dll route
+  // starts the game bare (no launch flags) and hooks it afterwards, which is
+  // the only thing a blacklist shell accepts. A route without its own wording
+  // would fall back to the generic label and re-hide that.
+  assert.ok(
+    route.actionLabel,
+    `route ${route.id} must carry an actionLabel for the launch button`
+  );
 }
+
+// The dll route is the one whose action is least guessable from its name, so
+// pin the wording that says the game starts bare.
+assert.match(ROUTES.dll.actionLabel, /裸启动|不带任何启动参数/);
 
 // 运行副本 is a mechanism, not a route a user picks: the copy-based routes say
 // so instead of each inventing its own name for the same trick.
@@ -156,15 +169,33 @@ assert.deepEqual(ROUTES["evb-unpack-rgss-script"].alsoUses, ["copy", "script"]);
 assert.equal(ROUTES.shadow.mechanism, "copy");
 assert.match(routeMechanismText("evb-unpack-rgss-script"), /解包/);
 
-// Candidates carry their label, userGoal and mechanism so the GUI needs no
-// second map.
+// Candidates carry their label, userGoal, actionLabel and mechanism so the GUI
+// needs no second map.
 {
   const plan = planLaunch(nw({ manifest: { bgScript: "loading" } }));
   const shadow = plan.candidates.find((entry) => entry.id === "shadow");
   assert.equal(shadow.label, "影子目录");
   assert.equal(shadow.userGoal, "不动原目录");
   assert.equal(shadow.mechanismLabel, "运行副本");
+  assert.ok(shadow.actionLabel, "candidates must carry actionLabel");
   assert.equal(plan.selectedLabel, "影子目录");
+}
+
+// The nb-evalnwbin family has exactly one route and it is dll: whatever else
+// happens, the plan handed to the GUI must carry the bare-launch wording that
+// stops the button from reading as "the toolbox will relaunch the game its way".
+{
+  const plan = planLaunch({
+    root: "C:/games/_V1.2.2_B电脑端",
+    gameKey: "_V1.2.2_B电脑端",
+    container: "nb-evalnwbin",
+    paths: { exe: "C:/games/_V1.2.2_B电脑端/万族穿越-源启崛起.exe" },
+    protection: { level: 2, flags: [] }
+  });
+  assert.equal(plan.selected, "dll");
+  assert.equal(plan.candidates.length, 1);
+  assert.match(plan.candidates[0].actionLabel, /裸启动/);
+  assert.equal(plan.fallback.length, 0);
 }
 
 // The static half of preflight is decided by the catalogue, not inline.

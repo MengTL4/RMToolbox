@@ -9,7 +9,10 @@ import {
   writeFileSync,
   readFileSync,
   rmSync,
-  mkdirSync
+  mkdirSync,
+  statSync,
+  openSync,
+  closeSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -59,6 +62,7 @@ const fileNode = (name, originalSize, storedSize) => {
 
 const GAME_EXE = Buffer.from("MZ-FAKE-GAME-BYTES");
 const README = Buffer.from("hello evb\n");
+const TILE = Buffer.from("PNG-ish tile bytes");
 
 function peHead(withEnigma) {
   const pe = Buffer.alloc(0x400);
@@ -88,21 +92,26 @@ function peHead(withEnigma) {
 function buildEvbImage({ enigma = true, compress = false } = {}) {
   const storedGame = compress ? GAME_EXE.length - 1 : GAME_EXE.length;
   const table = Buffer.concat([
-    folderNode("%DEFAULT FOLDER%", 2),
+    folderNode("%DEFAULT FOLDER%", 3),
     fileNode("Game.exe", GAME_EXE.length, storedGame),
+    folderNode("Graphics", 1),
+    fileNode("tile.png", TILE.length, TILE.length),
     fileNode("readme.txt", README.length, README.length)
   ]);
   const magicAt = 0x400;
   const mainSize = table.length + 11; // dataBase = magicAt+68+size = table end
   const dataBase = magicAt + 64 + 15 + table.length;
-  const image = Buffer.alloc(dataBase + GAME_EXE.length + README.length);
+  const image = Buffer.alloc(
+    dataBase + GAME_EXE.length + TILE.length + README.length
+  );
   peHead(enigma).copy(image, 0);
   image.write("EVB\0", magicAt, "latin1");
   const main = nodeHeader(1, mainSize);
   main.copy(image, magicAt + 64); // byte 15 stays 0 (objects < 2^24)
   table.copy(image, magicAt + 64 + 15);
   GAME_EXE.copy(image, dataBase);
-  README.copy(image, dataBase + storedGame);
+  TILE.copy(image, dataBase + storedGame);
+  README.copy(image, dataBase + storedGame + TILE.length);
   return image;
 }
 
@@ -126,13 +135,14 @@ try {
   const paths = tree.files.map((f) => f.path);
   check(
     "tree paths (%DEFAULT FOLDER% → root)",
-    paths.join(",") === "Game.exe,readme.txt",
+    paths.join(",") === "Game.exe,Graphics/tile.png,readme.txt",
     paths.join(",")
   );
   check(
     "tree sizes",
     tree.files[0]?.storedSize === GAME_EXE.length &&
-      tree.files[1]?.storedSize === README.length,
+      tree.files[1]?.storedSize === TILE.length &&
+      tree.files[2]?.storedSize === README.length,
     JSON.stringify(tree.files)
   );
   check(
@@ -145,7 +155,8 @@ try {
   const result = extractEvb(exe, outDir);
   check(
     "extractEvb counts",
-    result.files === 2 && result.bytes === GAME_EXE.length + README.length,
+    result.files === 3 &&
+      result.bytes === GAME_EXE.length + TILE.length + README.length,
     JSON.stringify(result)
   );
   check(
@@ -175,7 +186,7 @@ try {
   const first = ensureEvbUnpacked(packed);
   check(
     "ensureEvbUnpacked extracts",
-    first.extracted === true && first.files === 2,
+    first.extracted === true && first.files === 3,
     JSON.stringify(first)
   );
   check(
@@ -214,9 +225,90 @@ try {
     readFileSync(
       path.join(partialDir, ".rmch-evb-complete.json"),
       "utf8"
-    ).includes('"files":2'),
+    ).includes('"files":3'),
     ""
   );
+
+  // Regression (宝可梦赤途 1.0.9.1, 2026-09): a completion marker proves only that
+  // extraction finished ONCE. When the tree is later hollowed out — the user's
+  // _unpacked held 410 of 41910 files, with Graphics/ and Audio/ empty — the
+  // marker still matched the source executable, so every later launch reused
+  // the empty tree and the game sat on its loading screen forever. Reuse must
+  // therefore re-check that the marker's own paths still exist on disk.
+  const holedPacked = path.join(tmp, "Holed Game.exe");
+  writeFileSync(holedPacked, buildEvbImage());
+  const holedDir = ensureEvbUnpacked(holedPacked).dir;
+  // Simulate the external deletion: the tree keeps Game.exe and the marker, but
+  // the Graphics subdirectory that the table says must exist is gone.
+  rmSync(path.join(holedDir, "Graphics"), { recursive: true, force: true });
+  const holedRepair = ensureEvbUnpacked(holedPacked);
+  check(
+    "hollowed tree is not reused as complete",
+    holedRepair.extracted === true &&
+      readFileSync(path.join(holedDir, "Graphics", "tile.png")).equals(TILE),
+    JSON.stringify(holedRepair)
+  );
+  // and it must settle back into reuse once repaired
+  const holedAgain = ensureEvbUnpacked(holedPacked);
+  check(
+    "repaired tree is reused again",
+    holedAgain.extracted === false,
+    JSON.stringify(holedAgain)
+  );
+
+  // A marker from an older toolbox version carries no path record; it cannot be
+  // trusted, so it must be re-extracted rather than reused.
+  const legacyPacked = path.join(tmp, "Legacy Game.exe");
+  writeFileSync(legacyPacked, buildEvbImage());
+  const legacyDir = legacyPacked.replace(/\.exe$/i, "") + "_unpacked";
+  mkdirSync(legacyDir, { recursive: true });
+  writeFileSync(path.join(legacyDir, "Game.exe"), Buffer.from("partial"));
+  const legacyStat = statSync(legacyPacked);
+  writeFileSync(
+    path.join(legacyDir, ".rmch-evb-complete.json"),
+    JSON.stringify({
+      version: 1,
+      sourceSize: legacyStat.size,
+      sourceMtimeMs: legacyStat.mtimeMs,
+      files: 3,
+      bytes: GAME_EXE.length + TILE.length + README.length
+    })
+  );
+  const legacy = ensureEvbUnpacked(legacyPacked);
+  check(
+    "legacy marker is re-extracted",
+    legacy.extracted === true &&
+      readFileSync(path.join(legacyDir, "readme.txt")).equals(README),
+    JSON.stringify(legacy)
+  );
+
+  // A repair that cannot write (the game is still running out of the tree, so
+  // its exe is locked) must say so instead of surfacing a raw errno: the GUI
+  // shows this message verbatim. The lock is observed, not required — Windows
+  // open semantics vary — so the check only rejects a *bad* message.
+  const busyPacked = path.join(tmp, "Busy Game.exe");
+  writeFileSync(busyPacked, buildEvbImage());
+  const busyFirst = ensureEvbUnpacked(busyPacked);
+  const held = openSync(path.join(busyFirst.dir, "Game.exe"), "r");
+  try {
+    rmSync(path.join(busyFirst.dir, ".rmch-evb-complete.json"), {
+      force: true
+    });
+    let busyMessage = "";
+    try {
+      const again = ensureEvbUnpacked(busyPacked);
+      busyMessage = `(no write failure; extracted=${again.extracted})`;
+    } catch (e) {
+      busyMessage = e.message;
+    }
+    check(
+      "a write failure while the game holds the tree gets an actionable message",
+      /^\(no write failure/.test(busyMessage) || /关闭该游戏/.test(busyMessage),
+      busyMessage
+    );
+  } finally {
+    closeSync(held);
+  }
 
   // The GUI path must yield while copying a packed image, even when the image
   // contains only small files. This keeps NW responsive during real 40k-file
@@ -235,7 +327,7 @@ try {
   });
   check(
     "async extraction yields to event loop",
-    yielded && asyncFirst.extracted === true && progress === 2,
+    yielded && asyncFirst.extracted === true && progress === 3,
     JSON.stringify({ yielded, progress, asyncFirst })
   );
   const asyncSecond = await ensureEvbUnpackedAsync(asyncPacked);
