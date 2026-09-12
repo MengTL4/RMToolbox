@@ -20,8 +20,13 @@ static volatile LONG g_workerStarted = 0;
 static volatile LONG g_hookCalled = 0;
 
 static DWORD WINAPI workerThread(LPVOID) {
+  dbgLog("test-echo", "worker: connecting pipe");
   HANDLE pipe = pipeConnect(10000);
-  if (pipe == INVALID_HANDLE_VALUE) return 0;
+  if (pipe == INVALID_HANDLE_VALUE) {
+    dbgLog("test-echo", "worker: no pipe server, exiting");
+    return 0;
+  }
+  dbgLog("test-echo", "worker: pipe connected");
 
   pipeSendReady(pipe, "test-echo");
 
@@ -78,7 +83,12 @@ extern "C" __declspec(dllexport) LRESULT CALLBACK RmchHookProc(int code, WPARAM 
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(hinst);
+    dbgLog("test-echo", "DllMain attach");
+    // OEP-mode proof: a named event created inside DllMain lets the target
+    // observe that the DLL ran before its own main() (see test-target).
+    CreateEventW(NULL, FALSE, FALSE, L"Local\\rmch-oep-echo-premain");
     ensureWorker();
+    dbgLog("test-echo", "DllMain done");
   }
   return TRUE;
 }

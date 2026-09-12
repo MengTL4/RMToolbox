@@ -201,6 +201,86 @@ async function testWh(archDir) {
   }
 }
 
+// OEP mode: launch the target suspended with the echo DLL at its entry point.
+// Proves the two properties 入口点注入 exists for: the injector reports the
+// pid, and the DLL's DllMain ran BEFORE the target's own main().
+async function testOep(archDir) {
+  const targetExe = path.join(archDir, "test", "test-target.exe");
+  const echoDll = path.join(archDir, "test", "rmch-test-echo.dll");
+  const injector = path.join(archDir, "rmch-inject.exe");
+  const inj = spawn(
+    injector,
+    [
+      "--oep",
+      "--exe",
+      targetExe,
+      "--dll",
+      echoDll,
+      "--inherit-stdio",
+      "--",
+      "--hidden"
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] }
+  );
+  let out = "";
+  let err = "";
+  inj.stdout.on("data", (d) => (out += d.toString()));
+  inj.stderr.on("data", (d) => (err += d.toString()));
+  let pid = 0;
+  try {
+    pid = await waitFor(
+      () => {
+        const m = out.match(/ok pid (\d+)/);
+        return m ? Number(m[1]) : 0;
+      },
+      10000,
+      "oep ok pid"
+    );
+    check("oep injector reports pid", pid > 0, out + err);
+
+    // The target's own main() reports whether the DLL beat it (see
+    // test-target.cpp / test-echo.cpp: the DLL creates the event in DllMain).
+    const premain = await waitFor(
+      () => {
+        const m = out.match(/dll-premain (\d)/);
+        return m ? m[1] : null;
+      },
+      10000,
+      "dll-premain line"
+    );
+    check("oep dll ran before target main", premain === "1", out.trim());
+
+    // The DLL's worker still honours the per-pid pipe handshake from here.
+    const server = await pipeServerForPid(pid);
+    let ready = null;
+    let result = null;
+    server.on("connection", (sock) => {
+      frameReader(sock, (msg) => {
+        if (msg.t === "ready") ready = { msg, sock };
+        if (msg.t === "result") result = msg;
+      });
+    });
+    const r = await waitFor(() => ready, 8000, "oep ready frame");
+    writeFrame(r.sock, "oep hello");
+    const res = await waitFor(() => result, 8000, "oep result frame");
+    check("oep echo ok", res.ok === true, JSON.stringify(res));
+    check("oep echo payload", res.detail === "echo:OEP HELLO", res.detail);
+    server.close();
+  } finally {
+    if (pid)
+      spawn("taskkill", ["/PID", String(pid), "/F"], { stdio: "ignore" });
+    // The injector exits as soon as the game is resumed; give it a beat.
+    await new Promise((resolve) => {
+      if (inj.exitCode !== null) return resolve();
+      inj.once("exit", resolve);
+      setTimeout(resolve, 3000);
+    });
+    if (inj.exitCode !== null) {
+      check("oep injector exit 0", inj.exitCode === 0, `code=${inj.exitCode}`);
+    }
+  }
+}
+
 const archs = existsSync(binRoot)
   ? readdirSync(binRoot).filter(
       (d) =>
@@ -230,6 +310,12 @@ for (const arch of archs) {
   } catch (e) {
     failures++;
     console.error(`  FAIL wh threw: ${e.message}`);
+  }
+  try {
+    await testOep(archDir);
+  } catch (e) {
+    failures++;
+    console.error(`  FAIL oep threw: ${e.message}`);
   }
 }
 

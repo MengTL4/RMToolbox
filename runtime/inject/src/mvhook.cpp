@@ -309,7 +309,19 @@ static DWORD WINAPI workerThreadBody(LPVOID) {
   }
   dbgLog(DBG, "bootstrap %lu bytes", (unsigned long)g_bootstrap.len);
 
-  if (!resolveAll()) {
+  // OEP-delivered renderers get here at birth, possibly before the child's own
+  // loader has mapped nw.dll — retry symbol resolution for a bounded window
+  // instead of failing outright. Attach-mode renderers have run for seconds
+  // already, so the first pass succeeds there. unsupported-nw-0.12 is terminal.
+  bool resolved = resolveAll();
+  DWORD resolveDeadline = GetTickCount() + 15000;
+  while (!resolved && strcmp(g_evalDetail, "unsupported-nw-0.12") != 0) {
+    if ((long)(GetTickCount() - resolveDeadline) >= 0) break;
+    dbgLog(DBG, "resolveAll pending (%s), retrying", g_evalDetail);
+    Sleep(250);
+    resolved = resolveAll();
+  }
+  if (!resolved) {
     dbgLog(DBG, "resolveAll failed: %s", g_evalDetail);
     pipeSendResult(pipe, false, "%s", g_evalDetail);
     CloseHandle(pipe);
@@ -356,8 +368,26 @@ static DWORD WINAPI workerThreadBody(LPVOID) {
   // The detour evaluates the bootstrap on the first suitable V8 call and then
   // signals g_evEvalDone; the worker just waits here. The hooks stay armed
   // during the eval (nested NewFromUtf8 calls pass straight through) and are
-  // disabled after we have a result.
-  DWORD w = WaitForSingleObject(g_evEvalDone, 20000);
+  // disabled after we have a result. OEP-delivered renderers (RMCH_OEP rides
+  // the environment down the process tree) were injected at BIRTH — the first
+  // child may be Chromium's warm spare, idle for minutes before a page ever
+  // runs in it — so they get a much longer window than attach-mode (measured:
+  // an MV game's first suitable V8 call landed just past the 20s attach-mode
+  // deadline).
+  DWORD waitMs =
+      GetEnvironmentVariableA("RMCH_OEP", NULL, 0) ? 600000 : 20000;
+  DWORD w = WaitForSingleObject(g_evEvalDone, waitMs);
+  if (w != WAIT_OBJECT_0) {
+    // Never self-unload under an in-flight eval: the deadline expiring while a
+    // late V8 call is mid-bootstrap would unmap the code under its feet
+    // (measured: the first call landed 15ms past the deadline and the renderer
+    // died with it). Give a claimed eval a short grace to settle.
+    DWORD grace = GetTickCount() + 15000;
+    while (g_claimed && !g_evalState && (long)(GetTickCount() - grace) < 0) {
+      Sleep(200);
+    }
+    w = WaitForSingleObject(g_evEvalDone, 0);
+  }
   if (w == WAIT_OBJECT_0) {
     LONG st = g_evalState;
     dbgLog(DBG, "eval state=%ld detail=%s", st, g_evalDetail);
@@ -375,8 +405,199 @@ static DWORD WINAPI workerThreadBody(LPVOID) {
   return 0;
 }
 
+// --- OEP main-process mode ----------------------------------------------------
+//
+// Loaded at the game's entry point (Early Bird via rmch-inject --oep): the NW.js
+// BROWSER process gets us before any game code. The bridge has to reach a
+// renderer, so we MinHook CreateProcessW / CreateProcessAsUserW and inject
+// ourselves into every --type=renderer child the moment it is born — the
+// deterministic replacement for "wait 30–60s for the shell's boot checks, then
+// poll for a renderer" (the blind wait documented in core/attach.mjs).
+//
+// Nothing parks: the core closes our pipe once the bridge is up (or a watchdog
+// forces it), then we unhook and self-unload exactly like the renderer path.
+
+typedef BOOL(WINAPI* CreateProcessW_t)(
+    LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD,
+    LPVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION);
+typedef BOOL(WINAPI* CreateProcessAsUserW_t)(
+    HANDLE, LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL,
+    DWORD, LPVOID, LPCWSTR, LPSTARTUPINFOW, LPPROCESS_INFORMATION);
+
+static CreateProcessW_t g_origCreateProcessW = NULL;
+static CreateProcessAsUserW_t g_origCreateProcessAsUserW = NULL;
+static WCHAR g_hookDll[MAX_PATH]; // our own path, for child injection
+static HANDLE g_pipeMain = INVALID_HANDLE_VALUE;
+static volatile LONG g_rendererCount = 0;
+
+// After a child is born: inject ourselves into it when it is a renderer, and
+// tell the core. Runs inside the detour — the child exists but its renderer
+// boot has barely started, so the eval lands long before any shell integrity
+// check would look for us (and the renderer self-unloads after the eval).
+static void oepFollowChild(LPCWSTR appName, LPWSTR cmdLine,
+                           LPPROCESS_INFORMATION pi, BOOL ok) {
+  if (!ok || !pi || !pi->hProcess) return;
+  LPCWSTR cmd = cmdLine ? cmdLine : appName;
+  if (!cmd || !wcsstr(cmd, L"--type=renderer")) return;
+  InterlockedIncrement(&g_rendererCount);
+  DWORD pid = pi->dwProcessId;
+  dbgLog(DBG, "oep: renderer child pid=%lu", (unsigned long)pid);
+
+  bool injected = false;
+  SIZE_T bytes = (wcslen(g_hookDll) + 1) * sizeof(WCHAR);
+  LPVOID remote = VirtualAllocEx(pi->hProcess, NULL, bytes,
+                                 MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  if (remote &&
+      WriteProcessMemory(pi->hProcess, remote, g_hookDll, bytes, NULL)) {
+    LPTHREAD_START_ROUTINE loadLib =
+        (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleW(L"kernel32.dll"),
+                                               "LoadLibraryW");
+    // Fire and forget: waiting for the remote thread would stall the browser
+    // process's own child-spawn path (Chromium creates crashpad/gpu/renderer
+    // children through this call), slowing the whole game's startup by
+    // seconds per child. The renderer's pipe hello is the real confirmation.
+    HANDLE t = CreateRemoteThread(pi->hProcess, NULL, 0, loadLib, remote, 0, NULL);
+    if (t) {
+      injected = true;
+      CloseHandle(t);
+    }
+  }
+  dbgLog(DBG, "oep: renderer inject pid=%lu ok=%d", (unsigned long)pid,
+         injected ? 1 : 0);
+  if (g_pipeMain != INVALID_HANDLE_VALUE) {
+    Buf j;
+    bufInit(&j);
+    bufAppendStr(&j, "{\"t\":\"renderer\",\"pid\":");
+    char num[16];
+    _snprintf(num, sizeof(num), "%lu", (unsigned long)pid);
+    bufAppendStr(&j, num);
+    bufAppendStr(&j, ",\"ok\":");
+    bufAppendStr(&j, injected ? "true" : "false");
+    bufAppendStr(&j, "}");
+    if (j.data) pipeSendJson(g_pipeMain, j.data, j.len);
+    bufFree(&j);
+  }
+}
+
+static BOOL WINAPI detourCreateProcessW(
+    LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta,
+    BOOL inherit, DWORD flags, LPVOID env, LPCWSTR cwd, LPSTARTUPINFOW si,
+    LPPROCESS_INFORMATION pi) {
+  BOOL ok = g_origCreateProcessW(app, cmd, pa, ta, inherit, flags, env, cwd, si, pi);
+  oepFollowChild(app, cmd, pi, ok);
+  return ok;
+}
+
+static BOOL WINAPI detourCreateProcessAsUserW(
+    HANDLE token, LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa,
+    LPSECURITY_ATTRIBUTES ta, BOOL inherit, DWORD flags, LPVOID env, LPCWSTR cwd,
+    LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi) {
+  BOOL ok = g_origCreateProcessAsUserW(token, app, cmd, pa, ta, inherit, flags,
+                                       env, cwd, si, pi);
+  oepFollowChild(app, cmd, pi, ok);
+  return ok;
+}
+
+// The core closes the pipe when the bridge is up; if it never does (core died,
+// game never bridged), the watchdog forces the read to fail so we still leave.
+// It outlives the core's own cap (300s): a renderer born while the core still
+// waits must still be followed. The exchange keeps exactly one closer.
+static DWORD WINAPI oepWatchdog(LPVOID) {
+  Sleep(600000);
+  // Exactly one closer: whoever exchanges the live handle out owns the close.
+  HANDLE old = InterlockedExchangePointer((PVOID*)&g_pipeMain,
+                                          INVALID_HANDLE_VALUE);
+  if (old != INVALID_HANDLE_VALUE) CloseHandle(old);
+  return 0;
+}
+
+static DWORD WINAPI workerMainMode(LPVOID) {
+  // Our own path is the DLL to ride into renderers; the injector passes it
+  // explicitly because GetModuleFileName on a manually-mapped shell image can
+  // lie, while the injector always knows the real path.
+  if (!GetEnvironmentVariableW(L"RMCH_HOOK_DLL", g_hookDll, MAX_PATH) &&
+      !GetModuleFileNameW((HMODULE)g_hinst, g_hookDll, MAX_PATH)) {
+    dbgLog(DBG, "oep: no hook dll path");
+    return 0;
+  }
+
+  HANDLE pipe = pipeConnect(20000);
+  if (pipe == INVALID_HANDLE_VALUE) {
+    dbgLog(DBG, "oep: pipe connect failed, gle=%lu", GetLastError());
+    return 0;
+  }
+  g_pipeMain = pipe;
+  dbgLog(DBG, "oep: main mode pipe connected");
+  {
+    Buf j;
+    bufInit(&j);
+    bufAppendStr(&j, "{\"t\":\"ready\",\"dll\":\"mvhook\",\"arch\":");
+    jsonAppendEscaped(&j, archName());
+    bufAppendStr(&j, ",\"mode\":\"main\"}");
+    if (j.data) pipeSendJson(pipe, j.data, j.len);
+    bufFree(&j);
+  }
+
+  if (MH_Initialize() != MH_OK) {
+    dbgLog(DBG, "oep: minhook init failed");
+    CloseHandle(pipe);
+    g_pipeMain = INVALID_HANDLE_VALUE;
+    return 0;
+  }
+  int hooks = 0;
+  FARPROC cpw = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "CreateProcessW");
+  FARPROC cpuw = GetProcAddress(GetModuleHandleW(L"advapi32.dll"), "CreateProcessAsUserW");
+  if (cpw && MH_CreateHook((LPVOID)cpw, (LPVOID)&detourCreateProcessW,
+                           (LPVOID*)&g_origCreateProcessW) == MH_OK &&
+      MH_EnableHook((LPVOID)cpw) == MH_OK)
+    hooks++;
+  if (cpuw && MH_CreateHook((LPVOID)cpuw, (LPVOID)&detourCreateProcessAsUserW,
+                            (LPVOID*)&g_origCreateProcessAsUserW) == MH_OK &&
+      MH_EnableHook((LPVOID)cpuw) == MH_OK)
+    hooks++;
+  dbgLog(DBG, "oep: create-process hooks installed: %d", hooks);
+  if (!hooks) {
+    MH_Uninitialize();
+    CloseHandle(pipe);
+    g_pipeMain = INVALID_HANDLE_VALUE;
+    return 0;
+  }
+
+  HANDLE watchdog = CreateThread(NULL, 0, oepWatchdog, NULL, 0, NULL);
+  if (watchdog) CloseHandle(watchdog);
+
+  // Park until the core closes the pipe (bridge up) or the watchdog forces it.
+  Buf discard;
+  bufInit(&discard);
+  while (pipeReadFrame(pipe, &discard, 1024 * 1024)) {
+    discard.len = 0;
+  }
+  bufFree(&discard);
+  dbgLog(DBG, "oep: pipe closed, leaving (renderers seen: %ld)",
+         (long)g_rendererCount);
+  if (g_origCreateProcessW) MH_DisableHook((LPVOID)cpw);
+  if (g_origCreateProcessAsUserW) MH_DisableHook((LPVOID)cpuw);
+  MH_Uninitialize();
+  {
+    // Same single-closer exchange as the watchdog.
+    HANDLE old = InterlockedExchangePointer((PVOID*)&g_pipeMain,
+                                            INVALID_HANDLE_VALUE);
+    if (old != INVALID_HANDLE_VALUE) CloseHandle(old);
+  }
+  return 0;
+}
+
 static DWORD WINAPI workerThread(LPVOID arg) {
-  workerThreadBody(arg);
+  // Mode split: any --type= child process (renderer, gpu, utility…) runs the
+  // normal V8 eval flow; only the OEP browser process (RMCH_OEP=1, no --type=)
+  // rides CreateProcess into renderers instead. The delivery side already
+  // guarantees the DLL only ever lands in the browser process or a
+  // --type=renderer child, so the loose predicate cannot misclassify today.
+  bool oepMain = GetEnvironmentVariableA("RMCH_OEP", NULL, 0) != 0;
+  LPCWSTR cmdline = GetCommandLineW();
+  bool isChild = cmdline && wcsstr(cmdline, L"--type=") != NULL;
+  if (oepMain && !isChild) workerMainMode(arg);
+  else workerThreadBody(arg);
   // Job done (or failed) — get out of the process. FreeLibraryAndExitThread
   // runs DLL_PROCESS_DETACH (our DllMain ignores it) and never returns; every
   // exit from here on must go through this tail, never a plain return.

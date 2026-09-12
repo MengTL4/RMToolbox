@@ -198,6 +198,12 @@ export const ATTACH_ROUTES = Object.freeze({
     mechanism: "dll",
     operation: "launch"
   },
+  "nw-launch-oep": {
+    id: "nw-launch-oep",
+    label: "启动并注入（入口点注入）",
+    mechanism: "dll",
+    operation: "launch"
+  },
   "rgss-inject": {
     id: "rgss-inject",
     label: "RGSS 附加（脚本注入）",

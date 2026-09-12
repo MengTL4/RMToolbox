@@ -362,6 +362,266 @@ export function injectAndDeliver({
   });
 }
 
+// --- OEP launch (入口点注入) ------------------------------------------------------
+//
+// Early Bird via rmch-inject.exe --oep: the game starts suspended and mvhook
+// rides into the browser process before any game code; mvhook's main-mode
+// CreateProcess hooks then deliver it into every renderer the moment NW.js
+// spawns one. This replaces the measured-but-blind "wait 30–60s for the shell's
+// boot checks to settle, then poll for the renderer" (launchNw below) for the
+// shells that tolerate an early-resident DLL — measured: Enigma-NB; standard
+// NW.js games have no checks at all. NB-family boot checks trip on early
+// renderer injection and Grover arms its anti-inject defenses (see the settle
+// comment in launchNw), so those families keep the legacy path.
+
+// Which launch plans may use OEP: standard NW.js games and the Enigma box.
+// Everything with a stricter shell (nb-evalnwbin module scans, grover-boot's
+// armed defenses) or a dedicated container keeps its measured route.
+export function oepLaunchEligible(scan) {
+  const container = scan.container || "";
+  if (!["", "nwjs", "enigma-nb"].includes(container)) return false;
+  const flags = (scan.protection && scan.protection.flags) || [];
+  if (flags.includes("grover-boot")) return false;
+  return true;
+}
+
+// The platform-seam half of an OEP launch: spawn rmch-inject.exe --oep and
+// parse its verdict. The game ends up suspended-injected-resumed by the
+// injector; we learn the pid from its stdout. Resolves { ok, pid, detail } —
+// never rejects for expected failures.
+export function launchOepInject({
+  projectRoot,
+  arch,
+  exe,
+  cwd,
+  dllName,
+  pipeName,
+  env
+}) {
+  const binDir = injectBinDir(projectRoot, arch);
+  const injector = path.join(binDir, "rmch-inject.exe");
+  const dll = path.join(binDir, dllName);
+  if (!existsSync(injector))
+    return Promise.resolve({
+      ok: false,
+      detail: `injector missing: ${injector}`
+    });
+  if (!existsSync(dll))
+    return Promise.resolve({ ok: false, detail: `hook dll missing: ${dll}` });
+
+  return new Promise((resolve) => {
+    const args = [
+      "--oep",
+      "--exe",
+      exe,
+      "--dll",
+      dll,
+      "--env",
+      "RMCH_OEP=1",
+      "--env",
+      `RMCH_ATTACH_PIPE=${pipeName}`,
+      "--env",
+      `RMCH_HOOK_DLL=${dll}`
+    ];
+    for (const [key, value] of Object.entries(env || {})) {
+      args.push("--env", `${key}=${value}`);
+    }
+    const child = spawn(injector, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d.toString()));
+    child.stderr.on("data", (d) => (err += d.toString()));
+    child.on("error", (error) =>
+      resolve({ ok: false, detail: `injector spawn: ${error.message}` })
+    );
+    child.on("exit", (code) => {
+      const m = out.match(/ok pid (\d+)/);
+      if (code === 0 && m) resolve({ ok: true, pid: Number(m[1]) });
+      else
+        resolve({ ok: false, detail: `injector-exit-${code}: ${err.trim()}` });
+    });
+  });
+}
+
+// One OEP launch: pipe server for the whole process tree, injector spawn, then
+// deliver the bootstrap to each renderer mvhook reports from (a quiet spare
+// renderer does not end the attempt — the real game page may be a later child).
+// Resolves { ok, gamePid, detail? } — never rejects: every failure route,
+// including a throw from the prep steps, ends at finish().
+// Exported for the unit seam in tools/test-attach.mjs (same pattern as
+// spawnNwGameAndWait).
+export function tryOepLaunch({ scan, projectRoot, port }, runtime, log) {
+  const { platform, clock } = runtime;
+  const policy = nwAttachmentPolicy(scan, "launched");
+  const stateDir = path.join(
+    projectRoot,
+    "runtime",
+    "bridge-state",
+    scan.gameKey
+  );
+
+  let resolveFn;
+  const done = new Promise((resolve) => {
+    resolveFn = resolve;
+  });
+  const server = net.createServer();
+  const sockets = new Set();
+  let settled = false;
+  let gamePid = null;
+  const finish = (result) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    // Closing the pipe is mvhook-main's signal to unhook + self-unload.
+    for (const sock of sockets) {
+      try {
+        sock.destroy();
+      } catch (_) {}
+    }
+    try {
+      server.close();
+    } catch (_) {}
+    resolveFn(result);
+  };
+  const timer = setTimeout(() => {
+    log("oep launch timed out", { pid: gamePid });
+    finish({ ok: false, gamePid, detail: "oep-timeout" });
+    // Slow games load their page minutes in (measured: a big MV game's
+    // renderer ran its first script at +300s). The renderer itself stays
+    // patient for 10 minutes; the core's 7-minute cap only bounds how long we
+    // keep the launch attempt before the legacy path takes over.
+  }, 420000);
+
+  (async () => {
+    const arch = readPeArch(scan.paths.exe);
+    const token = getToken(projectRoot);
+    buildBridge(projectRoot);
+    // Older platform fakes (tests) may not supply ensureServer; the real one is
+    // the default.
+    await (platform.ensureServer || ensureServer)({ projectRoot, port, token });
+
+    // The bootstrap the renderer's mvhook will eval. bootTap is unnecessary
+    // here by construction: OEP lands BEFORE the boot parse, so the bridge's
+    // own capture (08-capture.js) sees the whole $data* load.
+    const bootstrap = buildNwBootstrap({
+      gameRoot: scan.root,
+      projectRoot,
+      gameKey: scan.gameKey,
+      port,
+      token,
+      extraEnv: {
+        ...(policy.file ? { RMCH_TRANSPORT: "file" } : {})
+      }
+    });
+
+    // Stale file-channel files from a dead bridge would fake a hello.
+    if (policy.file) {
+      mkdirSync(stateDir, { recursive: true });
+      if (!fileBridgeHello(stateDir, clock.now())) {
+        for (const name of ["commands.jsonl", "events.jsonl"]) {
+          rmSync(path.join(stateDir, name), { force: true });
+        }
+      }
+    }
+
+    const pipeName = `\\\\.\\pipe\\rmch-oep-${scan.gameKey}-${clock.now()}`;
+    server.once("error", (error) =>
+      finish({ ok: false, detail: `pipe-server: ${error.message}` })
+    );
+    server.on("connection", (sock) => {
+      sockets.add(sock);
+      sock.on("close", () => sockets.delete(sock));
+      frameReader(sock, (msg) => {
+        if (msg.t === "ready" && msg.mode === "main") {
+          // The browser process has its CreateProcess hooks armed.
+          log("oep main process armed", { pid: gamePid });
+          return;
+        }
+        if (msg.t === "ready") {
+          // A renderer reporting for the bootstrap. Two live renderers may each
+          // eval it (the quiet spare and the real page) — the in-page guard
+          // throws on non-game contexts, so only a game page ever bridges.
+          writeFrame(sock, bootstrap);
+          return;
+        }
+        if (msg.t === "renderer") {
+          log("oep renderer injected", { pid: msg.pid, ok: msg.ok });
+          return;
+        }
+        if (msg.t === "result") {
+          if (!msg.ok) {
+            const detail = String(msg.detail || "failed");
+            // A renderer that never ran a V8 call inside its window is usually
+            // Chromium's warm spare — the real game renderer is a LATER child.
+            // Keep waiting for it instead of failing the launch. Terminal
+            // engine errors (unsupported NW, symbols never resolving) repeat
+            // on every child, so those fail fast.
+            if (/timeout-no-v8-call/.test(detail)) {
+              log("oep renderer quiet, waiting for another", {
+                detail
+              });
+              return;
+            }
+            finish({
+              ok: false,
+              gamePid,
+              detail: `renderer eval: ${detail}`
+            });
+            return;
+          }
+          log("oep renderer eval ok", { pid: gamePid });
+          if (!policy.file) {
+            finish({ ok: true, gamePid });
+            return;
+          }
+          // File transport: the bridge announces itself on the JSONL channel.
+          waitForFileBridgeHello(stateDir, 60000, clock)
+            .then(() => finish({ ok: true, gamePid }))
+            .catch((error) =>
+              finish({ ok: false, gamePid, detail: String(error.message) })
+            );
+        }
+      });
+    });
+    server.listen(pipeName, async () => {
+      try {
+        const launched = await platform.launchOepInject({
+          projectRoot,
+          arch,
+          exe: scan.paths.exe,
+          cwd: scan.root,
+          dllName: "rmch-mvhook.dll",
+          pipeName
+        });
+        if (!launched.ok) {
+          // The injector never spawned the game — nothing to attach to.
+          finish({ ok: false, detail: launched.detail });
+          return;
+        }
+        gamePid = launched.pid;
+        log("oep game launched suspended+resumed", { pid: gamePid });
+      } catch (error) {
+        finish({
+          ok: false,
+          detail: String((error && error.message) || error)
+        });
+      }
+    });
+  })().catch((error) =>
+    finish({
+      ok: false,
+      gamePid,
+      detail: String((error && error.message) || error)
+    })
+  );
+
+  return done;
+}
+
 // --- MV/MZ bootstrap ------------------------------------------------------------
 
 // The page-context bootstrap: set RMCH_* env first (05-node-io.js reads them at
@@ -1220,6 +1480,64 @@ async function launchNw({ scan, projectRoot, port = 47412 }, runtime) {
   // prompt nobody expects) — strip it before spawning. Cheap no-op when unset.
   platform.clearRunAsAdminFlag(scan.paths.exe, log);
 
+  // 入口点注入 (ADR 0002 附着时机): eligible families launch suspended and the
+  // hook rides in before any game code — no blind settle wait. On any failure
+  // the legacy path below takes over untouched: if the injector never spawned
+  // the game, spawn+settle+attach runs from scratch; if the game is already
+  // running but undelivered, we attach to it (the legacy "launched" policy
+  // carries its own settle window for the shells that need one).
+  if (
+    oepLaunchEligible(scan) &&
+    typeof platform.launchOepInject === "function"
+  ) {
+    const oep = await tryOepLaunch(
+      { scan, projectRoot, port },
+      runtime,
+      (m, e) => launchLog(projectRoot, scan.gameKey, m, e)
+    ).catch((error) => ({
+      ok: false,
+      detail: String((error && error.message) || error)
+    }));
+    if (oep.ok) {
+      const arch = readPeArch(scan.paths.exe);
+      launchLog(projectRoot, scan.gameKey, "launch complete (oep)", {
+        t: elapsed(),
+        pid: oep.gamePid
+      });
+      return {
+        game: scan.title,
+        gameKey: scan.gameKey,
+        root: scan.root,
+        engine: scan.engine.id,
+        strategy: "nw-launch-oep",
+        arch,
+        pid: oep.gamePid,
+        launchedPid: oep.gamePid,
+        injected: [],
+        results: [],
+        port
+      };
+    }
+    launchLog(projectRoot, scan.gameKey, "oep launch failed, falling back", {
+      detail: oep.detail
+    });
+    if (oep.gamePid) {
+      const summary = await attachNw(
+        { scan, projectRoot, port },
+        runtime,
+        "launched"
+      );
+      return {
+        ...summary,
+        strategy:
+          summary.strategy === "nw-inject-file"
+            ? "nw-launch-inject-file"
+            : "nw-launch-inject",
+        launchedPid: summary.pid
+      };
+    }
+  }
+
   // The spawn returns before the shell has started the exe, so the game
   // process shows up a beat later. Primary mechanism: transient `cmd /c
   // start` (dead-parent trick — see cmdStartSpawn). Fallback: the two-hop
@@ -1715,7 +2033,9 @@ export function createNwAttachment({ platform, clock } = {}) {
       clearRunAsAdminFlag,
       cmdStartSpawn,
       shellExecuteSpawn,
-      injectAndDeliver
+      injectAndDeliver,
+      launchOepInject,
+      ensureServer
     },
     clock: clock || {
       now: () => Date.now(),

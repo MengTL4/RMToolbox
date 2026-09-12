@@ -16,6 +16,23 @@ static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
 }
 
 int main(int argc, char** argv) {
+  // OEP self-test evidence: rmch-test-echo.dll creates this event in DllMain.
+  // Seeing it here, as main() starts, proves the DLL ran before any game code.
+  HANDLE preMain = OpenEventW(SYNCHRONIZE, FALSE, L"Local\\rmch-oep-echo-premain");
+  printf("dll-premain %d\n", preMain ? 1 : 0);
+  if (preMain) CloseHandle(preMain);
+  // main-reached marker for diagnosing launch flows from the outside.
+  {
+    char marker[MAX_PATH];
+    DWORD n = GetTempPathA(MAX_PATH, marker);
+    if (n > 0) {
+      _snprintf(marker + n, MAX_PATH - n, "rmch-target-main-%lu.ok",
+                (unsigned long)GetCurrentProcessId());
+      FILE* f = fopen(marker, "wb");
+      if (f) fclose(f);
+    }
+  }
+
   bool hidden = argc > 1 && strcmp(argv[1], "--hidden") == 0;
   WNDCLASSW wc;
   ZeroMemory(&wc, sizeof(wc));

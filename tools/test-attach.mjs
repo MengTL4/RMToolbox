@@ -17,8 +17,11 @@ import { fileURLToPath } from "node:url";
 import {
   AttachError,
   buildNwBootstrap,
+  createNwAttachment,
   frameReader,
+  oepLaunchEligible,
   readPeArch,
+  tryOepLaunch,
   writeFrame
 } from "../core/attach.mjs";
 import { buildBridge } from "../core/bridge-bundler.mjs";
@@ -262,9 +265,337 @@ async function testFraming() {
   }
 }
 
+// --- OEP launch (入口点注入) ---------------------------------------------------
+// The gate is pure. The orchestration runs over a REAL loopback named pipe with
+// a fake platform — the test plays mvhook (main + renderer) itself. The
+// fallback's far side (attachNw) starts a real bridge server, so it stays at
+// the e2e seam (real games); here we assert tryOepLaunch's own outcomes and the
+// launchNw integration on the success path.
+
+function oepScan(dir, container) {
+  return {
+    root: dir,
+    gameKey: "oep-测试-" + (container || "std"),
+    title: "OEP 测试",
+    engine: { id: "MV" },
+    paths: { exe: writeSyntheticPe(dir, "Game.exe", 0x8664) },
+    container,
+    protection: { level: 0, flags: [] }
+  };
+}
+
+function testOepGate() {
+  console.log("oep eligibility:");
+  const base = { protection: { level: 0, flags: [] } };
+  check(
+    "standard nw game is eligible",
+    oepLaunchEligible({ ...base }) === true
+  );
+  check(
+    "nwjs container is eligible",
+    oepLaunchEligible({ ...base, container: "nwjs" }) === true
+  );
+  check(
+    "enigma-nb is eligible",
+    oepLaunchEligible({ ...base, container: "enigma-nb" }) === true
+  );
+  check(
+    "nb-evalnwbin keeps the measured path",
+    oepLaunchEligible({ ...base, container: "nb-evalnwbin" }) === false
+  );
+  check(
+    "grover-boot keeps the measured path",
+    oepLaunchEligible({
+      container: undefined,
+      protection: { level: 3, flags: ["grover-boot"] }
+    }) === false
+  );
+}
+
+// A fake mvhook over the real OEP pipe: the main process arms, reports one
+// renderer, the renderer asks for the bootstrap and reports the eval result.
+function fakeMvhook(
+  pipeName,
+  { result = { ok: true, detail: "evaled" }, onBootstrap } = {}
+) {
+  const main = net.connect(pipeName);
+  const renderer = net.connect(pipeName);
+  main.on("connect", () => {
+    writeFrame(
+      main,
+      JSON.stringify({ t: "ready", dll: "mvhook", mode: "main" })
+    );
+    writeFrame(main, JSON.stringify({ t: "renderer", pid: 4322, ok: true }));
+  });
+  renderer.on("connect", () =>
+    writeFrame(renderer, JSON.stringify({ t: "ready", dll: "mvhook" }))
+  );
+  // The core tears the pipe down the moment it has its result — answer exactly
+  // once, or a split bootstrap frame would make us write into a dead socket.
+  let answered = false;
+  renderer.on("data", (d) => {
+    if (answered) return;
+    answered = true;
+    if (onBootstrap) onBootstrap(d);
+    writeFrame(renderer, JSON.stringify({ t: "result", ...result }));
+    setTimeout(() => {
+      main.end();
+      renderer.end();
+    }, 50);
+  });
+  return { main, renderer };
+}
+
+function oepRuntime(over = {}) {
+  const clock = { now: () => 777000, sleep: () => Promise.resolve() };
+  const logs = [];
+  const platform = {
+    listProcessesByExeName: async () => [],
+    listProcessModules: async () => [],
+    showNwGameWindow: async () => 0,
+    clearRunAsAdminFlag: () => {},
+    cmdStartSpawn: () => {},
+    shellExecuteSpawn: () => {},
+    injectAndDeliver: () => Promise.resolve({ ok: false, detail: "unused" }),
+    ensureServer: () => Promise.resolve({ running: false, started: false }),
+    launchOepInject: () => Promise.resolve({ ok: true, pid: 4321 }),
+    ...over
+  };
+  return {
+    clock,
+    logs,
+    platform,
+    log: (m, e) => logs.push(m + (e ? " " + JSON.stringify(e) : ""))
+  };
+}
+
+async function testOepHappy() {
+  console.log("oep launch (ws transport):");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "rmch-oep-"));
+  try {
+    const scan = oepScan(dir, "enigma-nb");
+    let bootstrapped = "";
+    const { clock, logs, platform, log } = oepRuntime({
+      launchOepInject: ({ pipeName }) => {
+        setTimeout(
+          () =>
+            fakeMvhook(pipeName, {
+              onBootstrap: (raw) => {
+                bootstrapped = raw.toString("utf8");
+              }
+            }),
+          30
+        );
+        return Promise.resolve({ ok: true, pid: 4321 });
+      }
+    });
+    const result = await tryOepLaunch(
+      { scan, projectRoot: root, port: 47499 },
+      { platform, clock },
+      log
+    );
+    check("oep launch ok", result.ok === true, JSON.stringify(result));
+    check("oep game pid from injector", result.gamePid === 4321);
+    check(
+      "bootstrap delivered to the renderer",
+      bootstrapped.includes(scan.gameKey),
+      bootstrapped.slice(0, 120)
+    );
+    check(
+      "main-process arming logged",
+      logs.some((l) => l.includes("armed")),
+      logs.join(" | ")
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testOepFailures() {
+  console.log("oep failure paths:");
+  // Injector never spawned the game: no gamePid, caller respawns from scratch.
+  {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "rmch-oep-"));
+    try {
+      const scan = oepScan(dir, "enigma-nb");
+      const { clock, platform, log } = oepRuntime({
+        launchOepInject: () =>
+          Promise.resolve({ ok: false, detail: "injector-exit-2: simulated" })
+      });
+      const result = await tryOepLaunch(
+        { scan, projectRoot: root, port: 47498 },
+        { platform, clock },
+        log
+      );
+      check("injector failure surfaces detail", result.ok === false);
+      check(
+        "no game pid on injector failure",
+        !result.gamePid,
+        JSON.stringify(result)
+      );
+      check(
+        "detail is diagnosable",
+        String(result.detail).includes("injector-exit-2"),
+        String(result.detail)
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  // Game spawned but the renderer eval failed: gamePid present so the caller
+  // attaches to the running game instead of respawning.
+  {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "rmch-oep-"));
+    try {
+      const scan = oepScan(dir, "enigma-nb");
+      const { clock, platform, log } = oepRuntime({
+        launchOepInject: ({ pipeName }) => {
+          setTimeout(
+            () =>
+              fakeMvhook(pipeName, {
+                result: { ok: false, detail: "compile-failed" }
+              }),
+            30
+          );
+          return Promise.resolve({ ok: true, pid: 4321 });
+        }
+      });
+      const result = await tryOepLaunch(
+        { scan, projectRoot: root, port: 47497 },
+        { platform, clock },
+        log
+      );
+      check("renderer failure surfaces", result.ok === false);
+      check("game pid kept for the attach fallback", result.gamePid === 4321);
+      check(
+        "renderer detail is diagnosable",
+        String(result.detail).includes("compile-failed"),
+        String(result.detail)
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+}
+
+// Standard (shell-free) games use the file transport under the launched policy:
+// the bridge hello lands on the JSONL channel after the eval.
+async function testOepFileChannel() {
+  console.log("oep launch (file transport):");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "rmch-oep-"));
+  const stateDir = path.join(root, "runtime", "bridge-state", "oep-测试-std");
+  try {
+    const scan = oepScan(dir, undefined);
+    const { clock, platform, log } = oepRuntime({
+      launchOepInject: ({ pipeName }) => {
+        setTimeout(
+          () =>
+            fakeMvhook(pipeName, {
+              onBootstrap: () => {
+                // The bridge announcing itself on the file channel.
+                writeFileSync(path.join(stateDir, "state.json"), "{}");
+                writeFileSync(
+                  path.join(stateDir, "events.jsonl"),
+                  JSON.stringify({ t: "hello", ts: 1 }) + "\n"
+                );
+              }
+            }),
+          30
+        );
+        return Promise.resolve({ ok: true, pid: 4321 });
+      }
+    });
+    const result = await tryOepLaunch(
+      { scan, projectRoot: root, port: 47496 },
+      { platform, clock },
+      log
+    );
+    check(
+      "file-transport oep launch ok",
+      result.ok === true,
+      JSON.stringify(result)
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+}
+
+// A quiet (spare) renderer must not fail the launch: the core keeps waiting
+// and the NEXT renderer gets the bootstrap — measured on a real MV game whose
+// first --type=renderer child idled for two minutes without a V8 call.
+async function testOepQuietRenderer() {
+  console.log("oep quiet renderer keeps the launch waiting:");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "rmch-oep-"));
+  try {
+    const scan = oepScan(dir, "enigma-nb");
+    const { clock, platform, log } = oepRuntime({
+      launchOepInject: ({ pipeName }) => {
+        setTimeout(() => {
+          // First child: the idle spare — reports the quiet-timeout result.
+          fakeMvhook(pipeName, {
+            result: { ok: false, detail: "timeout-no-v8-call" }
+          });
+          // Second child moments later: the real game page.
+          setTimeout(() => fakeMvhook(pipeName), 60);
+        }, 30);
+        return Promise.resolve({ ok: true, pid: 4321 });
+      }
+    });
+    const result = await tryOepLaunch(
+      { scan, projectRoot: root, port: 47494 },
+      { platform, clock },
+      log
+    );
+    check(
+      "quiet renderer does not fail the launch",
+      result.ok === true,
+      JSON.stringify(result)
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// The launchNw integration: an eligible scan returns the OEP strategy.
+async function testOepViaLaunch() {
+  console.log("oep via launchNw:");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "rmch-oep-"));
+  try {
+    const scan = oepScan(dir, "enigma-nb");
+    const clock = { now: () => 555000, sleep: () => Promise.resolve() };
+    const { platform } = oepRuntime({
+      launchOepInject: ({ pipeName }) => {
+        setTimeout(() => fakeMvhook(pipeName), 30);
+        return Promise.resolve({ ok: true, pid: 4321 });
+      }
+    });
+    const attachment = createNwAttachment({ platform, clock });
+    const summary = await attachment.launch({
+      scan,
+      projectRoot: root,
+      port: 47495
+    });
+    check(
+      "launch route reports nw-launch-oep",
+      summary.strategy === "nw-launch-oep",
+      JSON.stringify({ strategy: summary.strategy })
+    );
+    check("launch pid from injector", summary.pid === 4321);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 testPeArch();
 testBootstrap();
 await testFraming();
+testOepGate();
+await testOepHappy();
+await testOepFailures();
+await testOepQuietRenderer();
+await testOepFileChannel();
+await testOepViaLaunch();
 
 console.log(`test-attach: ${checks - failures}/${checks} checks ok`);
 process.exit(failures ? 1 : 0);

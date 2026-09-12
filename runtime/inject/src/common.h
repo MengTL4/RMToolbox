@@ -81,11 +81,9 @@ inline void pipeNameForPid(DWORD pid, char out[64]) {
   out[63] = 0;
 }
 
-// Connect to the core's pipe server for this process, retrying while the
-// server may still be starting. Returns INVALID_HANDLE_VALUE on timeout.
-inline HANDLE pipeConnect(DWORD timeoutMs) {
-  char name[64];
-  pipeNameForPid(GetCurrentProcessId(), name);
+// Connect to the named pipe server, retrying while the server may still be
+// starting. Returns INVALID_HANDLE_VALUE on timeout.
+inline HANDLE pipeConnectNamed(const char* name, DWORD timeoutMs) {
   DWORD waited = 0;
   for (;;) {
     HANDLE h = CreateFileA(name, GENERIC_READ | GENERIC_WRITE, 0, NULL,
@@ -99,6 +97,32 @@ inline HANDLE pipeConnect(DWORD timeoutMs) {
     Sleep(200);
     waited += 200;
   }
+}
+
+// Connect to the core's pipe server for this process. OEP launches pass one
+// shared pipe name to the whole process tree through RMCH_ATTACH_PIPE (the
+// main process and every injected renderer talk to the same core listener);
+// the attach flows keep the per-pid name computed from the OWN process id —
+// no parameter passing into the target needed there.
+//
+// The env name gets a SHORT first window (3s): an OEP-launched process tree
+// carries RMCH_ATTACH_PIPE in its environment forever, and a later CRT-mode
+// injection into the same tree (the fallback path after an OEP timeout) must
+// not burn its whole budget on the long-dead OEP pipe — the attach listener
+// lives on the per-pid name.
+inline HANDLE pipeConnect(DWORD timeoutMs) {
+  char name[128];
+  DWORD n = GetEnvironmentVariableA("RMCH_ATTACH_PIPE", name, sizeof(name));
+  if (n > 0 && n < sizeof(name)) {
+    DWORD budget = timeoutMs < 3000 ? timeoutMs : 3000;
+    HANDLE h = pipeConnectNamed(name, budget);
+    if (h != INVALID_HANDLE_VALUE) return h;
+    if (timeoutMs <= 3000) return INVALID_HANDLE_VALUE;
+    pipeNameForPid(GetCurrentProcessId(), name);
+    return pipeConnectNamed(name, timeoutMs - 3000);
+  }
+  pipeNameForPid(GetCurrentProcessId(), name);
+  return pipeConnectNamed(name, timeoutMs);
 }
 
 inline bool pipeWriteAll(HANDLE h, const void* data, DWORD len) {
