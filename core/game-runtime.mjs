@@ -14,7 +14,15 @@ const MAX_ATTEMPTS = 2;
 // The operating system rejecting the executable (missing, not runnable, no
 // permission) is a property of the game, not of the route — trying another
 // transport would only produce the same failure with a worse message.
-const NOT_RETRYABLE_CODES = new Set(["ENOENT", "EACCES", "EPERM", "ENOEXEC"]);
+const NOT_RETRYABLE_CODES = new Set([
+  "ENOENT",
+  "EACCES",
+  "EPERM",
+  "ENOEXEC",
+  // Another route must not bypass the guard against rebuilding a live copy.
+  "GAME_ALREADY_RUNNING",
+  "PROCESS_QUERY_FAILED"
+]);
 
 function isRetryable(error) {
   const code = error && error.code;

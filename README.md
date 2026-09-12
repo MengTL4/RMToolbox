@@ -27,10 +27,10 @@
   工具箱从影子副本启动游戏（原文件不动），在闭包内部把引擎对象发布出来后
   与原生一致。
 - **nwjc 字节码 + Grover 验证壳的游戏**（《傲世修仙录》定制版家族）——壳用
-  已从 Windows 11 移除的 wmic 做祖先链校验，原生双击也会被杀。工具箱经
-  裸启动 + DLL 注入绕开自杀路径后走标准桥接，**实测链路已通过**（详见
-  [docs/GROVER-FINDINGS.md](docs/GROVER-FINDINGS.md)）；该家族的逐游戏适配
-  仍在补充中。
+  已从 Windows 11 移除的 wmic 做祖先链校验，原生双击也会被杀。工具箱从运行
+  副本（影子目录，原目录不改）启动，桥接在页面内注入；该家族的启动链仍在适配
+  中（实测记录与未决问题详见
+  [docs/GROVER-FINDINGS.md](docs/GROVER-FINDINGS.md)）。
 
 注意：Tauri 壳与 sealed 启动器这两类不支持「附加到运行中」，只能从工具箱启动。
 
@@ -65,8 +65,8 @@
 - 命运II离线版 V4.6.3（合体单脚本引擎，MV 1.6.1）
 - 万族穿越-源启崛起 v1.2.2（NB evalNWBin 壳）
 - 三国修仙传 V1.91（Enigma 壳 + nb_data 散列资源，MV 1.6.1）
-- 傲世修仙录完结定制版（nwjc 字节码 + Grover 验证壳）——裸启动 + DLL 注入
-  链路实测通过，适配持续完善中（详见 [docs/GROVER-FINDINGS.md](docs/GROVER-FINDINGS.md)）
+- 傲世修仙录完结定制版（nwjc 字节码 + Grover 验证壳）——运行副本（影子目录）
+  启动 + 页内桥接，适配持续完善中（详见 [docs/GROVER-FINDINGS.md](docs/GROVER-FINDINGS.md)）
 
 **XP / VX / VX Ace（RGSS 系列）**
 

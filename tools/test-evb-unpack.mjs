@@ -6,6 +6,7 @@
 
 import {
   mkdtempSync,
+  existsSync,
   writeFileSync,
   readFileSync,
   rmSync,
@@ -119,6 +120,29 @@ const tmp = mkdtempSync(path.join(tmpdir(), "rmch-evb-"));
 try {
   const exe = path.join(tmp, "fake-enigma.exe");
   writeFileSync(exe, buildEvbImage());
+  for (const [name, ensure] of [
+    ["sync", ensureEvbUnpacked],
+    ["async", ensureEvbUnpackedAsync]
+  ]) {
+    const isolatedExe = path.join(tmp, name + "-original", "packed.exe");
+    mkdirSync(path.dirname(isolatedExe));
+    writeFileSync(isolatedExe, buildEvbImage());
+    const outDir = path.join(tmp, "toolbox-cache", name);
+    const result = await ensure(isolatedExe, { outDir });
+    check(
+      name + " extraction honors toolbox-owned output",
+      result.dir === outDir &&
+        existsSync(path.join(outDir, "Graphics/tile.png"))
+    );
+    check(
+      name + " extraction does not create a beside-game cache",
+      !existsSync(isolatedExe.replace(/\.exe$/, "_unpacked"))
+    );
+    check(
+      name + " toolbox cache is reused",
+      (await ensure(isolatedExe, { outDir })).extracted === false
+    );
+  }
 
   const det = detectEvb(exe);
   check(

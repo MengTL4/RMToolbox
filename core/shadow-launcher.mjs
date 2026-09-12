@@ -24,12 +24,15 @@
 // buildGroverBootstrap for the strategy, the measured findings, and the open
 // blocker.
 
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   copyFileSync, // 别换成 fs 的递归拷贝 API：GUI 内嵌 Node 是 16.1，那个要 16.7 才有
+  closeSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -42,9 +45,84 @@ import {
 import path from "node:path";
 import { buildBridge } from "./bridge-bundler.mjs";
 import { buildModuleReportCompatibility } from "./grover-compat.mjs";
+import { removeShadowEntry } from "./shadow-files.mjs";
 
 const SHADOW_ROOT = path.join("runtime", "shadow-apps");
 const PROFILE_ROOT = path.join("runtime", "shadow-profiles");
+const pendingShadowLaunches = new Set();
+
+async function runningShadowProcess(executable) {
+  if (process.platform !== "win32") return null;
+  const quoted = executable.replace(/'/g, "''");
+  const script = `$target = '${quoted}'; Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $target } | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress`;
+  const processes = await new Promise((resolve, reject) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      {
+        windowsHide: true,
+        timeout: 15000,
+        encoding: "utf8"
+      },
+      (error, stdout) => {
+        if (error) {
+          const failure = new Error(
+            `无法检查运行副本是否已启动：${error.message}`
+          );
+          failure.code = "PROCESS_QUERY_FAILED";
+          reject(failure);
+          return;
+        }
+        try {
+          const value = String(stdout).trim();
+          const parsed = value ? JSON.parse(value) : [];
+          resolve(Array.isArray(parsed) ? parsed : [parsed]);
+        } catch (error) {
+          error.code = "PROCESS_QUERY_FAILED";
+          reject(error);
+        }
+      }
+    );
+  });
+  const pids = new Set(processes.map((entry) => entry.ProcessId));
+  return (
+    processes.find((entry) => !pids.has(entry.ParentProcessId)) ||
+    processes[0] ||
+    null
+  );
+}
+
+async function withIdleShadow(options, launch) {
+  const executable = path.resolve(
+    options.projectRoot,
+    SHADOW_ROOT,
+    options.gameKey,
+    shadowExecutableRelative(options.scan)
+  );
+  const key =
+    process.platform === "win32" ? executable.toLowerCase() : executable;
+  if (pendingShadowLaunches.has(key)) {
+    const error = new Error("运行副本正在启动，请等待本次接入完成。");
+    error.code = "GAME_ALREADY_RUNNING";
+    throw error;
+  }
+  pendingShadowLaunches.add(key);
+  try {
+    // Do this before touching ANY file or profile. An existing game may still
+    // have DLLs mapped even when its bridge is disconnected or the GUI restarted.
+    const running = await runningShadowProcess(executable);
+    if (running) {
+      const error = new Error(
+        `运行副本已经在运行（PID ${running.ProcessId}）。请返回游戏窗口；如需重新启动，请先关闭该游戏。`
+      );
+      error.code = "GAME_ALREADY_RUNNING";
+      throw error;
+    }
+    return await launch(options);
+  } finally {
+    pendingShadowLaunches.delete(key);
+  }
+}
 
 // Top-level entries never linked into the shadow app.
 const SKIP_FILES = new Set(["debug.log", "error.log", "crash.log"]);
@@ -54,9 +132,7 @@ function jsString(value) {
 }
 
 function linkOrCopyFile(source, dest) {
-  // recursive rm: dest can be a stale junction from an older shadow layout,
-  // and plain rmSync on a junction throws EISDIR on the GUI's Node 16.1.
-  if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
+  removeShadowEntry(dest);
   try {
     linkSync(source, dest);
   } catch (_) {
@@ -65,13 +141,93 @@ function linkOrCopyFile(source, dest) {
 }
 
 function junctionDir(source, dest) {
-  // Node 16.1 (the GUI's embedded runtime) cannot plain-rm a junction —
-  // rmSync(link, {force:true}) throws ERR_FS_EISDIR. recursive rm unlinks the
-  // junction itself without following it (verified: target contents survive),
-  // and equally handles real dirs left by the bg-script carve-out below.
-  if (lstatSync(dest, { throwIfNoEntry: false }))
-    rmSync(dest, { recursive: true, force: true });
+  removeShadowEntry(dest);
   symlinkSync(source, dest, "junction");
+}
+
+// Recovery packs live outside the game and are keyed by the exact runtime
+// binary, never just its version or the game's name. A repair cannot write
+// through the shadow's old locales junction or mix Chromium resource versions.
+function shadowLocalesSource(projectRoot, gameRoot) {
+  const locales = path.join(gameRoot, "locales");
+  const binary = path.join(gameRoot, "nw.dll");
+  if (existsSync(path.join(locales, "en-US.pak")) || !existsSync(binary))
+    return null;
+  const digest = createHash("sha256")
+    .update(readFileSync(binary))
+    .digest("hex");
+  const recovered = path.join(
+    projectRoot,
+    "runtime",
+    "nwjs-locales",
+    digest,
+    "locales"
+  );
+  if (existsSync(path.join(recovered, "en-US.pak"))) return recovered;
+  const error = new Error(
+    "游戏缺少 locales/en-US.pak 语言资源，无法启动。请修复游戏文件，或为运行副本准备匹配该 NW.js 运行时的语言资源。"
+  );
+  error.code = "ENOENT";
+  throw error;
+}
+
+async function spawnShadowProcess({
+  gameExe,
+  appDir,
+  args,
+  env,
+  projectRoot,
+  gameKey
+}) {
+  const logPath = path.join(
+    projectRoot,
+    "runtime",
+    "bridge-state",
+    gameKey,
+    "launch.log"
+  );
+  mkdirSync(path.dirname(logPath), { recursive: true });
+  const log = openSync(logPath, "w");
+  let child;
+  try {
+    child = spawn(gameExe, args, {
+      cwd: appDir,
+      detached: true,
+      stdio: ["ignore", "ignore", log],
+      env,
+      // Old NW.js uses SW_SHOWDEFAULT; SW_HIDE would hide the game window.
+      windowsHide: false
+    });
+  } finally {
+    closeSync(log);
+  }
+  // A PID only means CreateProcess succeeded. Catch startup crashes (including
+  // missing Chromium resources) before returning a successful launch summary.
+  await new Promise((resolve, reject) => {
+    let timer;
+    const finish = (error) => {
+      clearTimeout(timer);
+      child.removeListener("error", onError);
+      child.removeListener("exit", onExit);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onError = (error) => finish(error);
+    const onExit = (code, signal) => {
+      const error = new Error(
+        `游戏进程在启动后立即退出（${signal || code}），尚未建立连接。启动日志：${logPath}`
+      );
+      error.code = "GAME_EXITED";
+      finish(error);
+    };
+    child.once("error", onError);
+    child.once("exit", onExit);
+    child.once("spawn", () => {
+      timer = setTimeout(() => finish(), 1000);
+    });
+  });
+  child.unref();
+  return { appDir, gameExe, pid: child.pid, launchLog: logPath };
 }
 
 // Flat-copy save files from srcDir into dstDir; newer mtime wins, missing
@@ -187,10 +343,8 @@ function linkShadowEntry(source, dest, relSkip) {
     const rest = slash === -1 ? null : relSkip.slice(slash + 1);
     // A junction left by an older build would make the patched-bg write land in
     // the real game tree — a real directory is required here, never a link.
-    // (recursive rm: plain rmSync on a junction throws EISDIR on Node 16.1.)
     const existing = lstatSync(dest, { throwIfNoEntry: false });
-    if (existing && existing.isSymbolicLink())
-      rmSync(dest, { recursive: true, force: true });
+    if (existing && existing.isSymbolicLink()) removeShadowEntry(dest);
     mkdirSync(dest, { recursive: true });
     for (const child of readdirSync(source)) {
       const childSource = path.join(source, child);
@@ -230,6 +384,7 @@ function buildShadowApp({ projectRoot, scan, gameKey, scriptRel, patch }) {
     throw new Error(`shadow patch source not found: ${sourcePath}`);
   // A missing patch anchor must fail before rebuilding the directory tree.
   const patched = patch(readFileSync(sourcePath, "utf8"));
+  const recoveredLocales = shadowLocalesSource(projectRoot, scan.root);
   const shadowBase = path.resolve(projectRoot, SHADOW_ROOT);
   const appDir = path.resolve(shadowBase, gameKey);
   const relative = path.relative(shadowBase, appDir);
@@ -267,7 +422,7 @@ function buildShadowApp({ projectRoot, scan, gameKey, scriptRel, patch }) {
       !path.isAbsolute(owned)
     ) {
       mergeSaveFiles(shadowSaveDir, realSaveDir);
-      rmSync(shadowSaveDir, { recursive: true, force: true });
+      removeShadowEntry(shadowSaveDir);
     }
   }
   // Also needed for www layouts when the patch path carves www into a real
@@ -285,21 +440,23 @@ function buildShadowApp({ projectRoot, scan, gameKey, scriptRel, patch }) {
       ? script.slice(entry.length + 1)
       : null;
     linkShadowEntry(
-      path.join(scan.root, entry),
+      entry === "locales" && recoveredLocales
+        ? recoveredLocales
+        : path.join(scan.root, entry),
       path.join(appDir, entry),
       relSkip
     );
   }
+  if (recoveredLocales && !existsSync(path.join(scan.root, "locales")))
+    junctionDir(recoveredLocales, path.join(appDir, "locales"));
   const manifestPath = path.join(appDir, "package.json");
-  if (lstatSync(manifestPath, { throwIfNoEntry: false }))
-    rmSync(manifestPath, { recursive: true, force: true });
+  removeShadowEntry(manifestPath);
   copyFileSync(path.join(scan.root, "package.json"), manifestPath);
 
   const patchedPath = path.join(appDir, ...parts);
   // The parent is private after the carve-out. Unlink the leaf too: an older
   // build may have left a hardlink to the original script at this location.
-  if (lstatSync(patchedPath, { throwIfNoEntry: false }))
-    rmSync(patchedPath, { recursive: true, force: true });
+  removeShadowEntry(patchedPath);
   mkdirSync(path.dirname(patchedPath), { recursive: true });
   writeFileSync(patchedPath, patched, "utf8");
   const gameExe = path.join(appDir, executableRelative);
@@ -336,10 +493,16 @@ function buildShadowApp({ projectRoot, scan, gameKey, scriptRel, patch }) {
 //  3. Keep the shadow manifest byte-identical to the game's: Some.js (the
 //     payload's DRM plugin) validates the app manifest and core files.
 //
-// KNOWN LIMITATION (2026-09-06): with the shim the chain reaches the payload
-// (loading.html → index.html, engine + all plugins load), but the boot still
-// stalls in the shell's post-verification state machine on this machine; see
-// GROVER-FINDINGS.md for the precise open questions.
+// KNOWN LIMITATION (2026-09-06, reconfirmed 2026-09-13): with the shim the
+// chain reaches the payload (loading.html → index.html, engine + all plugins
+// load), but the boot still stalls in the shell's post-verification state
+// machine on this machine; see GROVER-FINDINGS.md for the precise open
+// questions. 2026-09-13 measurement: a launch through THIS guarded chain
+// installs the guards and never reaches a scene (bridge up, mapId null, empty
+// party) — the user-visible black window; the same games through the ordinary
+// chain reach a map. core/launcher.mjs therefore drops the grover flag for
+// every shadow launch and this strategy is diagnosis-only. Do not re-wire a
+// launch route onto it without solving the freeze first.
 function buildGroverBootstrap({ bridgePath, logPath }) {
   // Page-side guard source, eval'd into every page load. Our bootstrap
   // registers its "loaded" listener before the original chain's own (our code
@@ -486,12 +649,22 @@ export function setupShadowApp({ projectRoot, scan, gameKey }) {
 // the exec's cwd is the prelude-spoofed real game root, so PATH is what makes
 // the shim reachable). See buildGroverBootstrap for the full strategy and the
 // known limitation.
-export function launchShadowGame({ projectRoot, scan, gameKey, port, token }) {
+export function launchShadowGame(options) {
+  return withIdleShadow(options, launchPreparedShadowGame);
+}
+
+async function launchPreparedShadowGame({
+  projectRoot,
+  scan,
+  gameKey,
+  port,
+  token
+}) {
   const { appDir, gameExe } = setupShadowApp({ projectRoot, scan, gameKey });
 
   // Fresh private profile per launch (matches the validated nwr behaviour).
   const profileDir = path.join(projectRoot, PROFILE_ROOT, gameKey);
-  rmSync(profileDir, { recursive: true, force: true });
+  removeShadowEntry(profileDir);
   mkdirSync(profileDir, { recursive: true });
 
   const grover =
@@ -510,21 +683,15 @@ export function launchShadowGame({ projectRoot, scan, gameKey, port, token }) {
       : {})
   };
 
-  const child = spawn(
+  const processInfo = await spawnShadowProcess({
     gameExe,
-    [`--user-data-dir=${profileDir}`, "--force-color-profile=srgb"],
-    {
-      cwd: appDir,
-      detached: true,
-      stdio: "ignore",
-      env,
-      // No windowsHide (see launcher.mjs): SW_HIDE in STARTUPINFO makes old
-      // NW.js builds create the game window invisible.
-      windowsHide: false
-    }
-  );
-  child.unref();
-  return { appDir, gameExe, profileDir, pid: child.pid };
+    appDir,
+    projectRoot,
+    gameKey,
+    env,
+    args: [`--user-data-dir=${profileDir}`, "--force-color-profile=srgb"]
+  });
+  return { ...processInfo, profileDir };
 }
 
 // --- bundled-engine shadow (命运II离线版 / Metal Max II Restored family) --------
@@ -708,7 +875,11 @@ export function setupBundledShadowApp({ projectRoot, scan, gameKey }) {
   };
 }
 
-export function launchBundledShadowGame({
+export function launchBundledShadowGame(options) {
+  return withIdleShadow(options, launchPreparedBundledShadowGame);
+}
+
+async function launchPreparedBundledShadowGame({
   projectRoot,
   scan,
   gameKey,
@@ -720,22 +891,15 @@ export function launchBundledShadowGame({
     scan,
     gameKey
   });
-  const child = spawn(
+  return spawnShadowProcess({
     gameExe,
-    [
+    appDir,
+    projectRoot,
+    gameKey,
+    args: [
       `--user-data-dir=${profileDir}`,
       `--load-extension=${path.join(projectRoot, "runtime", "bridge")}`
     ],
-    {
-      cwd: appDir,
-      detached: true,
-      stdio: "ignore",
-      env: { ...process.env, ...extraEnv },
-      // No windowsHide (see launcher.mjs): SW_HIDE in STARTUPINFO makes old
-      // NW.js builds create the game window invisible.
-      windowsHide: false
-    }
-  );
-  child.unref();
-  return { appDir, gameExe, pid: child.pid };
+    env: { ...process.env, ...extraEnv }
+  });
 }

@@ -140,21 +140,6 @@ export async function launchGame({
         "请自行双击启动游戏，进入游戏后点「附加到运行中」"
     );
   }
-  if (
-    strategy !== "shadow" &&
-    scan.protection &&
-    scan.protection.flags &&
-    scan.protection.flags.includes("grover-boot")
-  ) {
-    // The Grover shell's toolbox-shadowed launch freezes the payload after its
-    // (shim-assisted) verification, while the plainly launched real game runs
-    // fine — its suicide paths fail on their own. Only the shadow route may
-    // launch this family; everything else is attach-only.
-    throw new Error(
-      "grover-boot shell game: only the shadow launch route survives its verification — " +
-        "改用影子目录路线，或自行启动游戏后点「附加到运行中」"
-    );
-  }
   if (scan.engine.id === "RM2K") {
     throw new Error(
       `engine "${scan.engine.id}" is not supported by the toolbox launch routes (${planLaunch(scan).error || "no route"})`
@@ -166,7 +151,10 @@ export async function launchGame({
     // hand the real directory to the standard RGSS path. The gameKey stays
     // derived from the ORIGINAL folder so bridge state survives re-unpacks.
     const unpacked = await ensureEvbUnpackedAsync(scan.evb.exePath, {
-      onProgress
+      onProgress,
+      // Keep recovery/extraction writes in the toolbox, including when an old
+      // beside-game cache has lost resources to a previous shadow cleanup.
+      outDir: path.join(projectRoot, "runtime", "evb-unpacked", scan.gameKey)
     });
     const handle = await launchRgssGame({
       gameRoot: unpacked.dir,
@@ -243,6 +231,26 @@ export async function launchGame({
         ? "shadow"
         : "extension"
       : strategy;
+  // Grover-shielded games (傲世修仙录完结定制版 family) have exactly one launch
+  // route: the shadow copy (运行副本), which never writes to the original
+  // directory. Every flagged transport dies in the shell's verification, so
+  // anything else is refused before a process is spawned — the user can always
+  // start the game themselves and attach. Judge the RESOLVED route (auto →
+  // shadow above), not the raw request: the route planner dispatches a
+  // non-fallback attempt to the launcher with the original "auto" request, and
+  // comparing that string against "shadow" refused the very route the plan had
+  // just selected.
+  if (
+    chosen !== "shadow" &&
+    scan.protection &&
+    scan.protection.flags &&
+    scan.protection.flags.includes("grover-boot")
+  ) {
+    throw new Error(
+      "grover-boot shell game: only the shadow launch route survives its verification — " +
+        "改用影子目录路线，或自行启动游戏后点「附加到运行中」"
+    );
+  }
   if (chosen === "shadow" && !(scan.manifest && scan.manifest.bgScript)) {
     throw new Error("shadow strategy requires a bg-script game");
   }
@@ -260,22 +268,27 @@ export async function launchGame({
 
   let processInfo;
   if (chosen === "shadow") {
-    // Explicit shadow keeps the native startup chain used by older releases.
-    // The additional Grover kill-path guards freeze otherwise working games
-    // (verified with 再刷一把); default automatic launches still use DLL attach.
-    const shadowScan =
-      strategy === "shadow" && scan.protection
-        ? {
-            ...scan,
-            protection: {
-              ...scan.protection,
-              flags: scan.protection.flags.filter(
-                (flag) => flag !== "grover-boot"
-              )
-            }
+    // The ordinary chain is the shadow route's only variant that reaches a
+    // playable scene: measured 2026-09-13, the shim+guards chain (see
+    // setupShadowApp) installs its guards and boot stalls right after the
+    // shell's verification — the bridge connects but no scene ever appears
+    // (mapId null, empty party), which the user sees as a black window. The
+    // same game through the ordinary chain reaches a map and the bridge reads
+    // live data. So a shadow launch always drops the grover flag, for automatic
+    // and explicit requests alike; setupShadowApp keeps the guarded strategy
+    // for diagnosis (tools/build-wmic-shim.mjs) but no launch selects it.
+    const shadowScan = scan.protection
+      ? {
+          ...scan,
+          protection: {
+            ...scan.protection,
+            flags: scan.protection.flags.filter(
+              (flag) => flag !== "grover-boot"
+            )
           }
-        : scan;
-    processInfo = launchShadowGame({
+        }
+      : scan;
+    processInfo = await launchShadowGame({
       projectRoot,
       scan: shadowScan,
       gameKey: scan.gameKey,
@@ -430,7 +443,7 @@ async function launchBundledGame({ scan, projectRoot, port }) {
     scan.gameKey
   );
   mkdirSync(profileDir, { recursive: true });
-  const info = launchBundledShadowGame({
+  const info = await launchBundledShadowGame({
     projectRoot,
     scan,
     gameKey: scan.gameKey,

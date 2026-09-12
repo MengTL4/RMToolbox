@@ -11,13 +11,14 @@
 
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { appendFileSync, existsSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, statSync } from "node:fs";
 import path from "node:path";
 import { prepareRgssGame, RgssError } from "./rgss.mjs";
 import { rgssContentsCode } from "./rgss-savecode.mjs";
 import { externalSessions } from "./bridge-sessions.mjs";
 import { JsonlReader } from "./jsonl-reader.mjs";
 import { reconcileRgssSaves, recordRgssSaveLocation } from "./save-files.mjs";
+import { removeShadowEntry } from "./shadow-files.mjs";
 
 export class RgssLaunchError extends Error {}
 
@@ -217,19 +218,27 @@ export async function launchRgssGame({
   // Rebuild from scratch every launch: the shadow accumulates patched-archive
   // bytes otherwise. Rescue any in-shadow saves first -- they only exist here
   // if the previous run died before its exit-time sync.
-  const shadowRoot = path.join(
-    projectRoot,
-    "runtime",
-    "rgss-shadow",
-    resolvedKey
-  );
+  const shadowBase = path.resolve(projectRoot, "runtime", "rgss-shadow");
+  const shadowRoot = path.resolve(shadowBase, resolvedKey);
+  const relative = path.relative(shadowBase, shadowRoot);
+  if (
+    !relative ||
+    relative === ".." ||
+    relative.startsWith(".." + path.sep) ||
+    path.isAbsolute(relative)
+  )
+    throw new RgssLaunchError(`invalid shadow game key: ${resolvedKey}`);
+  if (lstatSync(shadowRoot, { throwIfNoEntry: false })?.isSymbolicLink())
+    throw new RgssLaunchError(
+      `shadow root must be a real directory: ${shadowRoot}`
+    );
   if (existsSync(shadowRoot)) {
     const recovered = syncSavesBack(shadowRoot, gameRoot);
     if (recovered.errors.length)
       throw new RgssLaunchError(
         "存档回流失败，已保留影子目录；请查看 runtime/gui.log 后重试。"
       );
-    rmSync(shadowRoot, { recursive: true, force: true });
+    removeShadowEntry(shadowRoot);
   }
 
   let prepared;

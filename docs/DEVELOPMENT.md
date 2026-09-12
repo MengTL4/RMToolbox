@@ -268,8 +268,9 @@ node tools/cdp.mjs shot runtime/screenshots/library.png 1180 820
 - **EVB 单文件壳（evb-unpack-rgss-script）**：Enigma Virtual Box 打包的 RGSS 游戏
   （一个几 GB 的 exe 内含完整游戏树，实测宝可梦赤途）。scanner 按 exe 里的
   `.enigma1`/`.enigma2` 段识别（`container: "evb"`）；launcher 的 GUI 路径使用
-  `core/evb-unpack.mjs` 的 `ensureEvbUnpackedAsync` 解包到 `<exe去后缀>_unpacked/`
-  （已有 Game.exe 则复用），把原始目录的 save/ junction 进解包目录，之后完全走
+  `core/evb-unpack.mjs` 的 `ensureEvbUnpackedAsync` 解包到工具箱的
+  `runtime/evb-unpacked/<gameKey>/`，按完成标记及资源哨兵检查复用，
+  把原始目录的 save/ junction 进解包目录，之后完全走
   rgss-script 链（gameKey 仍用原始目录名）。解包器是 Python evbunpack 的 Node
   移植：只支持 raw（未压缩）镜像，aPLib 压缩会明确报错；EVB 文件记录的可选块是
   53 字节（stored_size 在偏移 49），不是旧文档说的 39。

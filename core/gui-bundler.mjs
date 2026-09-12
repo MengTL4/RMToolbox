@@ -20,6 +20,7 @@ export const MODULES = [
   "core/ws-server.mjs",
   "core/token.mjs",
   "core/rgss-marshal.mjs",
+  "core/shadow-files.mjs",
   "core/rgss-archive.mjs",
   "core/rgss.mjs",
   "core/rgss-savecode.mjs",

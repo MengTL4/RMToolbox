@@ -546,8 +546,10 @@ function describeEvbExtractionFailure(error) {
   return error;
 }
 
-export function ensureEvbUnpacked(exePath, { onProgress } = {}) {
-  const outDir = exePath.replace(/\.exe$/i, "") + "_unpacked";
+export function ensureEvbUnpacked(
+  exePath,
+  { onProgress, outDir = exePath.replace(/\.exe$/i, "") + "_unpacked" } = {}
+) {
   if (isCompleteExtraction(exePath, outDir)) {
     linkSaveDir(exePath, outDir);
     return { dir: outDir, extracted: false };
@@ -572,8 +574,10 @@ export function ensureEvbUnpacked(exePath, { onProgress } = {}) {
 }
 
 /** Async, repaint-safe launcher entry used by the GUI for large EVB images. */
-export async function ensureEvbUnpackedAsync(exePath, { onProgress } = {}) {
-  const outDir = exePath.replace(/\.exe$/i, "") + "_unpacked";
+export async function ensureEvbUnpackedAsync(
+  exePath,
+  { onProgress, outDir = exePath.replace(/\.exe$/i, "") + "_unpacked" } = {}
+) {
   if (isCompleteExtraction(exePath, outDir)) {
     linkSaveDir(exePath, outDir);
     return { dir: outDir, extracted: false };

@@ -119,14 +119,14 @@ try {
             }
           }
         : scan;
-      launchFn = ({ port }) => ({
-        ...launchShadowGame({
+      launchFn = async ({ port }) => ({
+        ...(await launchShadowGame({
           projectRoot,
           scan: shadowScan,
           gameKey: scan.gameKey,
           port,
           token: getToken(projectRoot)
-        }),
+        })),
         strategy: process.argv.includes("--legacy-shadow")
           ? "shadow-legacy-layout-comparison"
           : "shadow-direct-comparison"

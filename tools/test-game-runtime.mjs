@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   mkdirSync,
   writeFileSync,
+  readFileSync,
   rmSync,
   unlinkSync
 } from "node:fs";
@@ -10,6 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { GameRuntime, gameRuntime } from "../core/game-runtime.mjs";
+import { launchGame } from "../core/launcher.mjs";
 import { scanGame } from "../core/scanner.mjs";
 import { LaunchPlanError, planLaunch } from "../core/launch-plan.mjs";
 
@@ -164,6 +166,64 @@ try {
     "shadow",
     "Grover scan must plan the route GameRuntime dispatches"
   );
+  // The planner hands a non-fallback attempt to the launcher with the ORIGINAL
+  // request ("auto"), so the launcher must resolve the route itself: comparing
+  // the raw request string against "shadow" refused the Grover route the plan
+  // had just selected. A shadow launch must also use the ORDINARY chain — the
+  // shim+guards variant stalls before any scene (the user's black window), so
+  // the launcher drops the flag and the patched bg-script carries no guards.
+  // An explicit flagged transport stays refused before any process work.
+  mkdirSync(path.join(renamed, "runtime", "bridge"), { recursive: true });
+  writeFileSync(path.join(renamed, "runtime", "bridge", "manifest.json"), "{}");
+  // The scanner only needs the manifest entry, but a shadow launch patches the
+  // bg-script file itself, so the fixture needs one.
+  writeFileSync(path.join(renamed, "loading"), "// shell loading script");
+  const portProbe = net.createServer((socket) => socket.end());
+  await new Promise((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
+  try {
+    const launchOptions = {
+      gameRoot: renamed,
+      projectRoot: renamed,
+      port: portProbe.address().port,
+      build: false
+    };
+    await assert.rejects(
+      launchGame({ ...launchOptions, strategy: "auto" }),
+      (error) => {
+        assert.doesNotMatch(error.message, /only the shadow launch route/);
+        // The shadow copy is built, so the failure is the fake exe spawn —
+        // never the guarded chain's missing wmic shim.
+        assert.doesNotMatch(error.message, /wmic shim/);
+        return true;
+      }
+    );
+    const patched = readFileSync(
+      path.join(
+        renamed,
+        "runtime",
+        "shadow-apps",
+        renamedScan.gameKey,
+        "loading"
+      ),
+      "utf8"
+    );
+    assert.doesNotMatch(
+      patched,
+      /__rmchGroverGuards/,
+      "an automatic Grover launch must use the ordinary shadow chain"
+    );
+    assert.match(
+      patched,
+      /rmch-page-bridge/,
+      "the bridge patch is still there"
+    );
+    await assert.rejects(
+      launchGame({ ...launchOptions, strategy: "extension" }),
+      /only the shadow launch route/
+    );
+  } finally {
+    await new Promise((resolve) => portProbe.close(resolve));
+  }
   writeFileSync(path.join(renamed, "AnotherGame.exe"), "other game");
   assert.equal(
     scanGame(renamed).paths.exe,
@@ -265,8 +325,8 @@ try {
   );
 }
 
-// An OS-level refusal is not a route problem: no second route is spawned.
-{
+// OS refusals and live-copy guards must not spawn another route.
+for (const code of ["ENOENT", "GAME_ALREADY_RUNNING", "PROCESS_QUERY_FAILED"]) {
   const seen = [];
   const scan = {
     container: "nwjs",
@@ -279,8 +339,8 @@ try {
     scan: () => scan,
     launch: async (options) => {
       seen.push(options.strategy);
-      const error = Error("spawn game.exe ENOENT");
-      error.code = "ENOENT";
+      const error = Error(code);
+      error.code = code;
       throw error;
     }
   });
@@ -290,12 +350,12 @@ try {
       projectRoot: "toolbox",
       strategy: "auto"
     }),
-    /ENOENT/
+    (error) => error.code === code
   );
   assert.deepEqual(
     seen,
     ["auto"],
-    "a missing executable is not retried through another transport"
+    `${code} is not retried through another transport`
   );
 }
 

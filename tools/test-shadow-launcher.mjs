@@ -7,6 +7,9 @@
 // process involved.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import {
   existsSync,
   linkSync,
@@ -23,7 +26,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import * as fs from "node:fs";
+import { checkShadowFilesystem } from "./fixtures/shadow-filesystem.cjs";
+import { checkRgssShadowRebuild } from "./fixtures/rgss-shadow-rebuild.cjs";
+import { launchRgssGame } from "../core/rgss-launcher.mjs";
 import {
+  launchShadowGame,
+  launchBundledShadowGame,
   setupShadowApp,
   setupBundledShadowApp,
   patchBundledEngineScript
@@ -53,13 +61,136 @@ function makeFakeGame(root, bgScript) {
   makeFile(path.join(root, path.dirname(bgScript), "helper.js"), "// helper\n");
 }
 
-function main() {
+async function main() {
+  checkShadowFilesystem({ setupShadowApp, setupBundledShadowApp });
+  await checkRgssShadowRebuild(launchRgssGame);
   const tempRoot = mkdtempSync(path.join(tmpdir(), "rmch-shadow-test-"));
   const projectRoot = path.join(tempRoot, "project");
   const gameRoot = path.join(tempRoot, "game");
   const bgScript = path.join("bg_script", "boot.js");
   const originalBg = "// ORIGINAL BG SCRIPT\n";
   try {
+    const activeRoot = path.join(tempRoot, "active-game");
+    makeFakeGame(activeRoot, "loading");
+    fs.copyFileSync(process.execPath, path.join(activeRoot, "Game.exe"));
+    makeFile(path.join(activeRoot, "aaa-marker.txt"), "source marker");
+    const activeOptions = {
+      projectRoot,
+      gameKey: "active-game",
+      scan: {
+        root: activeRoot,
+        layout: "www",
+        manifest: { bgScript: "loading" }
+      }
+    };
+    const active = setupShadowApp(activeOptions);
+    const marker = path.join(active.appDir, "aaa-marker.txt");
+    fs.unlinkSync(marker);
+    makeFile(marker, "private marker");
+    const child = spawn(active.gameExe, ["-e", "setInterval(() => {}, 1000)"], {
+      cwd: active.appDir,
+      windowsHide: true,
+      stdio: "ignore"
+    });
+    try {
+      await once(child, "spawn");
+      if (process.platform === "win32") {
+        await assert.rejects(
+          () => launchShadowGame(activeOptions),
+          (error) =>
+            error.code === "GAME_ALREADY_RUNNING" &&
+            error.message.includes(String(child.pid))
+        );
+        await assert.rejects(
+          () => launchBundledShadowGame(activeOptions),
+          (error) => error.code === "GAME_ALREADY_RUNNING"
+        );
+        assert.equal(
+          readFileSync(marker, "utf8"),
+          "private marker",
+          "running-copy refusal happens before any filesystem rebuild"
+        );
+      }
+    } finally {
+      const exited = once(child, "exit");
+      child.kill();
+      await exited;
+    }
+    // A process can spawn successfully and still exit before any game window
+    // or bridge exists. Node used as Game.exe deterministically rejects the
+    // NW-only arguments, exercising the real child-process exit path.
+    const exitRoot = path.join(tempRoot, "exit-game");
+    makeFakeGame(exitRoot, "loading");
+    fs.copyFileSync(process.execPath, path.join(exitRoot, "Game.exe"));
+    const exitOptions = {
+      projectRoot,
+      gameKey: "exit-game",
+      scan: {
+        root: exitRoot,
+        layout: "www",
+        manifest: { bgScript: "loading" },
+        bundled: { scriptRel: "loading" }
+      },
+      profileDir: path.join(tempRoot, "exit-profile")
+    };
+    const firstLaunch = assert.rejects(
+      launchShadowGame(exitOptions),
+      /游戏进程.*退出/
+    );
+    await assert.rejects(
+      launchShadowGame(exitOptions),
+      (error) => error.code === "GAME_ALREADY_RUNNING"
+    );
+    await firstLaunch;
+    makeFile(path.join(exitRoot, "loading"), "(function () {}.call(this));");
+    await assert.rejects(
+      async () => launchBundledShadowGame(exitOptions),
+      /游戏进程.*退出/
+    );
+    const recoveryRoot = path.join(tempRoot, "missing-locales");
+    makeFakeGame(recoveryRoot, "loading");
+    fs.unlinkSync(path.join(recoveryRoot, "locales/en-US.pak"));
+    const recoveryOptions = {
+      projectRoot,
+      gameKey: "missing-locales",
+      scan: {
+        root: recoveryRoot,
+        layout: "www",
+        manifest: { bgScript: "loading" }
+      }
+    };
+    assert.throws(() => setupShadowApp(recoveryOptions), /语言资源/);
+    const digest = createHash("sha256")
+      .update(readFileSync(path.join(recoveryRoot, "nw.dll")))
+      .digest("hex");
+    const cachedLocales = path.join(
+      projectRoot,
+      "runtime/nwjs-locales",
+      digest,
+      "locales"
+    );
+    makeFile(path.join(cachedLocales, "en-US.pak"), "matching resources");
+    for (let i = 0; i < 2; i++) {
+      const recovered = setupShadowApp(recoveryOptions);
+      assert.equal(
+        fs.realpathSync(path.join(recovered.appDir, "locales")),
+        fs.realpathSync(cachedLocales)
+      );
+      assert.deepEqual(
+        fs.readdirSync(path.join(recoveryRoot, "locales")),
+        [],
+        "recovery never writes to the game"
+      );
+    }
+    fs.rmdirSync(path.join(recoveryRoot, "locales"));
+    setupShadowApp(recoveryOptions);
+    assert.equal(existsSync(path.join(recoveryRoot, "locales")), false);
+    makeFile(path.join(recoveryRoot, "nw.dll"), "different runtime");
+    assert.throws(
+      () => setupShadowApp(recoveryOptions),
+      /语言资源/,
+      "never reuse recovery resources after the runtime changes"
+    );
     const bundledWindow = {};
     const bundledSource =
       "(function(){function Scene_Item(){} function Scene_Battle(){} function Game_Action(){} window.expected={Scene_Item:Scene_Item,Scene_Battle:Scene_Battle,Game_Action:Game_Action};}.call(this));";
@@ -462,8 +593,14 @@ function main() {
       "shadow-launcher test: PASS (both families, root/www, rescue, old links, private copies and rebuilds)"
     );
   } finally {
-    rmSync(tempRoot, { recursive: true, force: true });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    rmSync(tempRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 100
+    });
   }
 }
 
-main();
+await main();

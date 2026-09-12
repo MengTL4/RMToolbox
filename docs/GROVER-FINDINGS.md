@@ -5,6 +5,23 @@
 `core/launcher.mjs` → `core/attach.mjs` 的裸启动+DLL 注入）+
 `runtime/src/wmic-shim.c`（`tools/build-wmic-shim.mjs` 构建，备用）。
 
+## 2026-09-13 更新：当前落地路线（取代下面「最终策略」的落地部分）
+
+18d21f2 退役了 dll 启动路线（裸启动 + DLL 注入整条链路）。grover-boot 家族
+随即改为「运行副本（影子目录）」启动；本节的实测结论取代下面「最终策略」里
+对落地代码的描述，逆向事实（壳架构、时间线）仍然有效。
+
+- **shadow 分支一律去掉 `grover-boot` 标记**，走普通影子链（prelude + 原版
+  bg-script + 页内桥接 suffix），deploy 的 shim/守卫不参与。原因（2026-09-13
+  实测）：走 shim+守卫链时守卫确实装上、桥接也能连上，但 boot 停在壳的验证后
+  状态机，永远进不到场景（`mapId: null`、`party: []`，日志有 `BLOCKED
+window.close`）——用户看到的黑屏；同一批游戏走普通影子链能进到地图并读到
+  运行中数据（`mapId: 16`、金钱/队伍可读）。
+- shim + 守卫策略（`setupShadowApp` 的 grover 分支）保留为诊断用途，
+  `tools/build-wmic-shim.mjs` 仍在；**在验证后冻结问题解决前，不要把启动路线
+  重新接回它**。
+- 带启动参数的路线（extension）仍在起进程前被拒绝。
+
 ## 最终策略（实测验证）
 
 **grover-boot 游戏的「启动并注入」= 裸启动真实目录的 Game.exe（无任何

@@ -33,6 +33,19 @@
     }
   }
 
+  async function confirmConnection(key) {
+    var deadline = Date.now() + 60000;
+    while (true) {
+      refreshSessions();
+      if (store.sessionFor(key)) return;
+      if (Date.now() >= deadline)
+        throw new Error("游戏未在 60 秒内建立连接，请检查游戏窗口或重试。");
+      await new Promise(function (resolve) {
+        setTimeout(resolve, 250);
+      });
+    }
+  }
+
   async function operate(game, kind, run) {
     var key = game.gameKey;
     if (state.busy[key]) return null;
@@ -49,25 +62,27 @@
       var summary = await run();
       if (summary && summary.pid) state.pids[key] = summary.pid;
       if (kind === "stopping") delete state.pids[key];
-      // RGSS/EVB images (宝可梦赤途: a 2.9GB tree) keep the window black for a
-      // minute while the engine loads, and the bridge is up long before that —
-      // without this the working trainer next to a black window looks like a
-      // failed launch.
+      else {
+        state.operations[key] = {
+          kind: kind,
+          status: "pending",
+          text: "正在等待游戏建立连接…"
+        };
+        await confirmConnection(key);
+      }
+      // A bridge hello can precede the title screen. It does not prove that a
+      // prolonged black screen is normal (missing resources can leave it stuck).
       if (
         kind === "launching" &&
         summary &&
         /rgss|evb/.test(summary.strategy || "")
       ) {
-        store.info(
-          game.title +
-            "：游戏本体正在加载，窗口会先黑屏 1–2 分钟，属正常；工具箱显示「游戏加载中」时请等待标题画面。"
-        );
+        store.info(game.title + "：桥接已连接，游戏画面可能仍在加载。");
       }
       state.operations[key] = {
         kind: kind,
         status: "success",
-        text:
-          kind === "stopping" ? "游戏已停止" : "接入步骤已完成，正在确认连接…"
+        text: kind === "stopping" ? "游戏已停止" : "游戏已连接"
       };
       return summary;
     } catch (error) {

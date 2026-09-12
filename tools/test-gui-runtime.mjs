@@ -43,6 +43,8 @@ const smoke = `<script>
   fs.writeFileSync(probe, '工具箱');
   check(fs.readFileSync(probe, 'utf8') === '工具箱', 'Native file roundtrip failed');
   const bundle = __nativeRequire(${json(path.join(gui, "gui-bundle.cjs"))});
+  __nativeRequire(${json(path.join(root, "tools/fixtures/shadow-filesystem.cjs"))}).checkShadowFilesystem(bundle.mod('core/shadow-launcher.mjs'));
+  await __nativeRequire(${json(path.join(root, "tools/fixtures/rgss-shadow-rebuild.cjs"))}).checkRgssShadowRebuild(bundle.mod('core/rgss-launcher.mjs').launchRgssGame);
   const {BridgeServer} = bundle.mod('core/ws-server.mjs');
   const server = new BridgeServer({port: 0, token: 'isolated-smoke'});
   await server.start();
@@ -109,7 +111,7 @@ const smoke = `<script>
   await Vue.nextTick();
   check(document.body.innerText.includes('存档文件与备份'), 'Page navigation failed');
   check(!document.querySelector('#boot-error').innerText, 'Boot guard reported errors');
-  __finish({ok: true, versions, checks: ['native-files', 'bridge-listen-stop', 'host-cjs', 'vue-sfc', 'draft-only', 'navigation', 'map-events', 'readonly-interpreter', 'embedded-step-execution']});
+  __finish({ok: true, versions, checks: ['native-files', 'shadow-junction-rebuild', 'rgss-shadow-rebuild', 'bridge-listen-stop', 'host-cjs', 'vue-sfc', 'draft-only', 'navigation', 'map-events', 'readonly-interpreter', 'embedded-step-execution']});
 })();
 </script>`;
 // NW prefers an adjacent package.json even over an explicit app argument. Copy

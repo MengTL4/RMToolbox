@@ -306,8 +306,30 @@ try {
   assert.equal(store.state.operations.c.status, "error");
   assert.match(store.state.operations.c.text, /fixture connection failed/);
   host.launch = () => Promise.resolve({ gameKey: "c", pid: 123 });
-  await store.launch(c);
+  const connecting = store.launch(c);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(
+    store.state.operations.c.status,
+    "pending",
+    "spawn is not a confirmed bridge connection"
+  );
+  host.sessions.push({ gameKey: "c", alive: true, connectedAt: Date.now() });
+  await connecting;
   assert.equal(store.state.operations.c.status, "success");
+  assert.equal(store.state.operations.c.text, "游戏已连接");
+  host.sessions = host.sessions.filter((session) => session.gameKey !== "c");
+  vm.runInContext(
+    "var savedNow = Date.now; var connectionTicks = 0; Date.now = function () { return savedNow() + (connectionTicks++ ? 61000 : 0); };",
+    context
+  );
+  try {
+    await store.launch(c);
+    assert.equal(store.state.operations.c.status, "error");
+    assert.match(store.state.operations.c.text, /60 秒/);
+    assert.equal(store.state.busy.c, undefined);
+  } finally {
+    vm.runInContext("Date.now = savedNow;", context);
+  }
   assert.equal(store.trainer.gameKey, "a", "launch never steals selection");
   console.log(
     "test-ui-interactions: shared selection, drafts, explicit submit, stale results, disconnect and operation exclusion passed"
