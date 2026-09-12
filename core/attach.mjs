@@ -38,7 +38,7 @@ import path from "node:path";
 import { scanGame } from "./scanner.mjs";
 import { detectRgss, renderBridgeSource } from "./rgss.mjs";
 import { buildBridge } from "./bridge-bundler.mjs";
-import { ensureServer, launchGame } from "./launcher.mjs";
+import { ensureServer, launchGame, payloadPaths } from "./launcher.mjs";
 import { getToken } from "./token.mjs";
 import { adoptRgssSession } from "./rgss-launcher.mjs";
 import {
@@ -1742,6 +1742,14 @@ async function attachRgss({ scan, projectRoot }) {
     throw new AttachError(
       `RGSS detection failed (Game.ini Library): ${scan.root}`
     );
+  if (detect.mkxp)
+    // mkxp statically links its Ruby: no rgss*.dll module exists for the
+    // attach hook (rmch-rgsshook) to resolve rb_eval_string_protect from.
+    // The launch route works because it splices the bridge into the Scripts
+    // archive instead.
+    throw new AttachError(
+      'mkxp variant games statically link Ruby — there is no rgss module to hook into post-launch; use "启动并注入" (the rgss-script route) instead'
+    );
   const exePath = scan.paths.exe || detect.exe;
   if (!existsSync(exePath))
     throw new AttachError(`game exe not found: ${exePath}`);
@@ -1768,8 +1776,16 @@ async function attachRgss({ scan, projectRoot }) {
   );
   mkdirSync(channelDir, { recursive: true });
 
+  // The bridge payload belongs to the rgss engine adapter; fall back to the
+  // historical path for any scan no adapter claims.
+  const bridge = payloadPaths(
+    projectRoot,
+    scan,
+    "runtime/rgss-bridge",
+    "bridge.rb"
+  );
   const bridgeSource = readFileSync(
-    path.join(projectRoot, "runtime", "rgss-bridge", "bridge.rb"),
+    path.join(bridge.dir, bridge.entry),
     "utf8"
   );
   const rendered = renderBridgeSource(bridgeSource, {

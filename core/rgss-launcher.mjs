@@ -206,7 +206,8 @@ export async function launchRgssGame({
   gameRoot,
   projectRoot,
   gameKey,
-  onLaunch
+  onLaunch,
+  bridge = null
 } = {}) {
   if (!gameRoot) throw new RgssLaunchError("gameRoot is required");
   if (!projectRoot) throw new RgssLaunchError("projectRoot is required");
@@ -240,7 +241,8 @@ export async function launchRgssGame({
       // port/token are substituted into the bridge but unused by the file
       // channel; they are reserved for a possible TCP transport.
       port: 0,
-      token: ""
+      token: "",
+      bridge
     });
   } catch (error) {
     throw error instanceof RgssError

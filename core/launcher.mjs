@@ -86,13 +86,21 @@ export async function ensureServer({ projectRoot, port, token }) {
   return { running: up, started: true, pid: child.pid };
 }
 
-// The bridge extension directory belongs to the family's engine adapter
-// (ADR 0002: payload is part of the adapter interface). The historical
-// default stays for any scan no adapter claims.
-function bridgeExtensionDir(projectRoot, scan) {
+// The bridge payload belongs to the family's engine adapter (ADR 0002:
+// payload is part of the adapter interface). The historical default stays
+// for any scan no adapter claims. Exported for core/attach.mjs, which reads
+// the same payload when injecting into a running game.
+export function payloadPaths(projectRoot, scan, fallbackRel, fallbackEntry) {
   const payload = payloadForScan(scan);
-  const rel = (payload && payload.dir) || "runtime/bridge";
-  return path.join(projectRoot, ...rel.split("/"));
+  const rel = (payload && payload.dir) || fallbackRel;
+  return {
+    dir: path.join(projectRoot, ...rel.split("/")),
+    entry: (payload && payload.entry) || fallbackEntry
+  };
+}
+
+function bridgeExtensionDir(projectRoot, scan) {
+  return payloadPaths(projectRoot, scan, "runtime/bridge", null).dir;
 }
 
 export async function launchGame({
@@ -164,7 +172,13 @@ export async function launchGame({
     const handle = await launchRgssGame({
       gameRoot: unpacked.dir,
       projectRoot,
-      gameKey: scan.gameKey
+      gameKey: scan.gameKey,
+      bridge: payloadPaths(
+        projectRoot,
+        scan,
+        "runtime/rgss-bridge",
+        "bridge.rb"
+      )
     });
     return {
       game: scan.title,
@@ -187,7 +201,13 @@ export async function launchGame({
     const handle = await launchRgssGame({
       gameRoot: scan.root,
       projectRoot,
-      gameKey: scan.gameKey
+      gameKey: scan.gameKey,
+      bridge: payloadPaths(
+        projectRoot,
+        scan,
+        "runtime/rgss-bridge",
+        "bridge.rb"
+      )
     });
     return {
       game: scan.title,

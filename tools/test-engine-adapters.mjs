@@ -18,10 +18,13 @@ import { fileURLToPath } from "node:url";
 import {
   adapters,
   adapterById,
+  capabilitiesForScan,
   detectWithAdapters
 } from "../core/adapters/index.mjs";
 import { planLaunch } from "../core/launch-plan.mjs";
 import { scanGame } from "../core/scanner.mjs";
+import { detectRgss } from "../core/rgss.mjs";
+import { attachGame } from "../core/attach.mjs";
 
 const projectRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -276,6 +279,209 @@ assert.equal(
   assert.equal(plan.family, "standard-nwjs");
 }
 
+// --- rgss adapter -------------------------------------------------------------
+
+const rgss = adapterById("rgss");
+assert.ok(rgss, "rgss adapter must be registered");
+assert.equal(
+  adapters()[0].id,
+  "rgss",
+  "rgss must answer before the nwjs fall-through"
+);
+assert.ok(
+  existsSync(path.join(projectRoot, rgss.payload.dir, rgss.payload.entry)),
+  `rgss payload must exist at ${rgss.payload.dir}/${rgss.payload.entry}`
+);
+
+for (const cap of [
+  "variables",
+  "switches",
+  "self-switches",
+  "gold",
+  "items",
+  "actors",
+  "saves"
+]) {
+  assert.ok(
+    rgss.capabilities.includes(cap),
+    `rgss must declare capability ${cap}`
+  );
+}
+
+// Version differences stay inside the family: XP (RGSS1) has no self-switches,
+// VX Ace (RGSS3) does; the nwjs family answers through the same seam.
+assert.ok(
+  !capabilitiesForScan({ engine: { id: "RGSS1" } }).includes("self-switches"),
+  "RGSS1 (XP) must not claim self-switches"
+);
+assert.ok(
+  capabilitiesForScan({ engine: { id: "RGSS3" } }).includes("self-switches"),
+  "RGSS3 (VX Ace) must claim self-switches"
+);
+assert.ok(
+  capabilitiesForScan({ container: "nwjs", engine: { id: "MV" } }).includes(
+    "self-switches"
+  )
+);
+assert.deepEqual(capabilitiesForScan({ engine: { id: "RM2K" } }), []);
+
+// XP game: stock Game.ini + loose scripts archive.
+{
+  const root = makeGameDir("xp-game");
+  mkdirSync(path.join(root, "Data"), { recursive: true });
+  writeFileSync(path.join(root, "Data", "Scripts.rxdata"), "fake");
+  writeFileSync(path.join(root, "Game.exe"), "MZ fake exe");
+  writeFileSync(
+    path.join(root, "Game.ini"),
+    "[Game]\nLibrary=RGSS102J.dll\nTitle=XP 测试\n"
+  );
+  const scan = scanGame(root);
+  assert.equal(scan.engine.id, "RGSS1");
+  assert.equal(scan.container, undefined);
+  assert.equal(scan.title, "XP 测试");
+  assert.ok(scan.rgss && scan.rgss.library === "RGSS102J.dll");
+  const plan = planLaunch(scan);
+  assert.equal(plan.selected, "rgss-script");
+  assert.equal(plan.family, "special");
+}
+
+// DLL fallback (no Game.ini) — legacy behaviour, now produced by the adapter.
+{
+  const root = makeGameDir("rgss-dll-game");
+  writeFileSync(path.join(root, "rgss202e.dll"), "fake");
+  writeFileSync(path.join(root, "Game.exe"), "MZ fake exe");
+  const scan = scanGame(root);
+  assert.equal(scan.engine.id, "RGSS");
+  assert.equal(scan.engine.confidence, "medium");
+  assert.equal(planLaunch(scan).selected, "rgss-script");
+}
+
+// MKXP variant: no Game.ini at all — mkxp.json plus a loose RGSS1 scripts
+// tree is enough, and the exe keeps its custom name.
+{
+  const root = makeGameDir("mkxp-game");
+  mkdirSync(path.join(root, "Data"), { recursive: true });
+  writeFileSync(path.join(root, "Data", "Scripts.rxdata"), "fake");
+  writeFileSync(path.join(root, "Essentials.exe"), "MZ fake mkxp exe");
+  writeFileSync(
+    path.join(root, "mkxp.json"),
+    JSON.stringify({ windowTitle: "宝可梦测试" })
+  );
+  const scan = scanGame(root);
+  assert.equal(scan.engine.id, "RGSS1");
+  assert.equal(scan.title, "宝可梦测试");
+  assert.ok(scan.protection.flags.includes("mkxp"));
+  assert.ok(scan.paths.exe && scan.paths.exe.endsWith("Essentials.exe"));
+  assert.equal(planLaunch(scan).selected, "rgss-script");
+  const detect = detectRgss(root);
+  assert.equal(detect.mkxp, true);
+  assert.ok(detect.exe.endsWith("Essentials.exe"));
+}
+
+// MKXP with a non-stock Game.ini Library still lands in the family (the
+// stock-library match simply does not fire).
+{
+  const root = makeGameDir("mkxp-ini-game");
+  mkdirSync(path.join(root, "Data"), { recursive: true });
+  writeFileSync(path.join(root, "Data", "Scripts.rvdata2"), "fake");
+  writeFileSync(path.join(root, "Game.exe"), "MZ fake exe");
+  writeFileSync(
+    path.join(root, "Game.ini"),
+    "[Game]\nLibrary=mkxp-z.dll\nTitle=mojibake\n"
+  );
+  writeFileSync(
+    path.join(root, "mkxp.json"),
+    JSON.stringify({ windowTitle: "赤途测试" })
+  );
+  const scan = scanGame(root);
+  assert.equal(scan.engine.id, "RGSS3");
+  assert.equal(scan.title, "赤途测试");
+  assert.ok(scan.protection.flags.includes("mkxp"));
+}
+
+// A mkxp.json without any RGSS scripts tree is NOT a game we can bridge.
+{
+  const root = makeGameDir("mkxp-not-rgss");
+  writeFileSync(path.join(root, "mkxp.json"), JSON.stringify({}));
+  writeFileSync(path.join(root, "Game.exe"), "MZ fake exe");
+  const scan = scanGame(root);
+  assert.ok(!/RGSS/i.test(scan.engine.id));
+  assert.ok(!scan.protection.flags.includes("mkxp"));
+}
+
+// EVB single-file shell: detection and route stay with the rgss family.
+{
+  const root = makeGameDir("evb-game");
+  const pe = Buffer.alloc(0x400);
+  pe.write("MZ", 0, "latin1");
+  pe.writeUInt32LE(0x80, 0x3c);
+  pe.write("PE\0\0", 0x80, "latin1");
+  pe.writeUInt16LE(0x8664, 0x84);
+  pe.writeUInt16LE(2, 0x86);
+  pe.write(".enigma1", 0x98, "latin1");
+  pe.writeUInt32LE(0x1000, 0x98 + 16);
+  pe.writeUInt32LE(0x400, 0x98 + 20);
+  pe.write(".enigma2", 0x98 + 40, "latin1");
+  pe.writeUInt32LE(0x1000, 0x98 + 40 + 16);
+  pe.writeUInt32LE(0x400, 0x98 + 40 + 20);
+  const image = Buffer.concat([pe, Buffer.from("EVB\0", "latin1")]);
+  writeFileSync(path.join(root, "宝可梦测试.exe"), image);
+  const scan = scanGame(root);
+  assert.equal(scan.container, "evb");
+  assert.equal(scan.engine.id, "RGSS");
+  assert.ok(scan.protection.flags.includes("evb-packed"));
+  assert.equal(planLaunch(scan).selected, "evb-unpack-rgss-script");
+}
+
+// The rgss adapter never claims nwjs-family or unsupported scans.
+assert.equal(
+  rgss.plan({ container: "nwjs", engine: { id: "MV" }, paths: { exe: "x" } }),
+  null
+);
+assert.equal(rgss.plan({ engine: { id: "RM2K" } }), null);
+
+// Stock-matching Game.ini + mkxp.json + a RENAMED exe (the mkxp-z port
+// shape): the stock library match fires first, but the exe must still
+// resolve to the real file, not the hardcoded Game.exe.
+{
+  const root = makeGameDir("mkxp-stock-ini-game");
+  mkdirSync(path.join(root, "Data"), { recursive: true });
+  writeFileSync(path.join(root, "Data", "Scripts.rxdata"), "fake");
+  writeFileSync(path.join(root, "PokemonEssentials.exe"), "MZ fake exe");
+  writeFileSync(
+    path.join(root, "Game.ini"),
+    "[Game]\nLibrary=RGSS102J.dll\nTitle=mojibake\n"
+  );
+  writeFileSync(
+    path.join(root, "mkxp.json"),
+    JSON.stringify({ windowTitle: "赤途移植" })
+  );
+  const scan = scanGame(root);
+  assert.equal(scan.engine.id, "RGSS1");
+  assert.ok(scan.protection.flags.includes("mkxp"));
+  assert.ok(
+    scan.paths.exe && scan.paths.exe.endsWith("PokemonEssentials.exe"),
+    `stock-matched mkxp exe must resolve the renamed exe, got ${scan.paths.exe}`
+  );
+  const detect = detectRgss(root);
+  assert.equal(detect.mkxp, true);
+  assert.ok(detect.exe.endsWith("PokemonEssentials.exe"));
+}
+
+// mkxp games statically link Ruby — attach must refuse early and clearly,
+// not fail with a cryptic hook error after touching the process.
+{
+  const root = makeGameDir("mkxp-attach-refused");
+  mkdirSync(path.join(root, "Data"), { recursive: true });
+  writeFileSync(path.join(root, "Data", "Scripts.rxdata"), "fake");
+  writeFileSync(path.join(root, "MyMkxpGame.exe"), "MZ fake exe");
+  writeFileSync(path.join(root, "mkxp.json"), JSON.stringify({}));
+  await assert.rejects(
+    attachGame({ gameRoot: root, projectRoot }),
+    (error) => /mkxp/.test(error.message) && /启动并注入/.test(error.message)
+  );
+}
+
 console.log(
-  "test-engine-adapters: registry, nwjs detect/plan/payload/capabilities passed"
+  "test-engine-adapters: registry, nwjs + rgss detect/plan/payload/capabilities passed"
 );

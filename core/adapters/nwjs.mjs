@@ -511,6 +511,9 @@ function detect({ root, manifest }) {
       path.join(root, "index.html")
     ])
   };
+  // This family always knows whether a save dir was found; other families may
+  // leave saveDirKnown unset (the scanner then leaves the field absent).
+  contribution.saveDirKnown = !!contribution.paths.saveDir;
 
   if (manifest) {
     contribution.manifestInfo = {

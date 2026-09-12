@@ -3,18 +3,14 @@
 //
 // The scanner is an orchestrator (ADR 0002): each game family's fingerprints
 // live in that family's engine adapter (core/adapters/), not here. The
-// families below without an adapter yet (RM2K / RGSS / EVB / Tauri) keep their
-// legacy detectors inline until their own adapters land.
+// families below without an adapter yet (RM2K / Tauri) keep their legacy
+// detectors inline until their own adapters land.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { execSync } from "node:child_process";
 import path from "node:path";
-import { detectRgss } from "./rgss.mjs";
-import { detectEvb } from "./evb-unpack.mjs";
 import { probeTauriShell } from "./tauri-cdp.mjs";
 import { detectWithAdapters } from "./adapters/index.mjs";
-
-const RGSS_DLL_RE = /^rgss\d*[a-z]*\.dll$/i;
 
 export function sanitizeGameKey(name) {
   const cleaned = String(name || "")
@@ -30,13 +26,6 @@ function readJsonSafe(filePath) {
   } catch (_) {
     return null;
   }
-}
-
-function firstExisting(paths) {
-  for (const candidate of paths) {
-    if (candidate && existsSync(candidate)) return candidate;
-  }
-  return null;
 }
 
 export function scanGame(root) {
@@ -65,7 +54,7 @@ export function scanGame(root) {
     if (!flags.includes(flag)) flags.push(flag);
   };
 
-  // --- Non-NW legacy engines -------------------------------------------------
+  // --- Legacy detectors without an adapter yet --------------------------------
   const rootFiles = existsSync(resolvedRoot) ? readdirSync(resolvedRoot) : [];
   if (rootFiles.some((name) => /^rpg_rt\.exe$/i.test(name))) {
     result.engine = { id: "RM2K", bytecode: false, confidence: "high" };
@@ -73,89 +62,18 @@ export function scanGame(root) {
     result.protection.level = 0;
     return result;
   }
-  // RGSS: the engine DLL may live in the RTP instead of the game root, so
-  // trust Game.ini's Library field (via detectRgss) and use the on-disk DLL
-  // only as a fallback hint.
-  let rgss = null;
-  try {
-    rgss = detectRgss(resolvedRoot);
-  } catch (_) {}
-  const rgssDll = rgss
-    ? null
-    : rootFiles.find((name) => RGSS_DLL_RE.test(name));
-  if (rgss || rgssDll) {
-    result.engine = {
-      id: rgss ? rgss.engine : "RGSS",
-      bytecode: false,
-      confidence: rgss ? "high" : "medium"
-    };
-    if (rgss) {
-      if (rgss.title) result.title = rgss.title;
-      result.rgss = {
-        scriptsRel: rgss.scriptsRel,
-        hasArchive: rgss.hasArchive,
-        rtp: rgss.rtp,
-        library: rgss.library
-      };
-      // Saves sit next to Game.exe (vanilla layout) or in a SaveData/
-      // subdirectory (custom save systems). Only report a dir that exists.
-      if (rgss) {
-        const saveDataDir = path.join(resolvedRoot, "SaveData");
-        if (existsSync(saveDataDir) && statSync(saveDataDir).isDirectory()) {
-          result.paths.saveDir = saveDataDir;
-        } else if (
-          rootFiles.some((name) =>
-            /^save\d+\.(rxdata|rvdata|rvdata2)$/i.test(name)
-          )
-        ) {
-          result.paths.saveDir = resolvedRoot;
-        }
-        result.saveDirKnown = !!result.paths.saveDir;
-      }
-    }
-    result.paths.exe = firstExisting([
-      path.join(resolvedRoot, "Game.exe"),
-      path.join(resolvedRoot, "Game-JP.exe")
-    ]);
-    result.protection.level = 0;
-    return result;
-  }
-
-  // --- Enigma Virtual Box single-file games ----------------------------------
-  // One big exe carrying .enigma1/.enigma2 PE sections; the real game lives in
-  // its embedded virtual filesystem (宝可梦赤途: a 2.9GB exe holding an mkxp-z
-  // Pokemon Essentials tree). Only probed when nothing else matched — the PE
-  // header read is cheap, but pointless once an engine was identified. The
-  // launcher unpacks to <exe base>_unpacked and continues as plain RGSS.
-  if (!manifest && result.engine.id === "unknown") {
-    for (const name of rootFiles) {
-      if (!/\.exe$/i.test(name)) continue;
-      const exePath = path.join(resolvedRoot, name);
-      const evb = detectEvb(exePath);
-      if (!evb) continue;
-      result.engine = { id: "RGSS", bytecode: false, confidence: "medium" };
-      result.container = "evb";
-      result.evb = { exeName: name, exePath, arch: evb.arch };
-      addFlag("evb-packed");
-      result.title = name.replace(/\.exe$/i, "");
-      result.paths.exe = exePath;
-      const saveDir = path.join(resolvedRoot, "save");
-      if (existsSync(saveDir) && statSync(saveDir).isDirectory()) {
-        result.paths.saveDir = saveDir;
-        result.saveDirKnown = true;
-      }
-      result.protection.level = 0; // evb-packed / tauri-webview2 carry no severity weight
-      return result;
-    }
-  }
 
   // --- Tauri-shelled games (WebView2) -------------------------------------------
   // No www/, no package.json, no RGSS — a single Tauri exe whose rodata carries
   // the WRY browser-args string. The YanBin "RPG Maker Builder" family ships a
   // real MV or MZ runtime this way; its arc_img/arc_audio hash-dirs are a cheap
-  // signature. Case-sensitive name check on purpose: the NW.js block below uses
-  // existsSync("Game.exe"), which a lowercase tauri game.exe satisfies on
-  // Windows and would otherwise be mislabeled "unknown-nwjs".
+  // signature. This probe runs before the adapter section because the nwjs
+  // adapter is the fall-through and would otherwise claim the directory: its
+  // existsSync("Game.exe") is satisfied by a lowercase tauri game.exe on
+  // Windows, which is why the name check here is case-sensitive on purpose.
+  // Note this also means Tauri now probes before the rgss adapter (RGSS used
+  // to run first): a directory cannot be both — Tauri shells wrap MV/MZ
+  // runtimes and carry no RGSS markers — so the order swap is inert.
   const hasArcDirs = ["arc_img", "arc_audio"].every((name) => {
     try {
       return statSync(path.join(resolvedRoot, name)).isDirectory();
@@ -192,29 +110,41 @@ export function scanGame(root) {
   }
 
   // --- Adapter-mediated families ---------------------------------------------
-  // Ask the registered engine adapters (core/adapters/). The nwjs adapter is
-  // the fall-through: it always answers, and fills the NW-style path block
-  // even when nothing NW-specific matched (engine stays "unknown" then).
+  // Ask the registered engine adapters (core/adapters/): rgss answers for
+  // RGSS / mkxp / EVB-shell games, then the nwjs adapter as the fall-through
+  // (it always answers, filling the NW-style path block even when nothing
+  // NW-specific matched — engine stays "unknown" then).
   const detected = detectWithAdapters({
     root: resolvedRoot,
     manifest,
     rootFiles
   });
   if (detected) {
-    if (detected.engine) result.engine = detected.engine;
-    if (detected.container) result.container = detected.container;
-    if (detected.layout) result.layout = detected.layout;
-    if (detected.paths) result.paths = detected.paths;
+    // The key list is the contribution contract, not a convenience merge: an
+    // adapter may only introduce scan fields by naming them here.
+    for (const key of [
+      "engine",
+      "container",
+      "layout",
+      "paths",
+      "title",
+      "rgss",
+      "evb",
+      "bundled"
+    ]) {
+      if (detected[key] !== null && detected[key] !== undefined)
+        result[key] = detected[key];
+    }
     if (detected.manifestInfo) result.manifest = detected.manifestInfo;
-    if (detected.title) result.title = detected.title;
-    if (detected.bundled) result.bundled = detected.bundled;
     for (const flag of detected.flags || []) addFlag(flag);
     // The flag→level semantics are the family's own knowledge; the adapter
     // reports the level alongside its flags.
     result.protection.level = detected.protectionLevel ?? 0;
+    // saveDirKnown is tri-state by legacy contract: the nwjs family always
+    // answers it; rgss/evb leave it unset when no save dir was found.
+    if (detected.saveDirKnown !== undefined)
+      result.saveDirKnown = detected.saveDirKnown;
   }
-
-  result.saveDirKnown = !!result.paths.saveDir;
   return result;
 }
 

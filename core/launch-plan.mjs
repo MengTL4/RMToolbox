@@ -12,8 +12,8 @@
 //
 // Since the engine adapters landed (core/adapters/, ADR 0002) this module is
 // an orchestrator: each registered adapter decides the plans for its own game
-// family. Only families without an adapter yet (rgss / evb / tauri / RM2K) are
-// still planned by the legacy code below; each one moves out when its adapter
+// family. Only families without an adapter yet (tauri / RM2K) are still
+// planned by the legacy code below; each one moves out when its adapter
 // lands.
 
 import { candidate, blocked, finishPlan } from "./launch-routes.mjs";
@@ -35,16 +35,10 @@ function requestedRoute(value) {
     .toLowerCase();
 }
 
-function isRgss(scan, engine, container) {
-  return container === "rgss" || /^RGSS/i.test(engine);
-}
-
 // Legacy single-route plans for the families that have no adapter yet. Same
-// shape the nwjs adapter produces for its own sealed/bundled containers.
+// shape the engine adapters produce for their own dedicated containers.
 function specialPlan(scan, requested, container, engine) {
   const special = (() => {
-    if (container === "evb") return candidate("evb-unpack-rgss-script");
-    if (isRgss(scan, engine, container)) return candidate("rgss-script");
     if (container === "tauri") return candidate("tauri-cdp");
     return null;
   })();

@@ -74,19 +74,133 @@ export function parseIni(text) {
   return result;
 }
 
+function firstExisting(paths) {
+  for (const candidate of paths) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function iniRtp(ini) {
+  return [
+    ini["Game.RTP"] || "",
+    ini["Game.RTP1"] || "",
+    ini["Game.RTP2"] || "",
+    ini["Game.RTP3"] || ""
+  ].filter(Boolean);
+}
+
+// mkxp builds are often renamed (mkxp.exe, <game>.exe): take Game.exe when
+// present, else a single non-junk exe in the root.
+function resolveGameExe(gameRoot, mkxp) {
+  const stock = firstExisting([
+    path.join(gameRoot, "Game.exe"),
+    path.join(gameRoot, "Game-JP.exe")
+  ]);
+  if (stock) return stock;
+  // mkxp-z ports rename the exe (the Game.exe baked into the build is often
+  // replaced); only the variant probes beyond the stock names.
+  if (mkxp) return singleGameExe(gameRoot);
+  return path.join(gameRoot, "Game.exe");
+}
+
+// mkxp / mkxp-z variant (Pokemon Essentials builds, 宝可梦赤途 family): the
+// engine is an open-source RGSS reimplementation, so Game.ini is absent or
+// its Library names no stock RGSS DLL. The fingerprint is mkxp.json (mkxp's
+// own config) plus an RGSS scripts tree; the scripts extension pins the
+// generation. Scripts are listed newest-first so a port carrying two formats
+// is read as its newest.
+const MKXP_SCRIPTS = [
+  {
+    scripts: "Data/Scripts.rvdata2",
+    archive: "Game.rgss3a",
+    version: "RGSS3",
+    ruby19: true
+  },
+  {
+    scripts: "Data/Scripts.rvdata",
+    archive: "Game.rgss2a",
+    version: "RGSS2",
+    ruby19: false
+  },
+  {
+    scripts: "Data/Scripts.rxdata",
+    archive: "Game.rgssad",
+    version: "RGSS1",
+    ruby19: false
+  }
+];
+
+// mkxp builds are often renamed (mkxp.exe, <game>.exe): take a single
+// non-junk exe in the root once the stock names missed.
+function singleGameExe(gameRoot) {
+  let exes;
+  try {
+    exes = readdirSync(gameRoot).filter((name) => /\.exe$/i.test(name));
+  } catch (_) {
+    return null;
+  }
+  const junk =
+    /unins|setup|install|crash|redist|vc_redist|dxsetup|dotnet|launch|update|patch/i;
+  const real = exes.filter((name) => !junk.test(name));
+  return real.length === 1 ? path.join(gameRoot, real[0]) : null;
+}
+
+function detectMkxpVariant(gameRoot, ini, mkxpTitle) {
+  for (const candidate of MKXP_SCRIPTS) {
+    const archivePath = path.join(gameRoot, candidate.archive);
+    const hasArchive = existsSync(archivePath);
+    const looseScripts = path.join(gameRoot, ...candidate.scripts.split("/"));
+    if (!hasArchive && !existsSync(looseScripts)) continue;
+    const scriptsRel =
+      ini && ini["Game.Scripts"]
+        ? ini["Game.Scripts"].replace(/\\/g, "/")
+        : candidate.scripts;
+    return {
+      engine: candidate.version,
+      ruby19: candidate.ruby19,
+      library: "mkxp",
+      title: mkxpTitle || (ini && ini["Game.Title"]) || path.basename(gameRoot),
+      rtp: ini ? iniRtp(ini) : [],
+      scriptsRel,
+      hasArchive,
+      archivePath: hasArchive ? archivePath : null,
+      scriptsPath: hasArchive ? null : looseScripts,
+      exe: resolveGameExe(gameRoot, true),
+      mkxp: true
+    };
+  }
+  return null;
+}
+
 /**
- * Inspect a game directory for an RGSS engine.
- * Returns null when it is not an RGSS game.
+ * Inspect a game directory for an RGSS engine — stock RPG Maker XP/VX/VX Ace,
+ * or the mkxp variant. Returns null when it is not an RGSS game.
  */
 export function detectRgss(gameRoot) {
   const iniPath = path.join(gameRoot, "Game.ini");
-  if (!existsSync(iniPath)) return null;
-  const ini = parseIni(readFileSync(iniPath, "utf8"));
+  const ini = existsSync(iniPath)
+    ? parseIni(readFileSync(iniPath, "utf8"))
+    : null;
+
+  // mkxp.json is mkxp's own config. Its windowTitle is proper UTF-8 and beats
+  // the GBK-encoded Game.ini title on mkxp-z ports （宝可梦赤途： the Game.ini
+  // title decodes to mojibake, windowTitle is "宝可梦赤途…").
+  let mkxp = null;
+  try {
+    mkxp = JSON.parse(readFileSync(path.join(gameRoot, "mkxp.json"), "utf8"));
+  } catch (_) {}
+  const mkxpTitle =
+    mkxp && typeof mkxp.windowTitle === "string" && mkxp.windowTitle.trim()
+      ? mkxp.windowTitle.trim()
+      : "";
+
+  if (!ini) return mkxp ? detectMkxpVariant(gameRoot, null, mkxpTitle) : null;
   const library = ini["Game.Library"] || "";
   const dll = path.basename(library.replace(/\\/g, "/"));
 
   const match = LIBRARY_PATTERNS.find((entry) => entry.dll.test(dll));
-  if (!match) return null;
+  if (!match) return mkxp ? detectMkxpVariant(gameRoot, ini, mkxpTitle) : null;
 
   const scriptsRel = (ini["Game.Scripts"] || `Data\\${match.scripts}`).replace(
     /\\/g,
@@ -102,39 +216,21 @@ export function detectRgss(gameRoot) {
     );
   }
 
-  // mkxp-z ports keep a GBK-encoded Game.ini whose Title decodes to mojibake;
-  // their mkxp.json windowTitle is proper UTF-8 and wins when present
-  // （宝可梦赤途： Game.ini title is garbage, windowTitle is "宝可梦赤途…").
-  let title = ini["Game.Title"] || "";
-  try {
-    const mkxp = JSON.parse(
-      readFileSync(path.join(gameRoot, "mkxp.json"), "utf8")
-    );
-    if (
-      mkxp &&
-      typeof mkxp.windowTitle === "string" &&
-      mkxp.windowTitle.trim()
-    ) {
-      title = mkxp.windowTitle.trim();
-    }
-  } catch (_) {}
-
   return {
     engine: match.version,
     ruby19: match.ruby19,
     library: dll,
-    title: title || path.basename(gameRoot),
-    rtp: [
-      ini["Game.RTP"] || "",
-      ini["Game.RTP1"] || "",
-      ini["Game.RTP2"] || "",
-      ini["Game.RTP3"] || ""
-    ].filter(Boolean),
+    title: mkxpTitle || ini["Game.Title"] || path.basename(gameRoot),
+    rtp: iniRtp(ini),
     scriptsRel,
     hasArchive,
     archivePath: hasArchive ? archivePath : null,
     scriptsPath: hasArchive ? null : looseScripts,
-    exe: path.join(gameRoot, "Game.exe")
+    // A stock-matched game that still ships mkxp.json runs on the mkxp
+    // variant (mkxp-z keeps a stock-looking Game.ini) — flag it either way,
+    // and let the variant's exe resolution handle renamed executables.
+    exe: resolveGameExe(gameRoot, !!mkxp),
+    mkxp: !!mkxp
   };
 }
 
@@ -312,7 +408,8 @@ export function prepareRgssGame({
   projectRoot,
   gameKey,
   port,
-  token
+  token,
+  bridge = null
 }) {
   const detect = detectRgss(gameRoot);
   if (!detect) throw new RgssError(`not an RGSS game: ${gameRoot}`);
@@ -325,8 +422,12 @@ export function prepareRgssGame({
 
   buildShadow({ gameRoot, shadowRoot, replaceRel, copyFiles });
 
+  // The bridge payload belongs to the rgss engine adapter; callers that went
+  // through the registry hand it in, direct callers get the same default.
+  const bridgeDir =
+    (bridge && bridge.dir) || path.join(projectRoot, "runtime", "rgss-bridge");
   const bridgeSource = readFileSync(
-    path.join(projectRoot, "runtime", "rgss-bridge", "bridge.rb"),
+    path.join(bridgeDir, (bridge && bridge.entry) || "bridge.rb"),
     "utf8"
   );
 
@@ -344,6 +445,7 @@ export function prepareRgssGame({
     detect,
     shadowRoot,
     injected,
-    exe: path.join(shadowRoot, "Game.exe")
+    // mkxp variants keep their own exe name; stock games are always Game.exe.
+    exe: path.join(shadowRoot, path.basename(detect.exe || "Game.exe"))
   };
 }
